@@ -1,0 +1,52 @@
+# Node modules
+node_modules/
+
+# Environment variables
+.env
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Build and cache
+dist/
+build/
+.cache/
+.tmp/
+
+# IDE / Editor settings
+.vscode/
+.idea/
+*.swp
+
+# Coverage reports
+coverage/
+
+# Database dumps or local data
+*.sql
+*.sqlite
+data/
+
+# PM2 logs and config
+pm2.log
+pm2.pid
+ecosystem.config.js
+
+# TypeScript (if added later)
+*.tsbuildinfo
+
+# Docker (if you containerize)
+docker-compose.override.yml
+
+# Misc
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
