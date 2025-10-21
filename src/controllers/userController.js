@@ -73,24 +73,9 @@ exports.signUp = async (req, res) => {
   
         await db.commit();
 
-        // Generate JWT token
-        const tokenPayload = {
-            user_id: userId,
-            role: role.toUpperCase(),
-            full_name: full_name
-        };
-        
-        const token = generateToken(tokenPayload);
-
-        // Return success response with token
+        // Return success response without token
         res.status(201).json({
             message: "User signed up successfully",
-            data: {
-                user_id: userId,
-                full_name: full_name,
-                role: role.toUpperCase(),
-                token: token
-            }
         });
 
     } catch (error) {
