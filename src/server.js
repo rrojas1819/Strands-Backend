@@ -20,8 +20,13 @@ const userRoutes = require('./routes/user');
 // Database Connection
 const db = require('./config/databaseConnection');
 
+// Get utilities and get start Token Cleanup
+const { startTokenCleanup } = require('./utils/utilies');
+
 // Set up Express and CORS
 const app = express();
+
+startTokenCleanup(db);
 
 app.use(cors());
 app.use(express.json());

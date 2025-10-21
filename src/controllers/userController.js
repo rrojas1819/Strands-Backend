@@ -157,6 +157,11 @@ exports.login = async (req, res) => {
         };
 
         const token = generateToken(tokenPayload);
+        
+        // Store token expiration time (2 hours from now)
+        const tokenExpiry = new Date(Date.now() + 2 * 60 * 60 * 1000);
+        const updateTokenQuery = 'UPDATE auth_credentials SET token_expires_at = ? WHERE user_id = ?';
+        await db.execute(updateTokenQuery, [tokenExpiry, existingUsers[0].user_id]);
         res.status(200).json({
             message: "Login successful",
             data: {
@@ -164,6 +169,43 @@ exports.login = async (req, res) => {
                 full_name: existingUsers[0].full_name,
                 role: existingUsers[0].role,
                 token: token
+            }
+        });
+        
+    } catch (error) {
+        res.status(500).json({
+            message: "Internal server error"
+        });
+    }
+};
+
+// User Logout
+/* Token will not be invalidated, but the user will be set as inactive. 
+    Frontend will handle the token deletion and redirect to login page after calling this endpoint.
+*/
+exports.logout = async (req, res) => {
+    const db = connection.promise();
+    
+    try {
+        // Get user_id from the authenticated token
+        const userId = req.user.user_id;
+        if (!userId) {
+            return res.status(401).json({
+                message: "Unauthorized"
+            });
+        }
+        
+        // Set user as inactive and clear token expiration
+        const logoutQuery = 'UPDATE users SET active = 0 WHERE user_id = ?';
+        const clearTokenQuery = 'UPDATE auth_credentials SET token_expires_at = NULL WHERE user_id = ?';
+        await db.execute(logoutQuery, [userId]);
+        await db.execute(clearTokenQuery, [userId]);
+        
+        res.status(200).json({
+            message: "Logout successful",
+            data: {
+                user_id: userId,
+                active: 0
             }
         });
         
