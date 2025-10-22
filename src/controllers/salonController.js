@@ -26,7 +26,7 @@ exports.checkOwnerHasSalon = async (req, res) => {
   }
 }
 
-//UAR 1.3/1.4
+//UAR 1.3/1.4 registration + salon type
 exports.createSalon = async (req, res) => {
   const db = connection.promise();
   try {
@@ -45,10 +45,15 @@ exports.createSalon = async (req, res) => {
       city = null, state = null, postal_code = null, country = 'USA'
     } = req.body;
 
-    //validation
-    if (!name || typeof name !== 'string') {
-      return res.status(400).json({ message: "Field 'name' is required" });
+    //validation for all params
+    const stringFields = { name, description, phone, email, address, city, state, postal_code };
+    for (const [field, value] of Object.entries(stringFields)) {
+      if (!value || typeof value !== 'string') {
+        return res.status(400).json({ message: `Field '${field}' is required and must be a string` });
+      }
     }
+
+    category = category.toUpperCase(); //making category uppercase for db
     if (!category || !ALLOWED_CATEGORIES.has(category)) {
       return res.status(400).json({
         message: "Invalid 'category'",
