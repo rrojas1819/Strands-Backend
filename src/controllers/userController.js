@@ -209,3 +209,50 @@ exports.authTest = async (req, res) => {
 };
 
 
+//UAR 1.8 Get stylist's assigned salon
+exports.getStylistSalon = async (req, res) => {
+    const db = connection.promise();
+  
+    try {
+      const user_id = req.user?.user_id;
+      const role = req.user?.role;
+  
+      if (!user_id) {
+        return res.status(401).json({ message: 'No user found' });
+      }
+  
+      if (role !== 'EMPLOYEE') {
+        return res.status(403).json({ message: 'Access denied.' });
+      }
+  
+  
+      // Query to get the salon where this employee works
+      const getStylistSalonQuery = 
+      `SELECT s.salon_id, s.name, s.description, s.category, s.phone, s.email, 
+              s.address, s.city, s.state, s.postal_code, s.country, 
+              u.full_name as owner_name, e.title as employee_title
+       FROM salons s
+       JOIN employees e ON s.salon_id = e.salon_id
+       JOIN users u ON s.owner_user_id = u.user_id
+       WHERE e.user_id = ? AND e.active = 1`;
+  
+      
+  
+      const [result] = await db.execute(getStylistSalonQuery, [user_id]);
+  
+      if (result.length === 0) {
+        return res.status(404).json({ 
+          message: 'No salon assigned to this stylist' 
+        });
+      }
+  
+      return res.status(200).json({ 
+        data: result[0] 
+      });
+  
+    } catch (err) {
+        //console.error('getStylistSalon error:', err);
+      return res.status(500).json({ message: 'Internal Server Error' });
+    }
+  };
+

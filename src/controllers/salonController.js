@@ -41,7 +41,7 @@ exports.createSalon = async (req, res) => {
     }
 
     //extract details from request
-    const {
+    let {
       name, description = '', category, phone = null, email = null, address = null,
       city = null, state = null, postal_code = null, country = 'USA'
     } = req.body;
