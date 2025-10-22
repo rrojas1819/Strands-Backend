@@ -10,6 +10,8 @@ router.post('/create', authenticateToken, roleAuthorization(['OWNER']), salonCon
 // UAR 1.5 salon approval
 router.patch('/approve', authenticateToken, roleAuthorization(['ADMIN']), salonController.approveSalon);
 
-
+// UAR 1.7 Add/Remove Employee
+router.post('/addEmployee', authenticateToken, roleAuthorization(['OWNER']), salonController.addEmployee);
+router.delete('/removeEmployee', authenticateToken, roleAuthorization(['OWNER']), salonController.removeEmployee);
 
 module.exports = router;
