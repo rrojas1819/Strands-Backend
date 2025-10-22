@@ -1,4 +1,5 @@
 const connection = require('../config/databaseConnection'); //db connection
+const { validateEmail } = require('../utils/utilies');
 
 //allowed salon categories
 const ALLOWED_CATEGORIES = new Set([
@@ -133,5 +134,88 @@ exports.approveSalon = async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Internal Server Error' });
+  }
+};
+
+
+//UAR 1.7 Add Employee
+exports.addEmployee = async (req, res) => {
+  const db = connection.promise();
+
+  try {
+    const { salon_id, email, title } = req.body;
+
+    if (!salon_id || !email || !title) {
+      return res.status(400).json({ message: 'Missing required fields' });
+    }
+
+    if (!validateEmail(email)) {
+      return res.status(400).json({ message: 'Invalid email format' });
+    }
+
+    const checkEmployeeExistsQuery = `SELECT user_id FROM users WHERE email = ?`;
+    
+    const [existingEmployee] = await db.execute(checkEmployeeExistsQuery, [email]);
+
+    if (existingEmployee.length === 0) {
+      return res.status(409).json({ message: 'Employee does not exist.' });
+    }
+
+    const assignEmployeeQuery = 
+    `INSERT INTO employees (salon_id, user_id, title, active, created_at, updated_at)
+    VALUES(?, (SELECT user_id FROM users WHERE email = ?), ?, 1, NOW(), NOW());`;
+
+    const [result] = await db.execute(assignEmployeeQuery, [salon_id, email, title]);
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: 'Salon not found' });
+    }
+
+    res.status(200).json({
+      message: `Employee ${email} has been added to salon ${salon_id}.`
+    });
+
+  } catch (err) {
+    console.error('addEmployee error:', err);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+};
+
+//UAR 1.7 Remove Employee
+exports.removeEmployee = async (req, res) => {
+  const db = connection.promise();
+
+  try {
+    const { salon_id, email } = req.body;
+
+    if (!salon_id || !email) { 
+      return res.status(400).json({ message: 'Missing required fields' });
+    }
+
+    if (!validateEmail(email)) {
+      return res.status(400).json({ message: 'Invalid email format' });
+    }
+
+    const removeEmployeeQuery = 
+    `DELETE FROM employees
+    WHERE user_id = (
+    SELECT user_id
+    FROM users
+    WHERE email = ?
+    ) AND salon_id = ?`;
+
+    const [result] = await db.execute(removeEmployeeQuery, [email, salon_id]);
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: 'Employee not found' });
+    }
+    
+    res.status(200).json({
+      message: `Employee ${email} has been removed from salon ${salon_id}.`
+    });
+
+  } catch (err) {
+    console.error('removeEmployee error:', err);
+    return res.status(500).json({ message: 'Internal server error' });
   }
 };
