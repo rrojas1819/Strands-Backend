@@ -2,7 +2,7 @@
   "name": "strands-backend",
   "version": "1.0.0",
   "description": "Our project, Strands, is a web app that brings together salon owners, employees, customers, and admins in one place to make salon management easier.",
-  "main": "index.js",
+  "main": "src/server.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node src/server.js",

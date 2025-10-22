@@ -17,7 +17,7 @@ const authenticateToken = (req, res, next) => {
     }
 
     try {
-        const decoded = jwt.verify(token, process.env.JWT_SECRET)
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
         req.user = decoded;
         next();
     } catch (error) {
@@ -25,7 +25,28 @@ const authenticateToken = (req, res, next) => {
     }
 };
 
+// Role Authorization
+const roleAuthorization = (roles) => {
+    return (req, res, next) => {
+
+        if (!req.user) {
+            return res.status(401).json({ error: 'Authentication required' });
+        }
+
+        if (!req.user.role) {
+            return res.status(403).json({ error: 'No role assigned to user' });
+        }
+
+        if (!roles.includes(req.user.role)) {
+            return res.status(403).json({ error: 'Insufficient permissions' });
+        }
+
+        next();
+    };
+};
+
 module.exports = {
     generateToken,
-    authenticateToken
+    authenticateToken,
+    roleAuthorization
 };

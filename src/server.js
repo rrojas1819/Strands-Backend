@@ -17,12 +17,18 @@ process.on('uncaughtException', (err) => {
 const healthRoutes = require('./routes/health');
 const userRoutes = require('./routes/user');
 const salonsRoutes = require('./routes/salons');
+const analyticsRoutes = require('./routes/analytics');
 
 // Database Connection
 const db = require('./config/databaseConnection');
 
+// Get utilities and get start Token Cleanup
+const { startTokenCleanup } = require('./utils/utilies');
+
 // Set up Express and CORS
 const app = express();
+
+startTokenCleanup(db);
 
 app.use(cors());
 app.use(express.json());
@@ -33,6 +39,7 @@ app.use('/api', healthRoutes);
 app.use('/api/user', userRoutes);
 app.use('/api/salons', salonsRoutes);
 
+app.use('/api/admin/analytics', analyticsRoutes);
 
 // Start Server
 const PORT = process.env.PORT || 3000;
