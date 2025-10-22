@@ -16,15 +16,16 @@ exports.checkOwnerHasSalon = async (req, res) => {
   }
 
   try {
-    const [rows] = await db.execute('SELECT salon_id FROM salons WHERE owner_user_id = ? LIMIT 1', [owner_user_id]);
+    const [rows] = await db.execute('SELECT salon_id, status FROM salons WHERE owner_user_id = ? LIMIT 1', [owner_user_id]);
 
     const hasSalon = rows.length > 0;
-    return res.status(200).json({ hasSalon });
+    
+    return res.status(200).json({ hasSalon, status: rows[0].status });
   } catch (err) {
     console.error('checkOwnerHasSalon error:', err);
     return res.status(500).json({ message: 'Internal server error' })
   }
-}
+};
 
 //UAR 1.3/1.4 registration + salon type
 exports.createSalon = async (req, res) => {
@@ -94,5 +95,43 @@ exports.createSalon = async (req, res) => {
   } catch (err) {
     console.error('createSalon error:', err);
     return res.status(500).json({ message: 'Internal server error' });
+  }
+};
+
+
+//UAR 1.5 salon approval
+exports.approveSalon = async (req, res) => {
+  const db = connection.promise();
+
+  try {
+    const { salon_id, status } = req.body;
+
+    if (!salon_id || isNaN(salon_id)) {
+      return res.status(400).json({ message: 'Invalid salon_id' });
+    }
+
+    if (!['APPROVED','REJECTED'].includes(status)) {
+      return res.status(400).json({ message: 'Invalid status.' });
+    }
+
+    const updateSalonQuery = 
+      `UPDATE salons 
+        SET status = ?,
+        approval_date = IF(? = 'APPROVED', NOW(), approval_date)
+      WHERE salon_id = ?;`;
+
+    const [result] = await db.execute(updateSalonQuery, [status, status, salon_id]);
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: 'Salon not found' });
+    }
+
+    res.status(200).json({
+      message: `Salon ${salon_id} has been ${status.toLowerCase()}.`
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Internal Server Error' });
   }
 };
