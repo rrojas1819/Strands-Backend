@@ -294,3 +294,64 @@ exports.removeEmployee = async (req, res) => {
     return res.status(500).json({ message: 'Internal server error' });
   }
 };
+
+// PLR 1.6 Configure Loyalty Program
+exports.configureLoyaltyProgram = async (req, res) => {
+  const db = connection.promise();
+
+  try {
+    const { salon_id, target_visits, discount_percentage, note, active } = req.body;
+
+    if (!salon_id || !target_visits || !discount_percentage) { 
+      return res.status(400).json({ message: 'Missing required fields' });
+    }
+
+    const insertLoyaltyProgramQuery = 
+    `INSERT INTO loyalty_programs (salon_id, target_visits, discount_percentage, note, created_at, updated_at, active) VALUES(?, ?, ?, ?, NOW(), NOW(), ?);`;
+
+    const [result] = await db.execute(insertLoyaltyProgramQuery, [salon_id, target_visits, discount_percentage, note]);
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: 'Salon not found' });
+    }
+    
+    res.status(200).json({
+      message: `Salon has been configured with a loyalty program.`
+    });
+
+  } catch (err) {
+    console.error('configureLoyalty error:', err);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+};
+
+// PLR 1.6 Update Loyalty Program
+exports.updateLoyaltyProgram = async (req, res) => {
+  const db = connection.promise();
+
+  try {
+    const { salon_id, target_visits, discount_percentage, note, active } = req.body;
+
+    if (!salon_id || !target_visits || !discount_percentage) { 
+      return res.status(400).json({ message: 'Missing required fields' });
+    }
+
+    const updateLoyaltyProgramQuery = 
+    `UPDATE loyalty_programs SET target_visits = ?, discount_percentage = ?, note = ?, active = ? WHERE salon_id = ?`;
+
+    const [result] = await db.execute(updateLoyaltyProgramQuery, [target_visits, discount_percentage, note, active, salon_id]);
+
+    if (result.length === 0) {
+      return res.status(404).json({ 
+        message: 'No loyalty program found' 
+      });
+    }
+
+    return res.status(200).json({ 
+      message: `Salon's loyalty program has been updated.`
+    });
+
+  } catch (err) {
+    return res.status(500).json({ message: 'Internal Server Error' });
+  }
+};
