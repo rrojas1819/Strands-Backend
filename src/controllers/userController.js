@@ -256,6 +256,128 @@ exports.getStylistSalon = async (req, res) => {
     }
   };
 
+
+
+
+//BS 1.4 Get stylist's weekly schedule
+/*REQUIRES FURTHER TESTING */
+exports.getStylistWeeklySchedule = async (req, res) => {
+  const db = connection.promise();
+
+  try {
+    const user_id = req.user?.user_id;
+
+    if (!user_id) {
+      return res.status(401).json({ message: 'No user found' });
+    }
+
+
+    // Get employee_id from user_id
+    const getEmployeeQuery = 'SELECT employee_id FROM employees WHERE user_id = ? AND active = 1';
+    const [employeeResult] = await db.execute(getEmployeeQuery, [user_id]);
+
+    const employee_id = employeeResult[0].employee_id;
+
+    const getAvailabilityQuery = `
+      SELECT availability_id, employee_id, weekday, start_time, end_time, slot_interval_minutes, created_at, updated_at 
+      FROM employee_availability 
+      WHERE employee_id = ?
+      ORDER BY FIELD(weekday, 'MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY')
+    `;
+    const [availabilityResult] = await db.execute(getAvailabilityQuery, [employee_id]);
+
+    const getUnavailabilityQuery = `
+      SELECT unavailability_id, employee_id, weekday, start_time, end_time, slot_interval_minutes, created_at, updated_at 
+      FROM employee_unavailability 
+      WHERE employee_id = ?
+      ORDER BY weekday, start_time
+    `;
+    const [unavailabilityResult] = await db.execute(getUnavailabilityQuery, [employee_id]);
+
+    // Get all non-cancelled bookings
+    const getBookingsQuery = `
+      SELECT b.booking_id, b.salon_id, b.customer_user_id, b.scheduled_start, b.scheduled_end, b.status, b.notes, b.created_at, b.updated_at
+      FROM bookings b
+      JOIN booking_services bs ON b.booking_id = bs.booking_id
+      WHERE bs.employee_id = ? AND b.status != 'CANCELED'
+      ORDER BY b.scheduled_start ASC
+    `;
+    const [bookingsResult] = await db.execute(getBookingsQuery, [employee_id]);
+
+    const daysOfWeek = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'];
+    const weeklySchedule = {};
+
+    daysOfWeek.forEach(day => {
+      weeklySchedule[day] = {
+        availability: null,
+        unavailability: [],
+        bookings: []
+      };
+    });
+
+    const weekdayMap = { 0: 'SUNDAY', 1: 'MONDAY', 2: 'TUESDAY', 3: 'WEDNESDAY', 4: 'THURSDAY', 5: 'FRIDAY', 6: 'SATURDAY' };
+    availabilityResult.forEach(avail => {
+      const dayName = weekdayMap[avail.weekday];
+      if (weeklySchedule[dayName]) {
+        weeklySchedule[dayName].availability = {
+          availability_id: avail.availability_id,
+          start_time: avail.start_time,
+          end_time: avail.end_time,
+          slot_interval_minutes: avail.slot_interval_minutes
+        };
+      }
+    });
+
+    // Map unavailability data to days (convert weekday number to day name)
+    unavailabilityResult.forEach(unavail => {
+      const dayName = weekdayMap[unavail.weekday];
+      if (weeklySchedule[dayName]) {
+        weeklySchedule[dayName].unavailability.push({
+          unavailability_id: unavail.unavailability_id,
+          start_time: unavail.start_time,
+          end_time: unavail.end_time,
+          slot_interval_minutes: unavail.slot_interval_minutes
+        });
+      }
+    });
+
+    // Map bookings to days based on scheduled_start date
+    bookingsResult.forEach(booking => {
+      const bookingDate = new Date(booking.scheduled_start);
+      const dayName = daysOfWeek[bookingDate.getDay() === 0 ? 6 : bookingDate.getDay() - 1]; // Convert JS day to our Monday-Sunday format
+      
+      if (weeklySchedule[dayName]) {
+        const startTime = new Date(booking.scheduled_start).toTimeString().split(' ')[0];
+        const endTime = new Date(booking.scheduled_end).toTimeString().split(' ')[0];
+        
+        weeklySchedule[dayName].bookings.push({
+          booking_id: booking.booking_id,
+          salon_id: booking.salon_id,
+          customer_user_id: booking.customer_user_id,
+          scheduled_start: startTime,
+          scheduled_end: endTime,
+          status: booking.status,
+          notes: booking.notes
+        });
+      }
+    });
+
+    if (Object.keys(weeklySchedule).length === 0) {
+        return res.status(404).json({ message: 'No schedule found for this stylist' });
+    }
+
+    return res.status(200).json({ 
+      data: {
+        schedule: weeklySchedule
+      }
+    });
+
+  } catch (err) {
+    console.error('getStylistWeeklySchedule error:', err);
+    return res.status(500).json({ message: 'Internal Server Error' });
+  }
+};
+
 // PLR 1.4 View Loyalty Program
 exports.viewLoyaltyProgram = async (req, res) => {
     const db = connection.promise();
