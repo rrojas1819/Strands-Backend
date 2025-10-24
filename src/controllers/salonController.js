@@ -137,6 +137,81 @@ exports.approveSalon = async (req, res) => {
   }
 };
 
+//UAR 1.6 browse salons user/admin
+exports.browseSalons = async (req, res) => {
+  const db = connection.promise();
+  const userRole = req.user?.role;
+  const isAdmin = userRole === 'ADMIN';
+  const category = req.body?.category;
+
+  try {
+    //URL params
+    let {status = 'all', limit = 20, offset = 0, sort = 'recent'} = req.query;
+
+    //pagination
+    limit  = Number.isFinite(+limit) ? +limit : 20;
+    offset = Number.isFinite(+offset) ? +offset : 0;
+
+    //dynamic filters
+    const where = [];
+    const params = [];
+
+    if (isAdmin) {
+      //admin can view all types of salons, PENDING, APPROVED, etc.
+      if (status && status !== 'all') {
+        where.push(`s.status = ?`);
+        params.push(status);
+      }
+    } else {
+      //users can only see APPROVED
+      where.push(`s.status = 'APPROVED'`);
+    }
+
+    //filters
+    if (category) {where.push(`s.category = ?`); params.push(category);}
+
+    //sorting
+    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+    let orderBy = `ORDER BY s.created_at DESC`;
+    if (sort === 'name') orderBy = `ORDER BY s.name ASC`;
+
+    //tab counts, ex. All (6)
+    let counts;
+    if (isAdmin) {
+      const [[allC]] = await db.execute(`SELECT COUNT(*) AS c FROM salons`);
+      const [[pC]] = await db.execute(`SELECT COUNT(*) AS c FROM salons WHERE status='PENDING'`);
+      const [[aC]] = await db.execute(`SELECT COUNT(*) AS c FROM salons WHERE status='APPROVED'`);
+      const [[rC]] = await db.execute(`SELECT COUNT(*) AS c FROM salons WHERE status='REJECTED'`);
+      counts = {all: allC.c || 0, pending: pC.c || 0, approved: aC.c || 0, rejected: rC.c || 0};
+    }
+
+    //current total for current filtered view
+    const countSql = isAdmin ? `SELECT COUNT(*) AS total FROM salons s JOIN users u ON u.user_id = s.owner_user_id ${whereSql}`
+                             : `SELECT COUNT(*) AS total FROM salons s ${whereSql}`;
+    const [countRows] = await db.execute(countSql, params);
+
+    const total = countRows[0]?.total || 0;
+
+    //fetching salon info
+    const listSql = isAdmin ? `SELECT s.salon_id, s.name, s.category, s.description, s.phone, s.email, s.address, s.city, s.state, s.postal_code, s.country,
+                              s.status, s.created_at, s.updated_at, u.user_id AS owner_user_id, u.full_name AS owner_name, u.email AS owner_email, u.phone AS owner_phone
+                              FROM salons s JOIN users u ON u.user_id = s.owner_user_id ${whereSql} ${orderBy} LIMIT ${limit} OFFSET ${offset}`
+                            : `SELECT s.salon_id, s.name, s.description, s.category, s.phone, s.email, s.address, s.city, s.state, s.postal_code, s.country,
+                              s.status, s.created_at, s.updated_at FROM salons s ${whereSql} ${orderBy} LIMIT ${limit} OFFSET ${offset}`;
+    const [rows] = await db.execute(listSql, params);
+    
+    //returning salons
+    return res.status(200).json({
+      data: rows,
+      meta: {total, limit, offset, hasMore: offset + rows.length < total},
+      ...(isAdmin ? { counts } : {})
+    });
+  } catch (err) {
+    console.error('browseSalonsUnified error:', err);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+};
 
 //UAR 1.7 Add Employee
 exports.addEmployee = async (req, res) => {
