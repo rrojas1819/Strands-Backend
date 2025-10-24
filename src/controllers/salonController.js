@@ -1,6 +1,5 @@
 const connection = require('../config/databaseConnection'); //db connection
 const { validateEmail } = require('../utils/utilies');
-const jwt = require('jsonwebtoken');
 
 //allowed salon categories
 const ALLOWED_CATEGORIES = new Set([
