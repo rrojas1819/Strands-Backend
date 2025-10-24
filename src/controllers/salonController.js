@@ -295,6 +295,72 @@ exports.removeEmployee = async (req, res) => {
   }
 };
 
+
+//UAR 1.7 View Employees
+exports.viewEmployees = async (req, res) => {
+  const db = connection.promise();
+
+  try {
+    const { salon_id, limit, offset } = req.body;
+    const owner_user_id = req.user?.user_id;
+
+    if (!salon_id || !limit || isNaN(offset)) {
+      return res.status(400).json({ message: 'Invalid fields.' });
+    }
+
+    const countQuery = 
+    `SELECT COUNT(*) as total 
+    FROM employees e 
+    JOIN salons s ON e.salon_id = s.salon_id
+    WHERE e.salon_id = ? AND s.owner_user_id = ?
+`;
+
+    const [countResult] = await db.execute(countQuery, [salon_id, owner_user_id]);
+    const total = countResult[0]?.total || 0;
+
+    const salonId = Number(salon_id);
+    const ownerId = Number(owner_user_id);
+    const limitInt = Math.max(0, Number.isFinite(Number(limit)) ? Number(limit) : 10);
+    const offsetInt = Math.max(0, Number.isFinite(Number(offset)) ? Number(offset) : 0);
+
+    const employeesQuery = `
+    SELECT e.employee_id, e.user_id, e.title, e.active, u.full_name, u.email, u.phone, u.profile_picture_url
+    FROM employees e
+    JOIN users u ON e.user_id = u.user_id
+    JOIN salons s ON e.salon_id = s.salon_id
+    WHERE e.salon_id = ? AND s.owner_user_id = ?
+    ORDER BY u.full_name ASC
+    LIMIT ${limitInt} OFFSET ${offsetInt}
+    `;
+
+    const [employees] = await db.execute(employeesQuery, [salonId, ownerId]);
+
+
+    const totalPages = Math.ceil(total / limit);
+    const currentPage = Math.floor(offset / limit) + 1;
+    const hasNextPage = offset + employees.length < total;
+    const hasPrevPage = offset > 0;
+
+    return res.status(200).json({
+      data: employees,
+      pagination: {
+        current_page: currentPage,
+        total_pages: totalPages,
+        total_employees: total,
+        limit: limit,
+        offset: offset,
+        has_next_page: hasNextPage,
+        has_prev_page: hasPrevPage
+      }
+    });
+
+  } catch (err) {
+    console.error('viewEmployees error:', err);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+};
+
+
 // PLR 1.6 Configure Loyalty Program
 exports.configureLoyaltyProgram = async (req, res) => {
   const db = connection.promise();
