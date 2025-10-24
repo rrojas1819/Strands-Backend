@@ -16,6 +16,7 @@ router.get('/browse', authenticateToken, roleAuthorization(['ADMIN', 'CUSTOMER']
 // UAR 1.7 Add/Remove Employee
 router.post('/addEmployee', authenticateToken, roleAuthorization(['OWNER']), salonController.addEmployee);
 router.delete('/removeEmployee', authenticateToken, roleAuthorization(['OWNER']), salonController.removeEmployee);
+router.post('/viewEmployees', authenticateToken, roleAuthorization(['OWNER']), salonController.viewEmployees);
 
 
 // PLR 1.6 Configure Loyalty Program
