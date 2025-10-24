@@ -18,6 +18,7 @@ const healthRoutes = require('./routes/health');
 const userRoutes = require('./routes/user');
 const salonsRoutes = require('./routes/salons');
 const analyticsRoutes = require('./routes/analytics');
+const unavailabilityRoutes = require('./routes/unavailability');
 
 // Database Connection
 const db = require('./config/databaseConnection');
@@ -40,6 +41,7 @@ app.use('/api/user', userRoutes);
 app.use('/api/salons', salonsRoutes);
 
 app.use('/api/admin/analytics', analyticsRoutes);
+app.use('/api/unavailability', unavailabilityRoutes);
 
 // Start Server
 const PORT = process.env.PORT || 3000;
