@@ -218,9 +218,10 @@ exports.addEmployee = async (req, res) => {
   const db = connection.promise();
 
   try {
-    const { salon_id, email, title } = req.body;
+    const { email, title } = req.body;
+    const owner_user_id = req.user?.user_id;
 
-    if (!salon_id || !email || !title) {
+    if (!email || !title) {
       return res.status(400).json({ message: 'Missing required fields' });
     }
 
@@ -238,16 +239,16 @@ exports.addEmployee = async (req, res) => {
 
     const assignEmployeeQuery = 
     `INSERT INTO employees (salon_id, user_id, title, active, created_at, updated_at)
-    VALUES(?, (SELECT user_id FROM users WHERE email = ?), ?, 1, NOW(), NOW());`;
+    VALUES((SELECT salon_id FROM salons WHERE owner_user_id = ?), (SELECT user_id FROM users WHERE email = ?), ?, 1, NOW(), NOW());`;
 
-    const [result] = await db.execute(assignEmployeeQuery, [salon_id, email, title]);
+    const [result] = await db.execute(assignEmployeeQuery, [owner_user_id, email, title]);
 
     if (result.affectedRows === 0) {
       return res.status(404).json({ message: 'Salon not found' });
     }
 
     res.status(200).json({
-      message: `Employee ${email} has been added to salon ${salon_id}.`
+      message: `Employee ${email} has been added to salon.`
     });
 
   } catch (err) {
@@ -261,9 +262,10 @@ exports.removeEmployee = async (req, res) => {
   const db = connection.promise();
 
   try {
-    const { salon_id, email } = req.body;
+    const { email } = req.body;
+    const owner_user_id = req.user?.user_id;
 
-    if (!salon_id || !email) { 
+    if (!email) { 
       return res.status(400).json({ message: 'Missing required fields' });
     }
 
@@ -277,16 +279,16 @@ exports.removeEmployee = async (req, res) => {
     SELECT user_id
     FROM users
     WHERE email = ?
-    ) AND salon_id = ?`;
+    ) AND salon_id = (SELECT salon_id FROM salons WHERE owner_user_id = ?)`;
 
-    const [result] = await db.execute(removeEmployeeQuery, [email, salon_id]);
+    const [result] = await db.execute(removeEmployeeQuery, [email, owner_user_id]);
 
     if (result.affectedRows === 0) {
       return res.status(404).json({ message: 'Employee not found' });
     }
     
     res.status(200).json({
-      message: `Employee ${email} has been removed from salon ${salon_id}.`
+      message: `Employee ${email} has been removed from salon.`
     });
 
   } catch (err) {
@@ -301,10 +303,10 @@ exports.viewEmployees = async (req, res) => {
   const db = connection.promise();
 
   try {
-    const { salon_id, limit, offset } = req.body;
+    const { limit, offset } = req.body;
     const owner_user_id = req.user?.user_id;
 
-    if (!salon_id || !limit || isNaN(offset)) {
+    if (!limit || isNaN(offset)) {
       return res.status(400).json({ message: 'Invalid fields.' });
     }
 
@@ -312,14 +314,12 @@ exports.viewEmployees = async (req, res) => {
     `SELECT COUNT(*) as total 
     FROM employees e 
     JOIN salons s ON e.salon_id = s.salon_id
-    WHERE e.salon_id = ? AND s.owner_user_id = ?
-`;
+    WHERE e.salon_id = (SELECT salon_id FROM salons WHERE owner_user_id = ?)`;
 
-    const [countResult] = await db.execute(countQuery, [salon_id, owner_user_id]);
+    const [countResult] = await db.execute(countQuery, [owner_user_id]);
     const total = countResult[0]?.total || 0;
 
-    const salonId = Number(salon_id);
-    const ownerId = Number(owner_user_id);
+
     const limitInt = Math.max(0, Number.isFinite(Number(limit)) ? Number(limit) : 10);
     const offsetInt = Math.max(0, Number.isFinite(Number(offset)) ? Number(offset) : 0);
 
@@ -328,12 +328,12 @@ exports.viewEmployees = async (req, res) => {
     FROM employees e
     JOIN users u ON e.user_id = u.user_id
     JOIN salons s ON e.salon_id = s.salon_id
-    WHERE e.salon_id = ? AND s.owner_user_id = ?
+    WHERE e.salon_id = (SELECT salon_id FROM salons WHERE owner_user_id = ?)
     ORDER BY u.full_name ASC
     LIMIT ${limitInt} OFFSET ${offsetInt}
     `;
 
-    const [employees] = await db.execute(employeesQuery, [salonId, ownerId]);
+    const [employees] = await db.execute(employeesQuery, [owner_user_id]);
 
 
     const totalPages = Math.ceil(total / limit);
@@ -366,16 +366,19 @@ exports.configureLoyaltyProgram = async (req, res) => {
   const db = connection.promise();
 
   try {
-    const { salon_id, target_visits, discount_percentage, note, active } = req.body;
+    const { target_visits, discount_percentage, note, active } = req.body;
+    const owner_user_id = req.user?.user_id;
 
-    if (!salon_id || !target_visits || !discount_percentage) { 
+    console.log(owner_user_id);
+
+    if (!target_visits || !discount_percentage) { 
       return res.status(400).json({ message: 'Missing required fields' });
     }
 
     const insertLoyaltyProgramQuery = 
-    `INSERT INTO loyalty_programs (salon_id, target_visits, discount_percentage, note, created_at, updated_at, active) VALUES(?, ?, ?, ?, NOW(), NOW(), ?);`;
+    `INSERT INTO loyalty_programs (salon_id, target_visits, discount_percentage, note, created_at, updated_at, active) VALUES ((SELECT salon_id FROM salons WHERE owner_user_id = ?), ?, ?, ?, NOW(), NOW(), ?);`;
 
-    const [result] = await db.execute(insertLoyaltyProgramQuery, [salon_id, target_visits, discount_percentage, note]);
+    const [result] = await db.execute(insertLoyaltyProgramQuery, [owner_user_id, target_visits, discount_percentage, note, active]);
 
     if (result.affectedRows === 0) {
       return res.status(404).json({ message: 'Salon not found' });
@@ -396,16 +399,17 @@ exports.updateLoyaltyProgram = async (req, res) => {
   const db = connection.promise();
 
   try {
-    const { salon_id, target_visits, discount_percentage, note, active } = req.body;
+    const { target_visits, discount_percentage, note, active } = req.body;
+    const owner_user_id = req.user?.user_id;
 
-    if (!salon_id || !target_visits || !discount_percentage) { 
+    if (!target_visits || !discount_percentage) { 
       return res.status(400).json({ message: 'Missing required fields' });
     }
 
     const updateLoyaltyProgramQuery = 
-    `UPDATE loyalty_programs SET target_visits = ?, discount_percentage = ?, note = ?, active = ? WHERE salon_id = ?`;
+    `UPDATE loyalty_programs SET target_visits = ?, discount_percentage = ?, note = ?, active = ? WHERE salon_id = (SELECT salon_id FROM salons WHERE owner_user_id = ?)`;
 
-    const [result] = await db.execute(updateLoyaltyProgramQuery, [target_visits, discount_percentage, note, active, salon_id]);
+    const [result] = await db.execute(updateLoyaltyProgramQuery, [target_visits, discount_percentage, note, active, owner_user_id]);
 
     if (result.length === 0) {
       return res.status(404).json({ 
