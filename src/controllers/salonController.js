@@ -294,3 +294,33 @@ exports.removeEmployee = async (req, res) => {
     return res.status(500).json({ message: 'Internal server error' });
   }
 };
+
+// PLR 1.6 Configure Loyalty Program
+exports.configureLoyalty = async (req, res) => {
+  const db = connection.promise();
+
+  try {
+    const { salon_id, target_visits, discount_percentage, note } = req.body;
+
+    if (!salon_id || !target_visits || !discount_percentage) { 
+      return res.status(400).json({ message: 'Missing required fields' });
+    }
+
+    const insertLoyaltyProgramQuery = 
+    `INSERT INTO loyalty_programs (salon_id, target_visits, discount_percentage, note, created_at, updated_at) VALUES(?, ?, ?, ?, NOW(), NOW());`;
+
+    const [result] = await db.execute(insertLoyaltyProgramQuery, [salon_id, target_visits, discount_percentage, note]);
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: 'Salon not found' });
+    }
+    
+    res.status(200).json({
+      message: `Salon has been configured with a loyalty program.`
+    });
+
+  } catch (err) {
+    console.error('configureLoyalty error:', err);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+};
