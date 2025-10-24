@@ -19,6 +19,7 @@ router.delete('/removeEmployee', authenticateToken, roleAuthorization(['OWNER'])
 
 
 // PLR 1.6 Configure Loyalty Program
-router.post('/configureLoyalty', authenticateToken, roleAuthorization(['OWNER']), salonController.configureLoyalty);
+router.post('/configureLoyaltyProgram', authenticateToken, roleAuthorization(['OWNER']), salonController.configureLoyaltyProgram);
+router.patch('/updateLoyaltyProgram', authenticateToken, roleAuthorization(['OWNER']), salonController.updateLoyaltyProgram);
 
 module.exports = router;
