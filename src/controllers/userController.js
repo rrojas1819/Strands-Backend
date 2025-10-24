@@ -378,3 +378,46 @@ exports.getStylistWeeklySchedule = async (req, res) => {
   }
 };
 
+// PLR 1.4 View Loyalty Program
+exports.viewLoyaltyProgram = async (req, res) => {
+    const db = connection.promise();
+  
+    try {
+        const user_id = req.user?.user_id;
+        const salon_id = req.query.salon_id;
+
+        if (!user_id || !salon_id) {
+            return res.status(401).json({ message: 'Invalid fields.' });
+        }
+
+        const getLoyaltyProgramQuery = 
+        `SELECT lm.visits_count, lp.target_visits, lp.discount_percentage, lp.note, lm.available_rewards, s.name as salon_name
+        FROM loyalty_memberships lm
+        JOIN loyalty_programs lp ON lm.salon_id = lp.salon_id
+        JOIN salons s ON s.salon_id = lp.salon_id
+        WHERE lm.salon_id = ? and lm.user_id = ? and lp.active = 1;`;
+
+        const [result] = await db.execute(getLoyaltyProgramQuery, [salon_id, user_id]);
+
+        if (result.length === 0) {
+            return res.status(404).json({ 
+                message: 'No Loyalty Program found.' 
+            });
+        }
+
+        const getGoldenSalonsQuery = `SELECT COUNT(*) as golden_salons FROM loyalty_memberships WHERE user_id = ? and visits_count >= 5;`;
+        const [goldenSalons] = await db.execute(getGoldenSalonsQuery, [user_id]);    
+    
+        const getTotalVisitsQuery = `SELECT SUM(visits_count) as total_visits FROM loyalty_memberships WHERE user_id = ?;`;
+        const [totalVisits] = await db.execute(getTotalVisitsQuery, [user_id]);
+    
+        return res.status(200).json({ 
+            userData: result[0],
+            goldenSalons: goldenSalons[0].golden_salons,
+            totalVisits: totalVisits[0].total_visits
+        }); 
+  
+    } catch (err) {
+      return res.status(500).json({ message: 'Internal Server Error' });
+    }
+};
