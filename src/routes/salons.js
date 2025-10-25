@@ -22,6 +22,7 @@ router.post('/viewEmployees', authenticateToken, roleAuthorization(['OWNER']), s
 // PLR 1.6 Configure Loyalty Program
 router.post('/configureLoyaltyProgram', authenticateToken, roleAuthorization(['OWNER']), salonController.configureLoyaltyProgram);
 router.patch('/updateLoyaltyProgram', authenticateToken, roleAuthorization(['OWNER']), salonController.updateLoyaltyProgram);
+router.get('/getLoyaltyProgram', authenticateToken, roleAuthorization(['OWNER']), salonController.getLoyaltyProgram);
 
 // BS 1.0 - Salon Operating Hours
 
