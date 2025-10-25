@@ -16,13 +16,7 @@ exports.createRecurringBlock = async (req, res) => {
     const db = connection.promise();
 
     //params
-    const employeeId = parseInt(req.params.employeeId, 10); //employee ID
     let { weekday, start_time, end_time, slot_interval_minutes = 30 } = req.body; //interval is 30 mins by default
-
-    //validate employee ID
-    if (!Number.isInteger(employeeId) || employeeId <= 0) {
-        return res.status(400).json({ message: 'Invalid employee id' });
-    }
 
     //validate weekday value
     weekday = parseInt(weekday, 10);
@@ -40,21 +34,29 @@ exports.createRecurringBlock = async (req, res) => {
         return res.status(400).json({ message: 'End time must be after Start time' });
     }
 
-    //checking role
-    const role = req.user?.role;
+    //get authenticated user
     const authUserId = req.user?.user_id;
 
     try {
-        //looking up employee
+        //looking up employee by user_id
         const [empRows] = await db.execute(`SELECT e.employee_id, e.user_id FROM employees e 
-                                        WHERE e.employee_id = ?`, [employeeId]
+                                        WHERE e.user_id = ?`, [authUserId]
         ); if (!empRows.length) return res.status(404).json({ message: 'Employee not found' });
 
-        //only allow employees to block their own time
-        if (role === 'EMPLOYEE') {
-            if (empRows[0].user_id !== authUserId) {
-                return res.status(403).json({ message: 'You can only manage your own unavailability' });
-            }
+        const employeeId = empRows[0].employee_id;
+
+        //checking if employee has availability for this weekday
+        const [availabilityRows] = await db.execute(`SELECT start_time, end_time FROM employee_availability
+                                                    WHERE employee_id = ? AND weekday = ?`, [employeeId, weekday]
+        ); if (!availabilityRows.length) return res.status(400).json({ message: 'No availability set for this weekday' });
+
+        const availability = availabilityRows[0];
+        
+        //validating that unavailability is within availability bounds
+        if (start < availability.start_time || end > availability.end_time) {
+            return res.status(400).json({ 
+                message: `Unavailability must be within availability hours (${availability.start_time} - ${availability.end_time})` 
+            });
         }
 
         //checking for blocked time overlap
@@ -85,35 +87,23 @@ exports.listRecurringBlocks = async (req, res) => {
     const db = connection.promise();
 
     //params
-    const employeeId = parseInt(req.params.employeeId, 10); //employee ID
     const weekdayQ = req.query.weekday !== undefined ? parseInt(req.query.weekday, 10) : null; //current weekday
-
-    //validate employee ID
-    if (!Number.isInteger(employeeId) || employeeId <= 0) {
-        return res.status(400).json({ message: 'Invalid employee id' });
-    }
 
     //validate weekday value
     if (weekdayQ !== null && !validWeekday(weekdayQ)) {
         return res.status(400).json({ message: 'Weekday must be an integer between 0-6' });
     }
 
-    //checking role
-    const role = req.user?.role;
+    //get authenticated user
     const authUserId = req.user?.user_id;
 
     try {
-        //looking up employee
+        //looking up employee by user_id
         const [empRows] = await db.execute(`SELECT e.employee_id, e.user_id FROM employees e 
-                                        WHERE e.employee_id = ?`, [employeeId]
+                                        WHERE e.user_id = ?`, [authUserId]
         ); if (!empRows.length) return res.status(404).json({ message: 'Employee not found' });
 
-        //only allow employees to view their own unavailable time
-        if (role === 'EMPLOYEE') {
-            if (empRows[0].user_id !== authUserId) {
-                return res.status(403).json({ message: 'You can only view your own unavailability' });
-            }
-        }
+        const employeeId = empRows[0].employee_id;
 
         //getting unavailable time slots
         const where = [`employee_id = ?`];
@@ -134,34 +124,42 @@ exports.deleteRecurringBlock = async (req, res) => {
     const db = connection.promise();
 
     //params
-    const employeeId = parseInt(req.params.employeeId, 10); //employee ID
-    const unavailabilityId = parseInt(req.params.unavailabilityId, 10); //unavailability ID
+    let { weekday, start_time, end_time } = req.body;
 
-    //validate ID's
-    if (!Number.isInteger(employeeId) || employeeId <= 0 ||
-        !Number.isInteger(unavailabilityId) || unavailabilityId <= 0) {
-        return res.status(400).json({ message: 'Invalid ids' });
+    //validate weekday value
+    weekday = parseInt(weekday, 10);
+    if (!validWeekday(weekday)) {
+        return res.status(400).json({ message: 'Weekday must be an integer between 0-6' });
     }
 
-    //checking role
-    const role = req.user?.role;
+    //validating start and end time
+    const start = normTime(start_time);
+    const end = normTime(end_time);
+    if (!start || !end) {
+        return res.status(400).json({ message: 'Start time and End time must be HH:MM (24h) format' });
+    }
+
+    //get authenticated user
     const authUserId = req.user?.user_id;
 
     try {
-        //finding blocked time
-        const [rows] = await db.execute(`SELECT eu.unavailability_id, eu.employee_id, e.user_id
-                                        FROM employee_unavailability eu JOIN employees e ON e.employee_id = eu.employee_id
-                                        WHERE eu.unavailability_id = ? AND eu.employee_id = ?`, [unavailabilityId, employeeId]
+        //looking up employee by user_id first
+        const [empRows] = await db.execute(`SELECT e.employee_id, e.user_id FROM employees e 
+                                        WHERE e.user_id = ?`, [authUserId]
+        ); if (!empRows.length) return res.status(404).json({ message: 'Employee not found' });
+
+        const employeeId = empRows[0].employee_id;
+
+        //finding blocked time by weekday and time range
+        const [rows] = await db.execute(`SELECT eu.unavailability_id, eu.employee_id, eu.weekday, eu.start_time, eu.end_time
+                                        FROM employee_unavailability eu
+                                        WHERE eu.employee_id = ? AND eu.weekday = ? AND eu.start_time = ? AND eu.end_time = ?`, 
+                                        [employeeId, weekday, start, end]
         ); if (!rows.length) return res.status(404).json({ message: 'Recurring block not found' });
         
-        //only allow employees to delete their own unavailable time
-        if (role === 'EMPLOYEE') {
-            if (rows[0].user_id !== authUserId) {
-                return res.status(403).json({ message: 'You can only delete your own blocks' });
-            }
-        }
         //block found, now delete it
-        await db.execute(`DELETE FROM employee_unavailability WHERE unavailability_id = ? AND employee_id = ?`,[unavailabilityId, employeeId]);
+        await db.execute(`DELETE FROM employee_unavailability WHERE employee_id = ? AND weekday = ? AND start_time = ? AND end_time = ?`,
+                        [employeeId, weekday, start, end]);
 
         return res.status(200).json({ message: 'Recurring block deleted' });
     } catch (err) {
