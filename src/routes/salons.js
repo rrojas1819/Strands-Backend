@@ -23,4 +23,15 @@ router.post('/viewEmployees', authenticateToken, roleAuthorization(['OWNER']), s
 router.post('/configureLoyaltyProgram', authenticateToken, roleAuthorization(['OWNER']), salonController.configureLoyaltyProgram);
 router.patch('/updateLoyaltyProgram', authenticateToken, roleAuthorization(['OWNER']), salonController.updateLoyaltyProgram);
 
+// BS 1.0 - Salon Operating Hours
+
+//Technically anyone get the hours for a salon, but only owner can set the hours
+router.get('/getHours', authenticateToken, roleAuthorization(['OWNER','EMPLOYEE','CUSTOMER','ADMIN']), salonController.getSalonHours);
+router.post('/setHours', authenticateToken, roleAuthorization(['OWNER']), salonController.setSalonHours);
+
+// BS 1.0 - Employee Availability Management (Owner only)
+router.get('/getEmployees', authenticateToken, roleAuthorization(['OWNER']), salonController.getEmployees);
+router.post('/setEmployeeAvailability/:employeeId', authenticateToken, roleAuthorization(['OWNER']), salonController.setEmployeeAvailability);
+router.get('/getEmployeeAvailability/:employeeId', authenticateToken, roleAuthorization(['OWNER']), salonController.getEmployeeAvailability);
+
 module.exports = router;
