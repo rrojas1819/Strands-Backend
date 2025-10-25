@@ -4,8 +4,8 @@ const unavailabilityController = require('../controllers/unavailabilityControlle
 const {authenticateToken, roleAuthorization} = require('../middleware/auth.middleware');
 
 //BS 1.5 block unavailable time slots
-router.post('/:employeeId', authenticateToken, roleAuthorization(['EMPLOYEE']), unavailabilityController.createRecurringBlock);
-router.get('/:employeeId', authenticateToken, roleAuthorization(['EMPLOYEE']), unavailabilityController.listRecurringBlocks);
-router.delete('/:employeeId/:unavailabilityId', authenticateToken, roleAuthorization(['EMPLOYEE']), unavailabilityController.deleteRecurringBlock);
+router.post('/', authenticateToken, roleAuthorization(['EMPLOYEE']), unavailabilityController.createRecurringBlock);
+router.get('/', authenticateToken, roleAuthorization(['EMPLOYEE']), unavailabilityController.listRecurringBlocks);
+router.delete('/', authenticateToken, roleAuthorization(['EMPLOYEE']), unavailabilityController.deleteRecurringBlock);
 
 module.exports = router;
