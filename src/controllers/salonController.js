@@ -629,3 +629,310 @@ exports.setSalonHours = async (req, res) => {
       });
   }
 };
+
+// BS 1.0 - Set employee availability (Owner only)
+exports.setEmployeeAvailability = async (req, res) => {
+  const db = connection.promise();
+  
+  try {
+      const { employeeId } = req.params;
+      const { weekly_availability } = req.body;
+      const owner_user_id = req.user?.user_id;
+      
+      if (!weekly_availability || typeof weekly_availability !== 'object') {
+          return res.status(400).json({
+              message: 'weekly_availability object is required'
+          });
+      }
+      
+     
+      const getSalonQuery = 'SELECT salon_id FROM salons WHERE owner_user_id = ?';
+      const [salonResult] = await db.execute(getSalonQuery, [owner_user_id]);
+      
+   
+      
+       const salon_id = salonResult[0].salon_id;
+       
+       // Get salon operating hours for validation
+      const getSalonHoursQuery = `
+          SELECT weekday, start_time, end_time 
+          FROM salon_availability 
+          WHERE salon_id = ?
+      `;
+      const [salonHoursResult] = await db.execute(getSalonHoursQuery, [salon_id]);
+      
+      const salonHours = {};
+      salonHoursResult.forEach(hour => {
+          const dayName = Object.keys(WEEKDAY_TO_NUMBER).find(day => WEEKDAY_TO_NUMBER[day] === hour.weekday);
+          if (dayName) {
+              salonHours[dayName] = {
+                  start_time: hour.start_time,
+                  end_time: hour.end_time
+              };
+          }
+      });
+      
+      const results = [];
+      const errors = [];
+      
+      // Process each day
+      for (const [weekday, availability] of Object.entries(weekly_availability)) {
+          try {
+              // Safety check
+              if (!VALID_WEEKDAYS.includes(weekday.toUpperCase())) {
+                  errors.push(`${weekday}: Invalid weekday`);
+                  continue;
+              }
+              
+              // If the day is not available, delete it
+              if (!availability || availability === false || Object.keys(availability).length === 0) {
+                  const weekdayNumber = WEEKDAY_TO_NUMBER[weekday.toUpperCase()];
+                  const deleteQuery = `
+                      DELETE FROM employee_availability 
+                      WHERE employee_id = ? AND weekday = ?
+                  `;
+                  await db.execute(deleteQuery, [employeeId, weekdayNumber]);
+                  results.push({ weekday: weekday.toUpperCase(), action: 'removed' });
+                  continue;
+              }
+              
+              if (!availability.start_time || !availability.end_time) {
+                  errors.push(`${weekday}: start_time and end_time are required`);
+                  continue;
+              }
+              
+              // Validate times using Date
+              const today = new Date().toISOString().split('T')[0]; 
+              const startDate = new Date(`${today}T${availability.start_time}`);
+              const endDate = new Date(`${today}T${availability.end_time}`);
+              
+              if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+                  errors.push(`${weekday}: Invalid time format`);
+                  continue;
+              }
+              
+              if (startDate >= endDate) {
+                  errors.push(`${weekday}: start_time must be before end_time`);
+                  continue;
+              }
+              
+              // Check if salon is open on this day
+              const dayName = weekday.toUpperCase();
+              if (!salonHours[dayName]) {
+                  errors.push(`${weekday}: Salon is not open on this day`);
+                  continue;
+              }
+              
+              // Validate employee availability is within salon hours
+              const salonStart = new Date(`${today}T${salonHours[dayName].start_time}`);
+              const salonEnd = new Date(`${today}T${salonHours[dayName].end_time}`);
+              
+              if (startDate < salonStart || endDate > salonEnd) {
+                  errors.push(`${weekday}: Employee availability must be within salon operating hours (${salonHours[dayName].start_time} - ${salonHours[dayName].end_time})`);
+                  continue;
+              }
+              
+              // Format times for SQL (HH:MM:SS)
+              const normalizedStartTime = startDate.toTimeString().split(' ')[0];
+              const normalizedEndTime = endDate.toTimeString().split(' ')[0];
+              
+              const weekdayNumber = WEEKDAY_TO_NUMBER[weekday.toUpperCase()];
+              const checkExistingQuery = `
+                  SELECT availability_id FROM employee_availability 
+                  WHERE employee_id = ? AND weekday = ?
+              `;
+              const [existingResult] = await db.execute(checkExistingQuery, [employeeId, weekdayNumber]);
+              
+              // If the day already exists, update it
+              if (existingResult.length > 0) {
+                  const updateQuery = `
+                      UPDATE employee_availability 
+                      SET start_time = ?, end_time = ?, slot_interval_minutes = ?, updated_at = NOW()
+                      WHERE availability_id = ?
+                  `;
+                  await db.execute(updateQuery, [
+                      normalizedStartTime, 
+                      normalizedEndTime, 
+                      availability.slot_interval_minutes || 30,
+                      existingResult[0].availability_id
+                  ]);
+                  
+                  results.push({ 
+                      weekday: weekday.toUpperCase(), 
+                      action: 'updated',
+                      start_time: normalizedStartTime,
+                      end_time: normalizedEndTime,
+                      slot_interval_minutes: availability.slot_interval_minutes || 30
+                  });
+              } 
+              // If the day doesn't exist, create it
+              else {
+                  const insertQuery = `
+                      INSERT INTO employee_availability (employee_id, weekday, start_time, end_time, slot_interval_minutes, created_at, updated_at)
+                      VALUES (?, ?, ?, ?, ?, NOW(), NOW())
+                  `;
+                  await db.execute(insertQuery, [
+                      employeeId, 
+                      weekdayNumber, 
+                      normalizedStartTime, 
+                      normalizedEndTime,
+                      availability.slot_interval_minutes || 30
+                  ]);
+                  results.push({ 
+                      weekday: weekday.toUpperCase(), 
+                      action: 'created',
+                      start_time: normalizedStartTime,
+                      end_time: normalizedEndTime,
+                      slot_interval_minutes: availability.slot_interval_minutes || 30
+                  });
+              }
+              
+          } catch (dayError) {
+              errors.push(`${weekday}: ${dayError.message}`);
+          }
+      }
+      
+      if (errors.length > 0) {
+          return res.status(400).json({
+              message: 'Employee availability update failed',
+              errors: errors
+          });
+      }
+      
+       return res.status(200).json({
+           message: 'Employee availability updated successfully',
+           data: {
+               results
+           }
+       });
+      
+  } catch (error) {
+      console.error('setEmployeeAvailability error:', error);
+      return res.status(500).json({
+          message: 'Internal server error'
+      });
+  }
+};
+
+// BS 1.0 - Get employee availability (Owner only)
+exports.getEmployeeAvailability = async (req, res) => {
+  const db = connection.promise();
+  
+  try {
+      const { employeeId } = req.params;
+      const owner_user_id = req.user?.user_id;
+      
+
+      const getSalonQuery = 'SELECT salon_id FROM salons WHERE owner_user_id = ?';
+      const [salonResult] = await db.execute(getSalonQuery, [owner_user_id]);
+
+       const salon_id = salonResult[0].salon_id;
+       
+       // Get employee availability
+      const getAvailabilityQuery = `
+          SELECT availability_id, employee_id, weekday, start_time, end_time, slot_interval_minutes, created_at, updated_at
+          FROM employee_availability 
+          WHERE employee_id = ?
+          ORDER BY weekday
+      `;
+      const [availabilityResult] = await db.execute(getAvailabilityQuery, [employeeId]);
+      
+      // Get salon operating hours for context
+      const getSalonHoursQuery = `
+          SELECT weekday, start_time, end_time 
+          FROM salon_availability 
+          WHERE salon_id = ?
+      `;
+      const [salonHoursResult] = await db.execute(getSalonHoursQuery, [salon_id]);
+      
+      const salonHours = {};
+      salonHoursResult.forEach(hour => {
+          const dayName = Object.keys(WEEKDAY_TO_NUMBER).find(day => WEEKDAY_TO_NUMBER[day] === hour.weekday);
+          if (dayName) {
+              salonHours[dayName] = {
+                  start_time: hour.start_time,
+                  end_time: hour.end_time
+              };
+          }
+      });
+      
+      const weeklyAvailability = {};
+      
+      VALID_WEEKDAYS.forEach(day => {
+          weeklyAvailability[day] = {
+              is_available: false,
+              start_time: null,
+              end_time: null,
+              slot_interval_minutes: null,
+              salon_hours: salonHours[day] || null
+          };
+      });
+      
+      availabilityResult.forEach(avail => {
+          const dayName = Object.keys(WEEKDAY_TO_NUMBER).find(day => WEEKDAY_TO_NUMBER[day] === avail.weekday);
+          if (dayName) {
+              weeklyAvailability[dayName] = {
+                  is_available: true,
+                  start_time: avail.start_time,
+                  end_time: avail.end_time,
+                  slot_interval_minutes: avail.slot_interval_minutes,
+                  created_at: avail.created_at,
+                  updated_at: avail.updated_at,
+                  salon_hours: salonHours[dayName] || null
+              };
+          }
+      });
+      
+       return res.status(200).json({
+           data: {
+               employee_id: employeeId,
+               weekly_availability: weeklyAvailability
+           }
+       });
+      
+  } catch (error) {
+      console.error('getEmployeeAvailability error:', error);
+      return res.status(500).json({
+          message: 'Internal server error'
+      });
+  }
+};
+
+// BS 1.0 - Get all employees for owner
+exports.getEmployees = async (req, res) => {
+  const db = connection.promise();
+  
+  try {
+      const owner_user_id = req.user?.user_id;
+      
+      const getSalonQuery = 'SELECT salon_id FROM salons WHERE owner_user_id = ?';
+      const [salonResult] = await db.execute(getSalonQuery, [owner_user_id]);
+      
+
+      const salon_id = salonResult[0].salon_id;
+      
+  
+       const getEmployeesQuery = `
+           SELECT e.employee_id, e.title, e.active,
+                  u.full_name, u.email, u.phone, u.profile_picture_url
+           FROM employees e 
+           JOIN users u ON e.user_id = u.user_id 
+           WHERE e.salon_id = ? AND e.active = 1
+           ORDER BY u.full_name ASC
+       `;
+      const [employeesResult] = await db.execute(getEmployeesQuery, [salon_id]);
+      
+      return res.status(200).json({
+          data: {
+              salon_id: salon_id,
+              employees: employeesResult
+          }
+      });
+      
+  } catch (error) {
+      console.error('getEmployees error:', error);
+      return res.status(500).json({
+          message: 'Internal server error'
+      });
+  }
+};

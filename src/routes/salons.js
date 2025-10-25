@@ -29,4 +29,9 @@ router.patch('/updateLoyaltyProgram', authenticateToken, roleAuthorization(['OWN
 router.get('/getHours', authenticateToken, roleAuthorization(['OWNER','EMPLOYEE','CUSTOMER','ADMIN']), salonController.getSalonHours);
 router.post('/setHours', authenticateToken, roleAuthorization(['OWNER']), salonController.setSalonHours);
 
+// BS 1.0 - Employee Availability Management (Owner only)
+router.get('/getEmployees', authenticateToken, roleAuthorization(['OWNER']), salonController.getEmployees);
+router.post('/setEmployeeAvailability/:employeeId', authenticateToken, roleAuthorization(['OWNER']), salonController.setEmployeeAvailability);
+router.get('/getEmployeeAvailability/:employeeId', authenticateToken, roleAuthorization(['OWNER']), salonController.getEmployeeAvailability);
+
 module.exports = router;
