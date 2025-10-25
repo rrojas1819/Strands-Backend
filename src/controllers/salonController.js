@@ -229,7 +229,7 @@ exports.addEmployee = async (req, res) => {
       return res.status(400).json({ message: 'Invalid email format' });
     }
 
-    const checkEmployeeExistsQuery = `SELECT user_id FROM users WHERE email = ?`;
+    const checkEmployeeExistsQuery = `SELECT user_id FROM users WHERE email = ? AND role = 'EMPLOYEE'`;
     
     const [existingEmployee] = await db.execute(checkEmployeeExistsQuery, [email]);
 
