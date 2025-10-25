@@ -440,6 +440,34 @@ exports.updateLoyaltyProgram = async (req, res) => {
   }
 };
 
+// PLR 1.6 Get loyalty program
+exports.getLoyaltyProgram = async (req, res) => {
+  const db = connection.promise();
+
+  try {
+    const owner_user_id = req.user?.user_id;
+
+    const updateLoyaltyProgramQuery = 
+    `SELECT target_visits, discount_percentage, note, active FROM loyalty_programs WHERE salon_id = (SELECT salon_id FROM salons WHERE owner_user_id = ?)`;
+
+    const [result] = await db.execute(updateLoyaltyProgramQuery,[owner_user_id]);
+
+    if (result.length === 0) {
+      return res.status(404).json({ 
+        message: 'No loyalty program found' 
+      });
+    }
+
+    return res.status(200).json({ 
+      programData: result[0]
+    });
+
+  } catch (err) {
+    console.error('getLoyaltyProgram error:', err);
+    return res.status(500).json({ message: 'Internal Server Error' });
+  }
+};
+
 
 // BS 1.0 - Get salon operating hours
 exports.getSalonHours = async (req, res) => {
