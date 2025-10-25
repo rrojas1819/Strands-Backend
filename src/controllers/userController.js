@@ -299,7 +299,7 @@ exports.getStylistWeeklySchedule = async (req, res) => {
       SELECT b.booking_id, b.salon_id, b.customer_user_id, b.scheduled_start, b.scheduled_end, b.status, b.notes, b.created_at, b.updated_at
       FROM bookings b
       JOIN booking_services bs ON b.booking_id = bs.booking_id
-      WHERE bs.employee_id = ? AND b.status != 'CANCELED'
+      WHERE bs.employee_id = ?
       ORDER BY b.scheduled_start ASC
     `;
     const [bookingsResult] = await db.execute(getBookingsQuery, [employee_id]);
