@@ -21,28 +21,19 @@ exports.cancelBooking = async (req, res) => {
 
         //finding the booking (appointment) to cancel and locking it
         const [rows] = await db.execute(`SELECT booking_id, customer_user_id, scheduled_start, status
-                                    FROM bookings WHERE booking_id = ? AND customer_user_id = ?
+                                    FROM bookings WHERE booking_id = ? AND customer_user_id = ? AND status = 'SCHEDULED'
                                     FOR UPDATE`, [bookingId, authUserId]
         );
 
-        if (!rows.length) {
+        if (rows.length === 0) {
             await db.rollback();
             return res.status(404).json({ message: 'Booking not found' });
         }
 
         const booking = rows[0];
 
-        //check to only cancel SCHEDULED appointments
-        if (booking.status !== 'SCHEDULED') {
-            await db.rollback();
-            return res.status(400).json({ message: `Cannot cancel a ${booking.status.toLowerCase()} booking` });
-        }
-
         //update booking to CANCELLED in bookings
-        await db.execute(`UPDATE bookings SET status = 'CANCELED', updated_at = NOW() WHERE booking_id = ?`, [bookingId]);
-
-        //update booking to CANCELLED in booking_services
-        await db.execute(`UPDATE booking_services SET status = 'CANCELED', updated_at = NOW() WHERE booking_id = ?`, [bookingId]);
+        await db.execute(`UPDATE bookings SET status = 'CANCELED' WHERE booking_id = ?`, [bookingId]);
 
         //commit all db changes only if this point is reached, if a rollback is triggered then all changes do not take affect to keep synergy in db
         await db.commit();
