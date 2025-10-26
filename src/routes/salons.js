@@ -34,4 +34,8 @@ router.get('/getEmployees', authenticateToken, roleAuthorization(['OWNER']), sal
 router.post('/setEmployeeAvailability/:employeeId', authenticateToken, roleAuthorization(['OWNER']), salonController.setEmployeeAvailability);
 router.get('/getEmployeeAvailability/:employeeId', authenticateToken, roleAuthorization(['OWNER']), salonController.getEmployeeAvailability);
 
+// BS 1.1 - Customer booking endpoints
+router.get('/:salon_id/stylists', authenticateToken, roleAuthorization(['CUSTOMER']), salonController.getAvailableStylists);
+router.get('/:salon_id/stylists/:employee_id/timeslots', authenticateToken, roleAuthorization(['CUSTOMER']), salonController.getAvailableTimeSlotsRange);
+
 module.exports = router;

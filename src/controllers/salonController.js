@@ -898,7 +898,8 @@ exports.getEmployeeAvailability = async (req, res) => {
   }
 };
 
-// BS 1.0 - Get all employees for owner
+// BS 1.0 - Get all employees for owner 
+// a duplicate of viewEmployees technically, need to determine which to remove.
 exports.getEmployees = async (req, res) => {
   const db = connection.promise();
   
@@ -936,3 +937,295 @@ exports.getEmployees = async (req, res) => {
       });
   }
 };
+
+// BS 1.1 - Get available stylists for a salon (Customer view)
+exports.getAvailableStylists = async (req, res) => {
+  const db = connection.promise();
+  
+  try {
+      const { salon_id } = req.params;
+      
+      if (!salon_id || isNaN(salon_id)) {
+          return res.status(400).json({ message: 'Invalid salon_id' });
+      }
+      
+      // Get salon information
+      const getSalonQuery = 'SELECT salon_id, name, status FROM salons WHERE salon_id = ?';
+      const [salonResult] = await db.execute(getSalonQuery, [salon_id]);
+      
+      //Should never occur but just in case
+      if (salonResult.length === 0) {
+          return res.status(404).json({ message: 'Salon not found' });
+      }
+      
+      
+      // Get active stylists for this salon
+      const getStylistsQuery = `
+          SELECT e.employee_id, e.title, e.active,
+                 u.full_name, u.email, u.phone, u.profile_picture_url
+          FROM employees e 
+          JOIN users u ON e.user_id = u.user_id 
+          WHERE e.salon_id = ? AND e.active = 1
+          ORDER BY u.full_name ASC
+      `;
+      const [stylistsResult] = await db.execute(getStylistsQuery, [salon_id]);
+      
+      return res.status(200).json({
+          data: {
+              salon: {
+                  salon_id: salonResult[0].salon_id,
+                  name: salonResult[0].name,
+                  status: salonResult[0].status
+              },
+              stylists: stylistsResult
+          }
+      });
+      
+  } catch (error) {
+      console.error('getAvailableStylists error:', error);
+      return res.status(500).json({
+          message: 'Internal server error'
+      });
+  }
+};
+
+
+// BS 1.1 - Get available time slots for a stylist (multiple days)
+exports.getAvailableTimeSlotsRange = async (req, res) => {
+  const db = connection.promise();
+  
+  try {
+      const { salon_id, employee_id } = req.params;
+      const { start_date, end_date, days = 7 } = req.query;
+      
+      if (!salon_id || isNaN(salon_id) || !employee_id || isNaN(employee_id)) {
+          return res.status(400).json({ message: 'Missing required fields: salon_id or employee_id' });
+      }
+    
+      
+      // Determine date range
+      let startDate, endDate;
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const dayInMs = 24 * 60 * 60 * 1000;
+      
+      if (start_date && end_date) {
+          startDate = new Date(start_date + 'T00:00:00');
+          endDate = new Date(end_date + 'T00:00:00');
+      } else if (start_date) {
+          startDate = new Date(start_date + 'T00:00:00');
+          endDate = new Date(startDate.getTime() + (parseInt(days) - 1) * dayInMs);
+      } else {
+          // Default to next 7 days from today
+          startDate = new Date(today);
+          endDate = new Date(today.getTime() + (parseInt(days) - 1) * dayInMs);
+      }
+      
+      // Validate dates
+      if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+          return res.status(400).json({ message: 'Invalid date format. Use YYYY-MM-DD' });
+      }
+      
+      if (startDate < today) {
+          return res.status(400).json({ message: 'Start date cannot be in the past' });
+      }
+      
+      if (endDate < startDate) {
+          return res.status(400).json({ message: 'End date must be on or after start date' });
+      }
+      
+      // Limit to max range (30 days)
+      const maxDays = 30;
+      const daysDiff = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24)) + 1;
+      if (daysDiff > maxDays) {
+          return res.status(400).json({ message: `Date range cannot exceed ${maxDays} days` });
+      }
+      
+      // Verify salon exists and is approved
+      const getSalonQuery = 'SELECT salon_id, name, status FROM salons WHERE salon_id = ?';
+      const [salonResult] = await db.execute(getSalonQuery, [salon_id]);
+      
+      if (salonResult.length === 0) {
+          return res.status(404).json({ message: 'Salon not found' });
+      }
+      //This should never occur but just in case
+      if (salonResult[0].status !== 'APPROVED') {
+          return res.status(403).json({ message: 'Salon is not available for booking' });
+      }
+      
+      // Verify stylist exists and is active
+      const getEmployeeQuery = `
+          SELECT e.employee_id, e.title, u.full_name
+          FROM employees e 
+          JOIN users u ON e.user_id = u.user_id 
+          WHERE e.employee_id = ? AND e.salon_id = ? AND e.active = 1
+      `;
+      const [employeeResult] = await db.execute(getEmployeeQuery, [employee_id, salon_id]);
+      
+      if (employeeResult.length === 0) {
+          return res.status(404).json({ message: 'Stylist not found or not available' });
+      }
+      
+      // Get all employee availability
+      const getAvailabilityQuery = `
+          SELECT weekday, start_time, end_time, slot_interval_minutes
+          FROM employee_availability 
+          WHERE employee_id = ?
+          ORDER BY weekday
+      `;
+      const [availabilityResult] = await db.execute(getAvailabilityQuery, [employee_id]);
+      
+      // Get all employee unavailability
+      const getUnavailabilityQuery = `
+          SELECT weekday, start_time, end_time
+          FROM employee_unavailability 
+          WHERE employee_id = ?
+          ORDER BY weekday, start_time
+      `;
+      const [unavailabilityResult] = await db.execute(getUnavailabilityQuery, [employee_id]);
+      
+      // Get existing bookings for the date range
+      const getBookingsQuery = `
+          SELECT DISTINCT b.scheduled_start, b.scheduled_end, b.status
+          FROM bookings b
+          JOIN booking_services bs ON b.booking_id = bs.booking_id
+          WHERE bs.employee_id = ? 
+          AND b.scheduled_start >= ? 
+          AND b.scheduled_start < DATE_ADD(?, INTERVAL 1 DAY)
+          AND b.status NOT IN ('CANCELLED', 'NO_SHOW')
+          ORDER BY b.scheduled_start
+      `;
+      const [bookingsResult] = await db.execute(getBookingsQuery, [employee_id, startDate.toISOString().split('T')[0] + ' 00:00:00', endDate.toISOString().split('T')[0] + ' 00:00:00']);
+      
+      // Create availability map by weekday
+      const availabilityMap = {};
+      availabilityResult.forEach(avail => {
+          availabilityMap[avail.weekday] = avail;
+      });
+      
+      // Create unavailability map by weekday
+      const unavailabilityMap = {};
+      unavailabilityResult.forEach(unavail => {
+          if (!unavailabilityMap[unavail.weekday]) {
+              unavailabilityMap[unavail.weekday] = [];
+          }
+          unavailabilityMap[unavail.weekday].push(unavail);
+      });
+      
+      // Create bookings map by date
+      const bookingsMap = {};
+      bookingsResult.forEach(booking => {
+          // Extract date without timezone conversion to avoid date shifting
+          const bookingDateObj = new Date(booking.scheduled_start);
+          const bookingDate = bookingDateObj.toISOString().split('T')[0];
+          (bookingsMap[bookingDate] ||= []).push(booking);
+      });
+      
+      // Generate time slots for each day
+      const dailySlots = {};
+      const currentDate = new Date(startDate);
+      
+      while (currentDate <= endDate) {
+          const dateStr = currentDate.toISOString().split('T')[0];
+          const dayOfWeek = currentDate.getDay();
+          const dayName = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][dayOfWeek];
+          
+          const availability = availabilityMap[dayOfWeek];
+          const unavailability = unavailabilityMap[dayOfWeek] || [];
+          const bookings = bookingsMap[dateStr] || [];
+          
+          if (!availability) {
+              dailySlots[dateStr] = {
+                  date: dateStr,
+                  day_name: dayName,
+                  available_slots: [],
+                  message: 'No availability set for this day'
+              };
+          } else {
+              const availableSlots = [];
+              const slotInterval = availability.slot_interval_minutes || 30;
+              
+              const startTime = new Date(`${dateStr}T${availability.start_time}`);
+              const endTime = new Date(`${dateStr}T${availability.end_time}`);
+              
+              let currentTime = new Date(startTime);
+              
+              while (currentTime < endTime) {
+                  const slotStart = new Date(currentTime);
+                  const slotEnd = new Date(currentTime.getTime() + slotInterval * 60000);
+                  
+                  // Check conflict with unavailability
+                  const isBlocked = unavailability.some(block => {
+                      const blockStart = new Date(`${dateStr}T${block.start_time}`);
+                      const blockEnd = new Date(`${dateStr}T${block.end_time}`);
+                      return slotStart < blockEnd && slotEnd > blockStart;
+                  });
+                  
+                  // Check conflict with existing bookings
+                  const isBooked = bookings.some(booking => {
+                      const bookingStart = new Date(booking.scheduled_start);
+                      const bookingEnd = new Date(booking.scheduled_end);
+                      return slotStart < bookingEnd && slotEnd > bookingStart;
+                  });
+                  
+                  // Check if this slot is in the past (for current day or past dates)
+                  const now = new Date();
+                  const todayStr = now.toISOString().split('T')[0];
+                  const isCurrentDay = dateStr === todayStr;
+                  const isPastDate = dateStr < todayStr;
+                  const isPastSlot = (isCurrentDay && slotStart < now) || isPastDate;
+                  
+                  if (!isBlocked && !isBooked && !isPastSlot) {
+                      const timeStr = slotStart.toTimeString().split(' ')[0].substring(0, 5);
+                      const endTimeStr = slotEnd.toTimeString().split(' ')[0].substring(0, 5);
+                      availableSlots.push({
+                          start_time: timeStr,
+                          end_time: endTimeStr,
+                          available: true
+                      });
+                  }
+                  
+                  currentTime = new Date(currentTime.getTime() + slotInterval * 60000);
+              }
+              
+              dailySlots[dateStr] = {
+                  date: dateStr,
+                  day_name: dayName,
+                  availability: {
+                      start_time: availability.start_time,
+                      end_time: availability.end_time,
+                      slot_interval_minutes: slotInterval
+                  },
+                  available_slots: availableSlots,
+                  total_slots: availableSlots.length
+              };
+          }
+          
+          currentDate.setDate(currentDate.getDate() + 1);
+      }
+      
+      return res.status(200).json({
+          data: {
+              stylist: {
+                  employee_id: employee_id,
+                  name: employeeResult[0].full_name,
+                  title: employeeResult[0].title
+              },
+              date_range: {
+                  start_date: startDate.toISOString().split('T')[0],
+                  end_date: endDate.toISOString().split('T')[0],
+                  total_days: daysDiff
+              },
+              daily_slots: dailySlots
+          }
+      });
+      
+  } catch (error) {
+      console.error('getAvailableTimeSlotsRange error:', error);
+      return res.status(500).json({
+          message: 'Internal server error'
+      });
+  }
+};
+
+// BS 1.1 - Book a time slot for a customer 
