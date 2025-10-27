@@ -225,9 +225,54 @@ exports.browseSalons = async (req, res) => {
                               s.status, s.created_at, s.updated_at FROM salons s ${whereSql} ${orderBy} LIMIT ${limit} OFFSET ${offset}`;
     const [rows] = await db.execute(listSql, params);
     
+    const salonIds = rows.map(row => row.salon_id);
+    let salonHours = {};
+    
+    if (salonIds.length > 0) {
+      const placeholders = salonIds.map(() => '?').join(',');
+      const getAvailabilityQuery = `
+        SELECT salon_id, weekday, start_time, end_time
+        FROM salon_availability 
+        WHERE salon_id IN (${placeholders})
+        ORDER BY salon_id, weekday
+      `;
+      const [availabilityResult] = await db.execute(getAvailabilityQuery, salonIds);
+      
+      salonHours = salonIds.reduce((acc, id) => {
+        acc[id] = {};
+        return acc;
+      }, {});
+      
+      salonIds.forEach(id => {
+        VALID_WEEKDAYS.forEach(day => {
+          salonHours[id][day] = {
+            is_open: false,
+            start_time: null,
+            end_time: null
+          };
+        });
+      });
+      
+      availabilityResult.forEach(avail => {
+        const dayName = Object.keys(WEEKDAY_TO_NUMBER).find(day => WEEKDAY_TO_NUMBER[day] === avail.weekday);
+        if (dayName && salonHours[avail.salon_id]) {
+          salonHours[avail.salon_id][dayName] = {
+            is_open: true,
+            start_time: avail.start_time,
+            end_time: avail.end_time
+          };
+        }
+      });
+    }
+      
+    const rowsWithHours = rows.map(row => ({
+      ...row,
+      weekly_hours: salonHours[row.salon_id] || {}
+    }));
+    
     //returning salons
     return res.status(200).json({
-      data: rows,
+      data: rowsWithHours,
       meta: {total, limit, offset, hasMore: offset + rows.length < total},
       ...(isAdmin ? { counts } : {})
     });
