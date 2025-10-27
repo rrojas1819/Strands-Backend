@@ -1804,7 +1804,7 @@ exports.bookTimeSlot = async (req, res) => {
 
   try {
     const { salon_id, employee_id } = req.params;
-    const { scheduled_start, scheduled_end, services, notes = '' } = req.body;
+    const { scheduled_start, services, notes = '' } = req.body;
     const customer_user_id = req.user?.user_id;
 
 
@@ -1812,33 +1812,52 @@ exports.bookTimeSlot = async (req, res) => {
     if (!salon_id || isNaN(salon_id) || !employee_id || isNaN(employee_id)) {
       return res.status(400).json({ message: 'Invalid salon_id or employee_id' });
     }
-    if (!scheduled_start || !scheduled_end) {
-      return res.status(400).json({ message: 'scheduled_start and scheduled_end are required' });
+    if (!scheduled_start) {
+      return res.status(400).json({ message: 'scheduled_start is required' });
     }
     if (!services || !Array.isArray(services) || services.length === 0) {
       return res.status(400).json({ message: 'At least one service is required' });
     }
 
-
-
     // Parse as Date and keep everything in LOCAL time (same as weekly schedule)
     const startDate = new Date(scheduled_start);
-    const endDate   = new Date(scheduled_end);
 
-    if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+    if (isNaN(startDate.getTime())) {
       return res.status(400).json({
         message: 'Invalid date format. EX: "2025-10-28T13:00:00"'
       });
     }
-    if (startDate >= endDate) {
-      return res.status(400).json({ message: 'scheduled_start must be before scheduled_end' });
-    }
+    
     const now = new Date();
     if (startDate < now) {
       return res.status(400).json({ message: 'Cannot book appointments in the past' });
     }
 
-    
+    const serviceIds = services.map(s => s.service_id);
+    const placeholders = serviceIds.map(() => '?').join(',');
+    const [serviceDetails] = await db.execute(
+      `SELECT service_id, duration_minutes, price, salon_id, name
+       FROM services
+       WHERE service_id IN (${placeholders})`,
+      serviceIds
+    );
+
+    if (serviceDetails.length !== serviceIds.length) {
+      return res.status(400).json({ message: 'One or more services not found' });
+    }
+
+    for (const s of serviceDetails) {
+      if (s.salon_id !== parseInt(salon_id)) {
+        return res.status(400).json({ message: `Service ${s.name} does not belong to this salon` });
+      }
+    }
+
+    const totalDurationMinutes = serviceDetails.reduce((sum, s) => sum + s.duration_minutes, 0);
+    const endDate = new Date(startDate.getTime() + totalDurationMinutes * 60 * 1000);
+
+    // Create detailsById mapping for later use
+    const detailsById = {};
+    serviceDetails.forEach(s => { detailsById[s.service_id] = s; });
 
     const [employeeResult] = await db.execute(
       `SELECT e.employee_id, e.title, u.full_name
@@ -1851,7 +1870,7 @@ exports.bookTimeSlot = async (req, res) => {
 
     // Pull all weekday availability for stylist
     const [availabilityResult] = await db.execute(
-      `SELECT weekday, start_time, end_time, slot_interval_minutes
+      `SELECT weekday, start_time, end_time
        FROM employee_availability
        WHERE employee_id = ?`,
       [employee_id]
@@ -1883,26 +1902,6 @@ exports.bookTimeSlot = async (req, res) => {
       return res.status(400).json({
         message: `Booking time must be within stylist's availability (${dayAvailability.start_time} - ${dayAvailability.end_time})`
       });
-    }
-
-
-    // Slot Availability Check/alignment check
-    if (dayAvailability.slot_interval_minutes && Number(dayAvailability.slot_interval_minutes) > 0) {
-      const stepMs = Number(dayAvailability.slot_interval_minutes) * 60_000;
-      const baseMs = availStart.getTime();
-
-      // Check start time aligns with the slot interval
-      const startAligned = (startDate.getTime() - baseMs) % stepMs === 0;
-
-      // Check the duration aligns with the slot interval
-      const durationMs = endDate.getTime() - startDate.getTime();
-      const durationAligned = durationMs % stepMs === 0;
-      
-      if (!startAligned || !durationAligned) {
-        return res.status(400).json({
-          message: `Requested time must align with ${dayAvailability.slot_interval_minutes}-minute slots (start time and duration must be multiples of ${dayAvailability.slot_interval_minutes} minutes)`
-        });
-      }
     }
 
     // Unavailability overlap
@@ -1988,27 +1987,10 @@ exports.bookTimeSlot = async (req, res) => {
       );
 
       const booking_id = bookingResult.insertId;
-      const serviceIds = services.map(s => s.service_id);
-      const placeholders = serviceIds.map(() => '?').join(',');
-      const [serviceDetails] = await db.execute(
-        `SELECT service_id, duration_minutes, price, salon_id, name
-         FROM services
-         WHERE service_id IN (${placeholders})`,
-        serviceIds
-      );
-      
-      const detailsById = {};
-      serviceDetails.forEach(s => { detailsById[s.service_id] = s; });
 
       // Link services to booking
       for (const s of services) {
-        //Valid check because it requires the frontend to send a service_id
-        if (!s.service_id) throw new Error('Each service must have a service_id'); 
         const sd = detailsById[s.service_id];
-        if (!sd) throw new Error(`Service ${s.service_id} not found`);
-        if (sd.salon_id !== parseInt(salon_id)) {
-          throw new Error(`Service ${sd.name} does not belong to this salon`);
-        }
         await db.execute(
           `INSERT INTO booking_services
              (booking_id, employee_id, service_id, price, duration_minutes, created_at, updated_at)
@@ -2040,6 +2022,7 @@ exports.bookTimeSlot = async (req, res) => {
           services: services.map(s => ({
             service_id: s.service_id,
             service_name: detailsById[s.service_id].name,
+            duration_minutes: detailsById[s.service_id].duration_minutes,
             price: Number(detailsById[s.service_id].price)
           })),
           total_price: totalPrice,
