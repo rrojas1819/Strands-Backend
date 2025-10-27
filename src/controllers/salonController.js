@@ -1690,9 +1690,6 @@ exports.browseSalonServices = async (req, res) => {
       return res.status(404).json({ message: 'Salon not found' });
     }
     
-    if (salonResult[0].status !== 'APPROVED') {
-      return res.status(403).json({ message: 'Salon is not available' });
-    }
     
     const getServicesQuery = `
       SELECT service_id, name, description, duration_minutes, price, active, created_at, updated_at
