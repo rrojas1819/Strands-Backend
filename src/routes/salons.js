@@ -35,4 +35,20 @@ router.get('/getEmployees', authenticateToken, roleAuthorization(['OWNER']), sal
 router.post('/setEmployeeAvailability/:employeeId', authenticateToken, roleAuthorization(['OWNER']), salonController.setEmployeeAvailability);
 router.get('/getEmployeeAvailability/:employeeId', authenticateToken, roleAuthorization(['OWNER']), salonController.getEmployeeAvailability);
 
+
+// BS 1.01 - Stylist service management(Employee only)
+router.post('/stylist/createService', authenticateToken, roleAuthorization(['EMPLOYEE']), salonController.createAndAddServiceToStylist);
+router.patch('/stylist/updateService/:service_id', authenticateToken, roleAuthorization(['EMPLOYEE']), salonController.updateServiceFromStylist);
+router.delete('/stylist/removeService/:service_id', authenticateToken, roleAuthorization(['EMPLOYEE']), salonController.removeServiceFromStylist);
+router.get('/stylist/myServices', authenticateToken, roleAuthorization(['EMPLOYEE']), salonController.getStylistServices);
+
+
+// BS 1.1 - Customer booking endpoints
+router.get('/:salon_id/stylists', authenticateToken, roleAuthorization(['CUSTOMER']), salonController.getAvailableStylists);
+router.get('/:salon_id/stylists/:employee_id/timeslots', authenticateToken, roleAuthorization(['CUSTOMER']), salonController.getAvailableTimeSlotsRange);
+router.get('/:salon_id/stylists/:employee_id/services', authenticateToken, roleAuthorization(['CUSTOMER']), salonController.getStylistServices);
+router.post('/:salon_id/stylists/:employee_id/book', authenticateToken, roleAuthorization(['CUSTOMER']), salonController.bookTimeSlot);
+router.get('/:salon_id/services', authenticateToken, roleAuthorization(['CUSTOMER']), salonController.browseSalonServices);
+
+router.get('/information', authenticateToken, roleAuthorization(['OWNER']), salonController.getSalonInformation);
 module.exports = router;

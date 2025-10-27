@@ -4,6 +4,9 @@ const connection = require('../config/databaseConnection');
 const { generateToken } = require('../middleware/auth.middleware');
 const { validateEmail } = require('../utils/utilies');
 
+// Global constants
+const DAYS_OF_WEEK = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'];
+
 // User Sign Up
 exports.signUp = async (req, res) => {
     const db = connection.promise();
@@ -272,11 +275,12 @@ exports.getStylistWeeklySchedule = async (req, res) => {
     }
 
 
-    // Get employee_id from user_id
-    const getEmployeeQuery = 'SELECT employee_id FROM employees WHERE user_id = ? AND active = 1';
+    // Get employee_id and salon_id from user_id
+    const getEmployeeQuery = 'SELECT employee_id, salon_id FROM employees WHERE user_id = ? AND active = 1';
     const [employeeResult] = await db.execute(getEmployeeQuery, [user_id]);
 
     const employee_id = employeeResult[0].employee_id;
+    const salon_id = employeeResult[0].salon_id;
 
     const getAvailabilityQuery = `
       SELECT availability_id, employee_id, weekday, start_time, end_time, slot_interval_minutes, created_at, updated_at 
@@ -294,6 +298,27 @@ exports.getStylistWeeklySchedule = async (req, res) => {
     `;
     const [unavailabilityResult] = await db.execute(getUnavailabilityQuery, [employee_id]);
 
+    const getSalonHoursQuery = `
+      SELECT weekday, start_time, end_time 
+      FROM salon_availability 
+      WHERE salon_id = ?
+    `;
+    const [salonHoursResult] = await db.execute(getSalonHoursQuery, [salon_id]);
+
+    const weekdayMap = { 0: 'SUNDAY', 1: 'MONDAY', 2: 'TUESDAY', 3: 'WEDNESDAY', 4: 'THURSDAY', 5: 'FRIDAY', 6: 'SATURDAY' };
+
+    // Create salon hours map by weekday
+    const salonHoursMap = {};
+    salonHoursResult.forEach(hour => {
+      const dayName = weekdayMap[hour.weekday];
+      if (dayName) {
+        salonHoursMap[dayName] = {
+          start_time: hour.start_time,
+          end_time: hour.end_time
+        };
+      }
+    });
+
     // Get all non-cancelled bookings
     const getBookingsQuery = `
       SELECT b.booking_id, b.salon_id, b.customer_user_id, b.scheduled_start, b.scheduled_end, b.status, b.notes, b.created_at, b.updated_at
@@ -304,18 +329,15 @@ exports.getStylistWeeklySchedule = async (req, res) => {
     `;
     const [bookingsResult] = await db.execute(getBookingsQuery, [employee_id]);
 
-    const daysOfWeek = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'];
     const weeklySchedule = {};
 
-    daysOfWeek.forEach(day => {
+    DAYS_OF_WEEK.forEach(day => {
       weeklySchedule[day] = {
         availability: null,
         unavailability: [],
         bookings: []
       };
     });
-
-    const weekdayMap = { 0: 'SUNDAY', 1: 'MONDAY', 2: 'TUESDAY', 3: 'WEDNESDAY', 4: 'THURSDAY', 5: 'FRIDAY', 6: 'SATURDAY' };
     availabilityResult.forEach(avail => {
       const dayName = weekdayMap[avail.weekday];
       if (weeklySchedule[dayName]) {
@@ -329,22 +351,46 @@ exports.getStylistWeeklySchedule = async (req, res) => {
     });
 
     // Map unavailability data to days (convert weekday number to day name)
+    // Filter out unavailability periods that fall outside salon operating hours AND employee availability 
     unavailabilityResult.forEach(unavail => {
       const dayName = weekdayMap[unavail.weekday];
       if (weeklySchedule[dayName]) {
-        weeklySchedule[dayName].unavailability.push({
-          unavailability_id: unavail.unavailability_id,
-          start_time: unavail.start_time,
-          end_time: unavail.end_time,
-          slot_interval_minutes: unavail.slot_interval_minutes
-        });
+        // Check if salon is open on this day
+        const salonHours = salonHoursMap[dayName];
+        const employeeAvailability = weeklySchedule[dayName].availability;
+        
+        if (salonHours && employeeAvailability) {
+          // Check if unavailability period overlaps with salon operating hours
+          const salonStart = salonHours.start_time;
+          const salonEnd = salonHours.end_time;
+          const unavailStart = unavail.start_time;
+          const unavailEnd = unavail.end_time;
+          
+          // Check if unavailability period overlaps with employee availability
+          const empStart = employeeAvailability.start_time;
+          const empEnd = employeeAvailability.end_time;
+          
+          // Only include unavailability if it overlaps with both salon hours AND employee availability
+          const overlapsSalonHours = unavailStart < salonEnd && unavailEnd > salonStart;
+          const overlapsEmployeeAvailability = unavailStart < empEnd && unavailEnd > empStart;
+          
+          if (overlapsSalonHours && overlapsEmployeeAvailability) {
+            weeklySchedule[dayName].unavailability.push({
+              unavailability_id: unavail.unavailability_id,
+              start_time: unavail.start_time,
+              end_time: unavail.end_time,
+              slot_interval_minutes: unavail.slot_interval_minutes
+            });
+          }
+        }
+        // If salon is closed or employee has no availability on this day, don't include any unavailability
       }
     });
 
     // Map bookings to days based on scheduled_start date
     bookingsResult.forEach(booking => {
       const bookingDate = new Date(booking.scheduled_start);
-      const dayName = daysOfWeek[bookingDate.getDay() === 0 ? 6 : bookingDate.getDay() - 1]; // Convert JS day to our Monday-Sunday format
+      const dayName = DAYS_OF_WEEK[bookingDate.getDay() === 0 ? 6 : bookingDate.getDay() - 1]; // Convert JS day to our Monday-Sunday format
       
       if (weeklySchedule[dayName]) {
         const startTime = new Date(booking.scheduled_start).toTimeString().split(' ')[0];
