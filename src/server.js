@@ -15,6 +15,7 @@ process.on('uncaughtException', (err) => {
 
 // Get Routes
 const healthRoutes = require('./routes/health');
+const employeeRoutes = require('./routes/employees');
 
 // Database Connection
 const db = require('./config/databaseConnection');
@@ -28,6 +29,7 @@ app.use(express.json());
 
 //Use Routes
 app.use('/api', healthRoutes);
+app.use('/api', employeeRoutes);
 
 
 // Start Server
