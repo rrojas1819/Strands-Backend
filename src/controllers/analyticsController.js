@@ -1,6 +1,38 @@
 require('dotenv').config();
 const connection = require('../config/databaseConnection');
 
+// AFVD 1.1 User Engagement
+exports.userEngagement = async (req, res) => {
+    const db = connection.promise();
+
+    try {
+        const checkUserQuery = `
+        SELECT 
+        (SELECT COUNT(*) FROM users WHERE DATE(last_login_at) = CURDATE()) as today_logins,
+        (SELECT COUNT(*) FROM users WHERE DATE(last_login_at) = CURDATE() - INTERVAL 1 DAY) as yesterday_logins,
+        (SELECT COUNT(*) FROM users WHERE last_login_at >= CURDATE() - INTERVAL 7 DAY AND last_login_at <  CURDATE()) AS past_week_logins,
+        (SELECT COUNT(*) FROM users WHERE last_login_at >= CURDATE() - INTERVAL 14 DAY AND last_login_at <  CURDATE() - INTERVAL 7 DAY) AS previous_week_logins,
+        (SELECT COUNT(*) FROM bookings) as total_bookings,
+        (SELECT COUNT(*) AS total_repeat_users FROM ( SELECT salon_id, customer_user_id FROM bookings WHERE status IN ('SCHEDULED', 'COMPLETED') GROUP BY salon_id, customer_user_id HAVING COUNT(*) >= 2) AS repeats) AS repeat_bookers;
+        `;
+        const [results] = await db.execute(checkUserQuery);
+
+        const top3ServicesQuery = `(SELECT s.name, COUNT(*) AS total_bookings FROM booking_services bs JOIN bookings b ON bs.booking_id = b.booking_id JOIN services s ON s.service_id = bs.service_id WHERE b.status IN ('SCHEDULED', 'COMPLETED') GROUP BY s.name ORDER BY total_bookings DESC LIMIT 3);`;
+        const [top3Services] = await db.execute(top3ServicesQuery);
+
+        const top3ViewedSalonsQuery = `SELECT s.name, sc.clicks FROM salon_clicks sc JOIN salons s ON s.salon_id = sc.salon_id WHERE event_name = 'view_details_click' ORDER BY clicks DESC LIMIT 3;`;
+        const [top3ViewedSalons] = await db.execute(top3ViewedSalonsQuery);
+
+        res.status(200).json({
+            data: { ...results[0], top3Services, top3ViewedSalons }
+        });
+    } catch (error) {
+        res.status(500).json({
+            message: "Internal server error"
+        });
+    }
+};
+
 // AFDV 1.5 User demographics
 exports.demographics = async (req, res) => {
     const db = connection.promise();

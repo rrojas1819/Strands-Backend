@@ -2094,3 +2094,31 @@ exports.getSalonInformation = async (req, res) => {
     return res.status(500).json({ message: 'Internal server error' });
   }
 };
+
+// AFDV 1.1 Track Salon Event
+exports.trackSalonEvent = async (req, res) => {
+  const db = connection.promise();
+
+  try {
+    const { salon_id, event_name, amount } = req.body; 
+    
+    if (!salon_id || !event_name || isNaN(amount)) {
+      return res.status(400).json({ message: 'Invalid fields.' });
+    }
+
+    const trackSalonEventQuery = 
+    `INSERT INTO salon_clicks (event_name, salon_id, clicks)
+    VALUES (?, ?, ?)
+    ON DUPLICATE KEY UPDATE clicks = clicks + VALUES(clicks);`;
+
+    const [salonResult] = await db.execute(trackSalonEventQuery, [event_name, salon_id, amount]);
+
+    return res.status(200).json({ 
+      message: 'Event tracked successfully.'
+    });
+    
+  } catch (error) {
+    console.error('trackSalonEvent error:', error);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+};
