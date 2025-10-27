@@ -15,25 +15,23 @@ exports.rescheduleBooking = async (req, res) => {
     const db = connection.promise();
 
     try {
-        //get auth user and booking ID w/ start/end times
+        //get auth user and booking ID w/ start time
         const customer_user_id = req.user?.user_id;
-        const { booking_id, scheduled_start, scheduled_end } = req.body;
+        const { booking_id, scheduled_start } = req.body;
 
         //validation
         if (!customer_user_id) return res.status(401).json({ message: 'Unauthorized' });
         if (!booking_id || isNaN(booking_id)) return res.status(400).json({ message: 'Invalid booking_id' });
-        if (!scheduled_start || !scheduled_end) return res.status(400).json({ message: 'scheduled_start and scheduled_end are required' });
+        if (!scheduled_start) return res.status(400).json({ message: 'scheduled_start is required' });
 
         // Parse as Date and keep everything in LOCAL time (same as weekly schedule)
         const startDate = new Date(scheduled_start);
-        const endDate = new Date(scheduled_end);
 
-        if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+        if (isNaN(startDate.getTime())) {
             return res.status(400).json({
                 message: 'Invalid date format. EX: "2025-10-28T13:00:00"'
             });
         }
-        if (startDate >= endDate) return res.status(400).json({ message: 'scheduled_start must be before scheduled_end' });
 
         const now = new Date();
         if (startDate < now) return res.status(400).json({ message: 'Cannot reschedule to a past time' });
@@ -45,6 +43,14 @@ exports.rescheduleBooking = async (req, res) => {
         );
         if (bkRows.length === 0) return res.status(404).json({ message: 'Booking not found or not reschedulable' });
 
+        const [servicesRows] = await db.execute(`SELECT service_id, duration_minutes FROM booking_services
+                                      WHERE booking_id = ?`, [Number(booking_id)]
+        );
+        if (servicesRows.length === 0) return res.status(400).json({ message: 'No services found for this booking' });
+
+        const totalDurationMinutes = servicesRows.reduce((sum, s) => sum + s.duration_minutes, 0);
+        const endDate = new Date(startDate.getTime() + totalDurationMinutes * 60 * 1000);
+
         //get assigned employees
         const [bsRows] = await db.execute(`SELECT DISTINCT employee_id FROM booking_services
                                       WHERE booking_id = ?`, [Number(booking_id)]
@@ -52,20 +58,22 @@ exports.rescheduleBooking = async (req, res) => {
         if (bsRows.length === 0) return res.status(400).json({ message: 'No stylist assigned to this booking' });
         const employeeIds = bsRows.map(r => r.employee_id);
 
+        const bookingDayOfWeek = startDate.getDay();
+
         // Build local YYYY-MM-DD for the booking date
         const y = startDate.getFullYear();
         const m = String(startDate.getMonth() + 1).padStart(2, '0');
         const d = String(startDate.getDate()).padStart(2, '0');
         const dayStr = `${y}-${m}-${d}`;
-        const bookingDayOfWeek = startDate.getDay();
 
-        //always use toLocal
+        // Format local DATETIME strings
         const requestStartStr = toLocalSQL(startDate);
         const requestEndStr = toLocalSQL(endDate);
 
         //check all employees availability
         for (const empId of employeeIds) {
-            const [availRows] = await db.execute(`SELECT weekday, start_time, end_time, slot_interval_minutes
+            // Pull all weekday availability for stylist
+            const [availRows] = await db.execute(`SELECT weekday, start_time, end_time
                                            FROM employee_availability WHERE employee_id = ?`, [empId]
             );
             if (availRows.length === 0) return res.status(400).json({ message: 'Stylist has no availability set' });
@@ -79,48 +87,29 @@ exports.rescheduleBooking = async (req, res) => {
             const availEnd = new Date(`${dayStr}T${dayAvailability.end_time}`);
             if (startDate < availStart || endDate > availEnd) return res.status(400).json({ message: `Booking time must be within stylist availability (${dayAvailability.start_time} - ${dayAvailability.end_time})` });
 
-            // Slot Availability Check/alignment check
-            if (dayAvailability.slot_interval_minutes && Number(dayAvailability.slot_interval_minutes) > 0) {
-                const stepMs = Number(dayAvailability.slot_interval_minutes) * 60_000;
-                const baseMs = availStart.getTime();
-
-                // Check start time aligns with the slot interval
-                const startAligned = (startDate.getTime() - baseMs) % stepMs === 0;
-
-                // Check the duration aligns with the slot interval
-                const durationMs = endDate.getTime() - startDate.getTime();
-                const durationAligned = durationMs % stepMs === 0;
-
-                if (!startAligned || !durationAligned) {
-                    return res.status(400).json({
-                        message: `Requested time must align with ${dayAvailability.slot_interval_minutes}-minute slots (start & duration must be multiples of ${dayAvailability.slot_interval_minutes})`
-                    });
-                }
-            }
-
-            //check for unavailibility blocks
+            // Unavailability overlap
             const [unavailRows] = await db.execute(`SELECT start_time, end_time FROM employee_unavailability
                                              WHERE employee_id = ? AND weekday = ?`, [empId, bookingDayOfWeek]
             );
-            const hasBlock = unavailRows.some(block => {
+            const hasUnavailabilityConflict = unavailRows.some(block => {
                 const blockStart = new Date(`${dayStr}T${block.start_time}`);
                 const blockEnd = new Date(`${dayStr}T${block.end_time}`);
                 return (startDate < blockEnd) && (blockStart < endDate);
             });
-            if (hasBlock) return res.status(409).json({ message: 'Stylist is unavailable during this time slot' });
+            if (hasUnavailabilityConflict) return res.status(409).json({ message: 'Stylist is unavailable during this time slot' });
 
-            //check for conflicts with other bookings
-            const [conflicts] = await db.execute(`SELECT b.booking_id, b.scheduled_start, b.scheduled_end
+            // Check conflicts with existing bookings
+            const [conflictsResult] = await db.execute(`SELECT b.booking_id, b.scheduled_start, b.scheduled_end
                                            FROM bookings b JOIN booking_services bs ON b.booking_id = bs.booking_id
                                            WHERE bs.employee_id = ? AND b.booking_id <> ? AND b.status NOT IN ('CANCELED', 'COMPLETED')
                                            AND b.scheduled_start < ? AND b.scheduled_end > ?`, [empId, Number(booking_id), requestEndStr, requestStartStr]
             );
 
-            if (conflicts.length > 0) {
+            if (conflictsResult.length > 0) {
                 // Convert database datetime to local time
                 const formatConflictTime = (timeStr) => {
                     if (!timeStr) return null;
-
+                   
                     if (timeStr instanceof Date) {
                         const Y = timeStr.getFullYear();
                         const M = String(timeStr.getMonth() + 1).padStart(2, '0');
@@ -136,9 +125,9 @@ exports.rescheduleBooking = async (req, res) => {
                 return res.status(409).json({
                     message: 'Time slot is no longer available. Please select a different time.',
                     conflicting_booking: {
-                        booking_id: conflicts[0].booking_id,
-                        scheduled_start: formatConflictTime(conflicts[0].scheduled_start),
-                        scheduled_end: formatConflictTime(conflicts[0].scheduled_end)
+                        booking_id: conflictsResult[0].booking_id,
+                        scheduled_start: formatConflictTime(conflictsResult[0].scheduled_start),
+                        scheduled_end: formatConflictTime(conflictsResult[0].scheduled_end)
                     }
                 });
             }

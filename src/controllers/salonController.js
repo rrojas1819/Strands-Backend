@@ -1870,7 +1870,7 @@ exports.bookTimeSlot = async (req, res) => {
 
     // Pull all weekday availability for stylist
     const [availabilityResult] = await db.execute(
-      `SELECT weekday, start_time, end_time, slot_interval_minutes
+      `SELECT weekday, start_time, end_time
        FROM employee_availability
        WHERE employee_id = ?`,
       [employee_id]
