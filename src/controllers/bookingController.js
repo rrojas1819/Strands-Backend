@@ -10,6 +10,135 @@ const toLocalSQL = (dt) => {
     return `${Y}-${M}-${D} ${H}:${MI}:${S}`;
 };
 
+const formatDateTime = (timeStr) => {
+    if (!timeStr) return null;
+    if (timeStr instanceof Date) {
+        const Y = timeStr.getFullYear();
+        const M = String(timeStr.getMonth() + 1).padStart(2, '0');
+        const D = String(timeStr.getDate()).padStart(2, '0');
+        const H = String(timeStr.getHours()).padStart(2, '0');
+        const MI = String(timeStr.getMinutes()).padStart(2, '0');
+        const S = String(timeStr.getSeconds()).padStart(2, '0');
+        return `${Y}-${M}-${D}T${H}:${MI}:${S}`;
+    }
+    return String(timeStr);
+};
+
+// Customer views their appointments
+exports.getMyAppointments = async (req, res) => {
+    const db = connection.promise();
+
+    try {
+        const customer_user_id = req.user?.user_id;
+
+        if (!customer_user_id) {
+            return res.status(401).json({ message: 'Unauthorized' });
+        }
+
+        const [bookings] = await db.execute(
+            `SELECT 
+                b.booking_id,
+                b.salon_id,
+                b.scheduled_start,
+                b.scheduled_end,
+                b.status,
+                b.notes,
+                b.created_at,
+                s.name AS salon_name,
+                s.address AS salon_address,
+                s.city AS salon_city,
+                s.state AS salon_state,
+                s.phone AS salon_phone,
+                s.email AS salon_email
+             FROM bookings b
+             JOIN salons s ON b.salon_id = s.salon_id
+             WHERE b.customer_user_id = ?
+             ORDER BY b.scheduled_start DESC`,
+            [customer_user_id]
+        );
+
+        if (bookings.length === 0) {
+            return res.status(200).json({
+                message: 'No appointments found',
+                data: []
+            });
+        }
+
+        const appointmentData = await Promise.all(bookings.map(async (booking) => {
+            const [services] = await db.execute(
+                `SELECT 
+                    bs.service_id,
+                    bs.employee_id,
+                    bs.price,
+                    bs.duration_minutes,
+                    sv.name AS service_name,
+                    u.full_name AS stylist_name,
+                    e.title AS stylist_title
+                 FROM booking_services bs
+                 JOIN services sv ON bs.service_id = sv.service_id
+                 LEFT JOIN employees e ON bs.employee_id = e.employee_id
+                 LEFT JOIN users u ON e.user_id = u.user_id
+                 WHERE bs.booking_id = ?`,
+                [booking.booking_id]
+            );
+
+            const totalPrice = services.reduce((sum, s) => sum + Number(s.price), 0);
+            const totalDuration = services.reduce((sum, s) => sum + Number(s.duration_minutes), 0);
+
+            // Unique stylists
+            const stylists = services
+                .filter(s => s.employee_id)
+                .reduce((unique, s) => {
+                    if (!unique.find(u => u.employee_id === s.employee_id)) {
+                        unique.push({
+                            employee_id: s.employee_id,
+                            name: s.stylist_name,
+                            title: s.stylist_title
+                        });
+                    }
+                    return unique;
+                }, []);
+
+            return {
+                booking_id: booking.booking_id,
+                salon: {
+                    salon_id: booking.salon_id,
+                    name: booking.salon_name,
+                    address: booking.salon_address,
+                    city: booking.salon_city,
+                    state: booking.salon_state,
+                    phone: booking.salon_phone,
+                    email: booking.salon_email
+                },
+                appointment: {
+                    scheduled_start: formatDateTime(booking.scheduled_start),
+                    scheduled_end: formatDateTime(booking.scheduled_end),
+                    duration_minutes: totalDuration,
+                    status: booking.status
+                },
+                stylists: stylists.length > 0 ? stylists : null,
+                services: services.map(s => ({
+                    service_id: s.service_id,
+                    service_name: s.service_name,
+                    duration_minutes: Number(s.duration_minutes),
+                    price: Number(s.price)
+                })),
+                total_price: totalPrice,
+                notes: booking.notes
+            };
+        }));
+
+        return res.status(200).json({
+            message: 'Appointments retrieved successfully',
+            data: appointmentData
+        });
+
+    } catch (error) {
+        console.error('getMyAppointments error:', error);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
 //BS 1.2 customer reschedules booking/appointment
 exports.rescheduleBooking = async (req, res) => {
     const db = connection.promise();
@@ -143,17 +272,73 @@ exports.rescheduleBooking = async (req, res) => {
 
             await db.query('COMMIT');
 
+            const [bookingInfo] = await db.execute(
+                `SELECT b.booking_id, b.salon_id, b.scheduled_start, b.scheduled_end, b.status, b.notes,
+                        s.name AS salon_name, s.address AS salon_address, s.city AS salon_city, 
+                        s.state AS salon_state, s.phone AS salon_phone, s.email AS salon_email, s.postal_code AS salon_postal_code
+                 FROM bookings b
+                 JOIN salons s ON b.salon_id = s.salon_id
+                 WHERE b.booking_id = ?`,
+                [Number(booking_id)]
+            );
+
+            const [servicesInfo] = await db.execute(
+                `SELECT bs.service_id, bs.employee_id, bs.price, bs.duration_minutes,
+                        sv.name AS service_name,
+                        u.full_name AS stylist_name,
+                        e.title AS stylist_title
+                 FROM booking_services bs
+                 JOIN services sv ON bs.service_id = sv.service_id
+                 LEFT JOIN employees e ON bs.employee_id = e.employee_id
+                 LEFT JOIN users u ON e.user_id = u.user_id
+                 WHERE bs.booking_id = ?`,
+                [Number(booking_id)]
+            );
+
+            const booking = bookingInfo[0];
+            const totalPrice = servicesInfo.reduce((sum, s) => sum + Number(s.price), 0);
+            const stylists = servicesInfo
+                .filter(s => s.employee_id)
+                .reduce((unique, s) => {
+                    if (!unique.find(u => u.employee_id === s.employee_id)) {
+                        unique.push({
+                            employee_id: s.employee_id,
+                            name: s.stylist_name,
+                            title: s.stylist_title
+                        });
+                    }
+                    return unique;
+                }, []);
+
             return res.status(200).json({
                 message: 'Appointment rescheduled successfully',
                 data: {
                     booking_id: Number(booking_id),
+                    salon: {
+                        salon_id: booking.salon_id,
+                        name: booking.salon_name,
+                        address: booking.salon_address,
+                        city: booking.salon_city,
+                        state: booking.salon_state,
+                        phone: booking.salon_phone,
+                        email: booking.salon_email,
+                        postal_code: booking.salon_postal_code
+                    },
+                    stylists: stylists.length > 0 ? stylists : null,
                     appointment: {
                         scheduled_start: requestStartStr.replace(' ', 'T'),
                         scheduled_end: requestEndStr.replace(' ', 'T'),
                         duration_minutes: Math.round((endDate - startDate) / (1000 * 60)),
                         status: 'SCHEDULED'
                     },
-                    updated_at: new Date().toISOString()
+                    services: servicesInfo.map(s => ({
+                        service_id: s.service_id,
+                        service_name: s.service_name,
+                        duration_minutes: Number(s.duration_minutes),
+                        price: Number(s.price)
+                    })),
+                    total_price: totalPrice,
+                    notes: booking.notes
                 }
             });
         } catch (txErr) {
