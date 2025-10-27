@@ -1,7 +1,10 @@
 const express = require('express');
 const router = express.Router();
-const { demographics, loyaltyProgramAnalytics } = require('../controllers/analyticsController');
+const { demographics, loyaltyProgramAnalytics, userEngagement } = require('../controllers/analyticsController');
 const { authenticateToken, roleAuthorization } = require('../middleware/auth.middleware');
+
+// AFVD 1.1 User Engagement
+router.get('/user-engagement', authenticateToken, roleAuthorization(['ADMIN']), userEngagement);
 
 // User Pie Chart
 router.get('/demographics', authenticateToken, roleAuthorization(['ADMIN']), demographics);

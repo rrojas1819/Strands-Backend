@@ -51,4 +51,10 @@ router.post('/:salon_id/stylists/:employee_id/book', authenticateToken, roleAuth
 router.get('/:salon_id/services', authenticateToken, roleAuthorization(['CUSTOMER']), salonController.browseSalonServices);
 
 router.get('/information', authenticateToken, roleAuthorization(['OWNER']), salonController.getSalonInformation);
+
+// AFVD 1.1 User Engagement Tracking
+router.post('/track-salon-event', authenticateToken, roleAuthorization(['CUSTOMER']), salonController.trackSalonEvent);
+
+
+
 module.exports = router;
