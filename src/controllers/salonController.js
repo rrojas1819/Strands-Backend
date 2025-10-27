@@ -21,6 +21,16 @@ const WEEKDAY_TO_NUMBER = {
   'SATURDAY': 6
 };
 
+// Helper function to normalize service names for duplicate detection
+const normalizeServiceName = (name) => {
+  return name
+    .toLowerCase()
+    .replace(/\s+$/g, '') // Remove trailing spaces
+    .replace(/\d+$/g, '') // Remove trailing numbers
+    .replace(/\s+/g, ' ') // Merge multiple spaces to single space
+    .trim();
+};
+
 //separate endpoint to check owner has a salon already
 exports.checkOwnerHasSalon = async (req, res) => {
   const db = connection.promise();
@@ -926,7 +936,8 @@ exports.getEmployeeAvailability = async (req, res) => {
   }
 };
 
-// BS 1.0 - Get all employees for owner
+// BS 1.0 - Get all employees for owner 
+// a duplicate of viewEmployees technically, need to determine which to remove.
 exports.getEmployees = async (req, res) => {
   const db = connection.promise();
   
@@ -962,5 +973,1124 @@ exports.getEmployees = async (req, res) => {
       return res.status(500).json({
           message: 'Internal server error'
       });
+  }
+};
+
+// BS 1.1 - Get available stylists for a salon (Customer view)
+exports.getAvailableStylists = async (req, res) => {
+  const db = connection.promise();
+  
+  try {
+      const { salon_id } = req.params;
+      
+      if (!salon_id || isNaN(salon_id)) {
+          return res.status(400).json({ message: 'Invalid salon_id' });
+      }
+      
+      // Get salon information
+      const getSalonQuery = 'SELECT salon_id, name, status FROM salons WHERE salon_id = ?';
+      const [salonResult] = await db.execute(getSalonQuery, [salon_id]);
+      
+      //Should never occur but just in case
+      if (salonResult.length === 0) {
+          return res.status(404).json({ message: 'Salon not found' });
+      }
+      
+      
+      // Get active stylists for this salon
+      const getStylistsQuery = `
+          SELECT e.employee_id, e.title, e.active,
+                 u.full_name, u.email, u.phone, u.profile_picture_url
+          FROM employees e 
+          JOIN users u ON e.user_id = u.user_id 
+          WHERE e.salon_id = ? AND e.active = 1
+          ORDER BY u.full_name ASC
+      `;
+      const [stylistsResult] = await db.execute(getStylistsQuery, [salon_id]);
+      
+      return res.status(200).json({
+          data: {
+              salon: {
+                  salon_id: salonResult[0].salon_id,
+                  name: salonResult[0].name,
+                  status: salonResult[0].status
+              },
+              stylists: stylistsResult
+          }
+      });
+      
+  } catch (error) {
+      console.error('getAvailableStylists error:', error);
+      return res.status(500).json({
+          message: 'Internal server error'
+      });
+  }
+};
+
+
+// BS 1.1 - Get available time slots for a stylist (multiple days)
+exports.getAvailableTimeSlotsRange = async (req, res) => {
+  const db = connection.promise();
+  
+  try {
+      const { salon_id, employee_id } = req.params;
+      const { start_date, end_date, days = 7 } = req.query;
+      
+      if (!salon_id || isNaN(salon_id) || !employee_id || isNaN(employee_id)) {
+          return res.status(400).json({ message: 'Missing required fields: salon_id or employee_id' });
+      }
+    
+      
+      // Determine date range
+      let startDate, endDate;
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const dayInMs = 24 * 60 * 60 * 1000;
+      
+      if (start_date && end_date) {
+          startDate = new Date(start_date + 'T00:00:00');
+          endDate = new Date(end_date + 'T00:00:00');
+      } else if (start_date) {
+          startDate = new Date(start_date + 'T00:00:00');
+          endDate = new Date(startDate.getTime() + (parseInt(days) - 1) * dayInMs);
+      } else {
+          // Default to next 7 days from today
+          startDate = new Date(today);
+          endDate = new Date(today.getTime() + (parseInt(days) - 1) * dayInMs);
+      }
+      
+      // Validate dates
+      if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+          return res.status(400).json({ message: 'Invalid date format. Use YYYY-MM-DD' });
+      }
+      
+      if (startDate < today) {
+          return res.status(400).json({ message: 'Start date cannot be in the past' });
+      }
+      
+      if (endDate < startDate) {
+          return res.status(400).json({ message: 'End date must be on or after start date' });
+      }
+      
+      // Limit to max range (30 days)
+      const maxDays = 30;
+      const daysDiff = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24)) + 1;
+      if (daysDiff > maxDays) {
+          return res.status(400).json({ message: `Date range cannot exceed ${maxDays} days` });
+      }
+      
+      // Verify salon exists and is approved
+      const getSalonQuery = 'SELECT salon_id, name, status FROM salons WHERE salon_id = ?';
+      const [salonResult] = await db.execute(getSalonQuery, [salon_id]);
+      
+      if (salonResult.length === 0) {
+          return res.status(404).json({ message: 'Salon not found' });
+      }
+      //This should never occur but just in case
+      if (salonResult[0].status !== 'APPROVED') {
+          return res.status(403).json({ message: 'Salon is not available for booking' });
+      }
+      
+      // Verify stylist exists and is active
+      const getEmployeeQuery = `
+          SELECT e.employee_id, e.title, u.full_name
+          FROM employees e 
+          JOIN users u ON e.user_id = u.user_id 
+          WHERE e.employee_id = ? AND e.salon_id = ? AND e.active = 1
+      `;
+      const [employeeResult] = await db.execute(getEmployeeQuery, [employee_id, salon_id]);
+      
+      if (employeeResult.length === 0) {
+          return res.status(404).json({ message: 'Stylist not found or not available' });
+      }
+      
+      // Get all employee availability
+      const getAvailabilityQuery = `
+          SELECT weekday, start_time, end_time, slot_interval_minutes
+          FROM employee_availability 
+          WHERE employee_id = ?
+          ORDER BY weekday
+      `;
+      const [availabilityResult] = await db.execute(getAvailabilityQuery, [employee_id]);
+      
+      // Get all employee unavailability
+      const getUnavailabilityQuery = `
+          SELECT weekday, start_time, end_time
+          FROM employee_unavailability 
+          WHERE employee_id = ?
+          ORDER BY weekday, start_time
+      `;
+      const [unavailabilityResult] = await db.execute(getUnavailabilityQuery, [employee_id]);
+      
+      // Get existing bookings for the date range
+      const getBookingsQuery = `
+          SELECT DISTINCT b.scheduled_start, b.scheduled_end, b.status
+          FROM bookings b
+          JOIN booking_services bs ON b.booking_id = bs.booking_id
+          WHERE bs.employee_id = ? 
+          AND b.scheduled_start >= ? 
+          AND b.scheduled_start < DATE_ADD(?, INTERVAL 1 DAY)
+          AND b.status NOT IN ('CANCELLED', 'NO_SHOW')
+          ORDER BY b.scheduled_start
+      `;
+      const [bookingsResult] = await db.execute(getBookingsQuery, [employee_id, startDate.toISOString().split('T')[0] + ' 00:00:00', endDate.toISOString().split('T')[0] + ' 00:00:00']);
+      
+      // Create availability map by weekday
+      const availabilityMap = {};
+      availabilityResult.forEach(avail => {
+          availabilityMap[avail.weekday] = avail;
+      });
+      
+      // Create unavailability map by weekday
+      const unavailabilityMap = {};
+      unavailabilityResult.forEach(unavail => {
+          if (!unavailabilityMap[unavail.weekday]) {
+              unavailabilityMap[unavail.weekday] = [];
+          }
+          unavailabilityMap[unavail.weekday].push(unavail);
+      });
+      
+      // Create bookings map by date
+      const bookingsMap = {};
+      bookingsResult.forEach(booking => {
+          // Extract date without timezone conversion to avoid date shifting
+          const bookingDateObj = new Date(booking.scheduled_start);
+          const bookingDate = bookingDateObj.toISOString().split('T')[0];
+          (bookingsMap[bookingDate] ||= []).push(booking);
+      });
+      
+      // Generate time slots for each day
+      const dailySlots = {};
+      const currentDate = new Date(startDate);
+      
+      while (currentDate <= endDate) {
+          const dateStr = currentDate.toISOString().split('T')[0];
+          const dayOfWeek = currentDate.getDay();
+          const dayName = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][dayOfWeek];
+          
+          const availability = availabilityMap[dayOfWeek];
+          const unavailability = unavailabilityMap[dayOfWeek] || [];
+          const bookings = bookingsMap[dateStr] || [];
+          
+          if (!availability) {
+              dailySlots[dateStr] = {
+                  date: dateStr,
+                  day_name: dayName,
+                  available_slots: [],
+                  message: 'No availability set for this day'
+              };
+          } else {
+              const availableSlots = [];
+              const slotInterval = availability.slot_interval_minutes || 30;
+              
+              const startTime = new Date(`${dateStr}T${availability.start_time}`);
+              const endTime = new Date(`${dateStr}T${availability.end_time}`);
+              
+              let currentTime = new Date(startTime);
+              
+              while (currentTime < endTime) {
+                  const slotStart = new Date(currentTime);
+                  const slotEnd = new Date(currentTime.getTime() + slotInterval * 60000);
+                  
+                  // Check conflict with unavailability
+                  const isBlocked = unavailability.some(block => {
+                      const blockStart = new Date(`${dateStr}T${block.start_time}`);
+                      const blockEnd = new Date(`${dateStr}T${block.end_time}`);
+                      return slotStart < blockEnd && slotEnd > blockStart;
+                  });
+                  
+                  // Check conflict with existing bookings
+                  const isBooked = bookings.some(booking => {
+                      const bookingStart = new Date(booking.scheduled_start);
+                      const bookingEnd = new Date(booking.scheduled_end);
+                      return slotStart < bookingEnd && slotEnd > bookingStart;
+                  });
+                  
+                  // Check if this slot is in the past (for current day or past dates)
+                  const now = new Date();
+                  const todayStr = now.toISOString().split('T')[0];
+                  const isCurrentDay = dateStr === todayStr;
+                  const isPastDate = dateStr < todayStr;
+                  const isPastSlot = (isCurrentDay && slotStart < now) || isPastDate;
+                  
+                  if (!isBlocked && !isBooked && !isPastSlot) {
+                      const timeStr = slotStart.toTimeString().split(' ')[0].substring(0, 5);
+                      const endTimeStr = slotEnd.toTimeString().split(' ')[0].substring(0, 5);
+                      availableSlots.push({
+                          start_time: timeStr,
+                          end_time: endTimeStr,
+                          available: true
+                      });
+                  }
+                  
+                  currentTime = new Date(currentTime.getTime() + slotInterval * 60000);
+              }
+              
+              dailySlots[dateStr] = {
+                  date: dateStr,
+                  day_name: dayName,
+                  availability: {
+                      start_time: availability.start_time,
+                      end_time: availability.end_time,
+                      slot_interval_minutes: slotInterval
+                  },
+                  available_slots: availableSlots,
+                  total_slots: availableSlots.length
+              };
+          }
+          
+          currentDate.setDate(currentDate.getDate() + 1);
+      }
+      
+      return res.status(200).json({
+          data: {
+              stylist: {
+                  employee_id: employee_id,
+                  name: employeeResult[0].full_name,
+                  title: employeeResult[0].title
+              },
+              date_range: {
+                  start_date: startDate.toISOString().split('T')[0],
+                  end_date: endDate.toISOString().split('T')[0],
+                  total_days: daysDiff
+              },
+              daily_slots: dailySlots
+          }
+      });
+      
+  } catch (error) {
+      console.error('getAvailableTimeSlotsRange error:', error);
+      return res.status(500).json({
+          message: 'Internal server error'
+      });
+  }
+};
+
+// BS 1.01 - Stylist creates a service and adds it to their profile
+exports.createAndAddServiceToStylist = async (req, res) => {
+  const db = connection.promise();
+  
+  try {
+    const { name, description, duration_minutes, price } = req.body;
+    const user_id = req.user?.user_id; //Need to fix
+
+    
+    
+    if (!name || !description || !duration_minutes || !price) {
+      return res.status(400).json({ message: 'Missing required fields' });
+    }
+    
+    if (typeof name !== 'string' || typeof description !== 'string') {
+      return res.status(400).json({ message: 'Name and description must be strings' });
+    }
+    
+    if (isNaN(duration_minutes) || duration_minutes <= 0) {
+      return res.status(400).json({ message: 'Duration must be a positive number' });
+    }
+    
+    if (isNaN(price) || price <= 0) {
+      return res.status(400).json({ message: 'Price must be a positive number' });
+    }
+    
+    const getEmployeeQuery = `
+      SELECT e.employee_id, e.salon_id 
+      FROM employees e 
+      WHERE e.user_id = ? AND e.active = 1
+    `;
+    const [employeeResult] = await db.execute(getEmployeeQuery, [user_id]);
+    
+    const employee_id = employeeResult[0].employee_id;
+    const salon_id = employeeResult[0].salon_id;
+    
+    // Check if employee already has a service with this name (fuzzy matching)
+    // Get all existing services for this employee
+    const getAllServicesQuery = `
+      SELECT s.name
+      FROM employee_services es
+      JOIN services s ON es.service_id = s.service_id
+      WHERE es.employee_id = ?
+    `;
+    const [existingServices] = await db.execute(getAllServicesQuery, [employee_id]);
+    
+    // Normalize the new service name
+    const normalizedNewName = normalizeServiceName(name);
+    
+    // Check if any existing service normalizes to the same name
+    const duplicateService = existingServices.find(service => 
+      normalizeServiceName(service.name) === normalizedNewName
+    );
+    
+    if (duplicateService) {
+      return res.status(409).json({ 
+        message: 'You already have a service with this name in your profile',
+        data: {
+          existing_service: duplicateService.name
+        }
+      });
+    }
+    
+    await db.query('START TRANSACTION');
+    
+    try {
+      const createServiceQuery = `
+        INSERT INTO services (salon_id, name, description, duration_minutes, price, active, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, 1, NOW(), NOW())
+      `;
+      const [serviceResult] = await db.execute(createServiceQuery, [
+        salon_id, 
+        name, 
+        description, 
+        duration_minutes, 
+        price
+      ]);
+      
+      const service_id = serviceResult.insertId;
+      
+      const linkServiceQuery = `
+        INSERT INTO employee_services (employee_id, service_id, created_at, updated_at)
+        VALUES (?, ?, NOW(), NOW())
+      `;
+      await db.execute(linkServiceQuery, [employee_id, service_id]);
+      
+      await db.query('COMMIT');
+      
+      return res.status(201).json({
+        message: 'Service created and added to profile successfully',
+        data: {
+          service: {
+            service_id: service_id,
+            salon_id: salon_id,
+            name: name,
+            description: description,
+            duration_minutes: duration_minutes,
+            price: parseFloat(price),
+            active: true
+          },
+          employee: {
+            employee_id: employee_id
+          }
+        }
+      });
+      
+    } catch (transactionError) {
+      await db.query('ROLLBACK');
+      throw transactionError;
+    }
+    
+  } catch (error) {
+    console.error('createAndAddServiceToStylist error:', error);
+    return res.status(500).json({
+      message: 'Internal server error'
+    });
+  }
+};
+
+// BS 1.01 - Stylist removes services from their profile
+exports.removeServiceFromStylist = async (req, res) => {
+  const db = connection.promise();
+  
+  try {
+    const { service_id } = req.params;
+    const user_id = req.user?.user_id;
+    
+    if (!service_id || isNaN(service_id)) {
+      return res.status(400).json({ message: 'Invalid service_id' });
+    }
+    
+    const getEmployeeQuery = `
+      SELECT e.employee_id, e.salon_id 
+      FROM employees e 
+      WHERE e.user_id = ? AND e.active = 1
+    `;
+    const [employeeResult] = await db.execute(getEmployeeQuery, [user_id]);
+    
+
+    const employee_id = employeeResult[0].employee_id;
+    
+    const getServiceLinkQuery = `
+      SELECT s.name as service_name
+      FROM employee_services es
+      JOIN services s ON es.service_id = s.service_id
+      WHERE es.employee_id = ? AND es.service_id = ?
+    `;
+    const [serviceLinkResult] = await db.execute(getServiceLinkQuery, [employee_id, service_id]);
+    
+    if (serviceLinkResult.length === 0) {
+      return res.status(404).json({ message: 'Service not found in your profile' });
+    }
+    
+    const deleteQuery = `
+      DELETE FROM employee_services 
+      WHERE employee_id = ? AND service_id = ?
+    `;
+    const [result] = await db.execute(deleteQuery, [employee_id, service_id]);
+    
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: 'Service could not be removed' });
+    }
+    
+    return res.status(200).json({
+      message: 'Service removed from profile successfully',
+      data: {
+        employee_id: employee_id,
+        service: {
+          service_id: parseInt(service_id),
+          name: serviceLinkResult[0].service_name
+        }
+      }
+    });
+    
+  } catch (error) {
+    console.error('removeServiceFromStylist error:', error);
+    return res.status(500).json({
+      message: 'Internal server error'
+    });
+  }
+};
+
+// BS 1.01 - Stylist updates a service in their profile
+exports.updateServiceFromStylist = async (req, res) => {
+  const db = connection.promise();
+  
+  try {
+    const { service_id } = req.params;
+    const user_id = req.user?.user_id;
+    
+    if (!service_id || isNaN(service_id)) {
+      return res.status(400).json({ message: 'Invalid service_id' });
+    }
+    
+    // Handle missing or empty request body
+    if (!req.body || typeof req.body !== 'object') {
+      return res.status(400).json({ message: 'Request body is required' });
+    }
+    
+    const { name, description, duration_minutes, price } = req.body;
+    
+    // Validate that at least one field is provided
+    if (!name && !description && !duration_minutes && !price) {
+      return res.status(400).json({ message: 'At least one field must be provided for update' });
+    }
+    
+    // Validate provided fields
+    if (name !== undefined && typeof name !== 'string') {
+      return res.status(400).json({ message: 'Name must be a string' });
+    }
+    
+    if (description !== undefined && typeof description !== 'string') {
+      return res.status(400).json({ message: 'Description must be a string' });
+    }
+    
+    if (duration_minutes !== undefined && (isNaN(duration_minutes) || duration_minutes <= 0)) {
+      return res.status(400).json({ message: 'Duration must be a positive number' });
+    }
+    
+    if (price !== undefined && (isNaN(price) || price <= 0)) {
+      return res.status(400).json({ message: 'Price must be a positive number' });
+    }
+    
+    const getEmployeeQuery = `
+      SELECT e.employee_id, e.salon_id 
+      FROM employees e 
+      WHERE e.user_id = ? AND e.active = 1
+    `;
+    const [employeeResult] = await db.execute(getEmployeeQuery, [user_id]);
+    
+    if (employeeResult.length === 0) {
+      return res.status(404).json({ message: 'Employee profile not found' });
+    }
+    
+    const employee_id = employeeResult[0].employee_id;
+    const salon_id = employeeResult[0].salon_id;
+    
+    // Check if service exists and is linked to this stylist
+    const getServiceQuery = `
+      SELECT s.service_id, s.name, s.description, s.duration_minutes, s.price, s.salon_id
+      FROM employee_services es
+      JOIN services s ON es.service_id = s.service_id
+      WHERE es.employee_id = ? AND es.service_id = ?
+    `;
+    const [serviceResult] = await db.execute(getServiceQuery, [employee_id, service_id]);
+    
+    if (serviceResult.length === 0) {
+      return res.status(404).json({ message: 'Service not found in your profile' });
+    }
+    
+    // Verify the service belongs to this salon
+    if (serviceResult[0].salon_id !== salon_id) {
+      return res.status(403).json({ message: 'Service does not belong to your salon' });
+    }
+    
+    // Build the update query dynamically based on provided fields
+    const updateFields = [];
+    const updateValues = [];
+    
+    if (name !== undefined) {
+      updateFields.push('name = ?');
+      updateValues.push(name);
+    }
+    if (description !== undefined) {
+      updateFields.push('description = ?');
+      updateValues.push(description);
+    }
+    if (duration_minutes !== undefined) {
+      updateFields.push('duration_minutes = ?');
+      updateValues.push(duration_minutes);
+    }
+    if (price !== undefined) {
+      updateFields.push('price = ?');
+      updateValues.push(price);
+    }
+    
+    updateFields.push('updated_at = NOW()');
+    updateValues.push(service_id);
+    
+    const updateQuery = `
+      UPDATE services 
+      SET ${updateFields.join(', ')}
+      WHERE service_id = ?
+    `;
+    
+    const [updateResult] = await db.execute(updateQuery, updateValues);
+    
+    if (updateResult.affectedRows === 0) {
+      return res.status(404).json({ message: 'Service could not be updated' });
+    }
+    
+    // Get the updated service
+    const getUpdatedServiceQuery = `
+      SELECT s.service_id, s.salon_id, s.name, s.description, s.duration_minutes, s.price, s.active
+      FROM services s
+      WHERE s.service_id = ?
+    `;
+    const [updatedService] = await db.execute(getUpdatedServiceQuery, [service_id]);
+    
+    return res.status(200).json({
+      message: 'Service updated successfully',
+      data: {
+        employee_id: employee_id,
+        service: {
+          service_id: updatedService[0].service_id,
+          salon_id: updatedService[0].salon_id,
+          name: updatedService[0].name,
+          description: updatedService[0].description,
+          duration_minutes: updatedService[0].duration_minutes,
+          price: parseFloat(updatedService[0].price),
+          active: updatedService[0].active
+        }
+      }
+    });
+    
+  } catch (error) {
+    console.error('updateServiceFromStylist error:', error);
+    return res.status(500).json({
+      message: 'Internal server error'
+    });
+  }
+};
+
+// BS 1.01/1.1 - Get stylist services (works for both authenticated stylist and browsing customers)
+//Can always split but for now keeping it all in one function
+exports.getStylistServices = async (req, res) => {
+  const db = connection.promise();
+  
+  try {
+    const { salon_id: param_salon_id, employee_id: param_employee_id } = req.params;
+    const employee_user_id = req.user?.user_id;
+    const userRole = req.user?.role; //Required to check if customer or stylist is viewing
+    //Different because:
+    //customer needs salon_id to browse services
+    //and stylist only needs their user_id to view their own services
+    
+    let employee_id, salon_id, employeeData;
+    // If employee_id is provided in params, we're browsing (customer view)
+    if (param_employee_id && param_salon_id) {
+      if (isNaN(param_employee_id) || isNaN(param_salon_id)) {
+        return res.status(400).json({ message: 'Invalid salon_id or employee_id' });
+      }
+      
+      // Verify salon exists and is approved (only for customer browsing)
+      if (userRole === 'CUSTOMER') {
+        const getSalonQuery = 'SELECT status FROM salons WHERE salon_id = ?';
+        const [salonResult] = await db.execute(getSalonQuery, [param_salon_id]);
+        
+        if (salonResult.length === 0) {
+          return res.status(404).json({ message: 'Salon not found' });
+        }
+        
+        if (salonResult[0].status !== 'APPROVED') {
+          return res.status(403).json({ message: 'Salon is not available' });
+        }
+      }
+      
+      const getEmployeeQuery = `
+        SELECT e.employee_id, e.title, u.full_name, e.salon_id
+        FROM employees e
+        JOIN users u ON e.user_id = u.user_id
+        WHERE e.employee_id = ? AND e.salon_id = ? AND e.active = 1
+      `;
+      const [employeeResult] = await db.execute(getEmployeeQuery, [param_employee_id, param_salon_id]);
+      
+      if (employeeResult.length === 0) {
+        return res.status(404).json({ message: 'Stylist not found or not available' });
+      }
+      
+      employee_id = param_employee_id;
+      salon_id = employeeResult[0].salon_id;
+      employeeData = {
+        employee_id: employeeResult[0].employee_id,
+        name: employeeResult[0].full_name,
+        title: employeeResult[0].title
+      };
+    } 
+    // Authenticated stylist viewing their own services
+    else {
+      const getEmployeeQuery = `
+        SELECT e.employee_id, e.salon_id, e.title 
+        FROM employees e 
+        WHERE e.user_id = ? AND e.active = 1
+      `;
+      const [employeeResult] = await db.execute(getEmployeeQuery, [employee_user_id]);
+      
+      if (employeeResult.length === 0) {
+        return res.status(404).json({ message: 'Employee profile not found' });
+      }
+      
+      employee_id = employeeResult[0].employee_id;
+      salon_id = employeeResult[0].salon_id;
+      employeeData = {
+        employee_id: employee_id,
+        title: employeeResult[0].title,
+        salon_id: salon_id
+      };
+    }
+    
+    const getServicesQuery = `
+      SELECT s.service_id, s.name, s.description, s.duration_minutes, s.price, s.active,
+             es.created_at, es.updated_at
+      FROM employee_services es
+      JOIN services s ON es.service_id = s.service_id
+      WHERE es.employee_id = ?
+      ORDER BY s.name ASC
+    `;
+    const [servicesResult] = await db.execute(getServicesQuery, [employee_id]);
+    
+    const responseData = {
+      ...(param_employee_id ? { stylist: employeeData } : { employee: employeeData }),
+      services: servicesResult.map(service => ({
+        service_id: service.service_id,
+        name: service.name,
+        description: service.description,
+        duration_minutes: service.duration_minutes,
+        price: service.price,
+        // Include active field for customer browse views
+        ...(param_employee_id && { active: service.active })
+      })),
+      total_services: servicesResult.length
+    };
+    
+    return res.status(200).json({
+      data: responseData
+    });
+    
+  } catch (error) {
+    console.error('getStylistServices error:', error);
+    return res.status(500).json({
+      message: 'Internal server error'
+    });
+  }
+};
+// Get all services available at a salon (for customers to browse)
+exports.browseSalonServices = async (req, res) => {
+  const db = connection.promise();
+  
+  try {
+    const { salon_id } = req.params;
+    
+    if (!salon_id || isNaN(salon_id)) {
+      return res.status(400).json({ message: 'Invalid salon_id' });
+    }
+    
+    const getSalonQuery = 'SELECT salon_id, name, status FROM salons WHERE salon_id = ?';
+    const [salonResult] = await db.execute(getSalonQuery, [salon_id]);
+    
+    if (salonResult.length === 0) {
+      return res.status(404).json({ message: 'Salon not found' });
+    }
+    
+    
+    const getServicesQuery = `
+      SELECT service_id, name, description, duration_minutes, price, active, created_at, updated_at
+      FROM services 
+      WHERE salon_id = ? AND active = 1
+      ORDER BY name ASC
+    `;
+    const [servicesResult] = await db.execute(getServicesQuery, [salon_id]);
+    
+    return res.status(200).json({
+      data: {
+        salon: {
+          salon_id: salonResult[0].salon_id,
+          name: salonResult[0].name
+        },
+        services: servicesResult.map(service => ({
+          service_id: service.service_id,
+          name: service.name,
+          description: service.description,
+          duration_minutes: service.duration_minutes,
+          price: service.price
+        })),
+        total_services: servicesResult.length
+      }
+    });
+    
+  } catch (error) {
+    console.error('browseSalonServices error:', error);
+    return res.status(500).json({
+      message: 'Internal server error'
+    });
+  }
+};
+
+
+// BS 1.1 - Book a time slot for a customer
+exports.bookTimeSlot = async (req, res) => {
+  const db = connection.promise();
+
+  try {
+    const { salon_id, employee_id } = req.params;
+    const { scheduled_start, scheduled_end, services, notes = '' } = req.body;
+    const customer_user_id = req.user?.user_id;
+
+
+
+    if (!salon_id || isNaN(salon_id) || !employee_id || isNaN(employee_id)) {
+      return res.status(400).json({ message: 'Invalid salon_id or employee_id' });
+    }
+    if (!scheduled_start || !scheduled_end) {
+      return res.status(400).json({ message: 'scheduled_start and scheduled_end are required' });
+    }
+    if (!services || !Array.isArray(services) || services.length === 0) {
+      return res.status(400).json({ message: 'At least one service is required' });
+    }
+
+
+
+    // Parse as Date and keep everything in LOCAL time (same as weekly schedule)
+    const startDate = new Date(scheduled_start);
+    const endDate   = new Date(scheduled_end);
+
+    if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+      return res.status(400).json({
+        message: 'Invalid date format. EX: "2025-10-28T13:00:00"'
+      });
+    }
+    if (startDate >= endDate) {
+      return res.status(400).json({ message: 'scheduled_start must be before scheduled_end' });
+    }
+    const now = new Date();
+    if (startDate < now) {
+      return res.status(400).json({ message: 'Cannot book appointments in the past' });
+    }
+
+    
+
+    const [employeeResult] = await db.execute(
+      `SELECT e.employee_id, e.title, u.full_name
+       FROM employees e
+       JOIN users u ON e.user_id = u.user_id
+       WHERE e.employee_id = ? AND e.salon_id = ? AND e.active = 1`,
+      [employee_id, salon_id]
+    );
+    
+
+    // Pull all weekday availability for stylist
+    const [availabilityResult] = await db.execute(
+      `SELECT weekday, start_time, end_time, slot_interval_minutes
+       FROM employee_availability
+       WHERE employee_id = ?`,
+      [employee_id]
+    );
+    if (availabilityResult.length === 0) {
+      return res.status(400).json({ message: 'Stylist has no availability set' });
+    }
+
+
+    //Get the day of the week for the booking
+    const bookingDayOfWeek = startDate.getDay();
+    const dayAvailability = availabilityResult.find(a => a.weekday === bookingDayOfWeek);
+    if (!dayAvailability) {
+      return res.status(400).json({ message: 'Stylist is not available on this day' });
+    }
+
+
+    // Build local YYYY-MM-DD for the booking date
+    const y  = startDate.getFullYear();
+    const m  = String(startDate.getMonth() + 1).padStart(2, '0');
+    const d  = String(startDate.getDate()).padStart(2, '0');
+    const dayStr = `${y}-${m}-${d}`;
+
+
+    // Compare within availability window using Date objects on the SAME local date
+    const availStart = new Date(`${dayStr}T${dayAvailability.start_time}`);
+    const availEnd   = new Date(`${dayStr}T${dayAvailability.end_time}`);
+    if (startDate < availStart || endDate > availEnd) {
+      return res.status(400).json({
+        message: `Booking time must be within stylist's availability (${dayAvailability.start_time} - ${dayAvailability.end_time})`
+      });
+    }
+
+
+    // Slot Availability Check/alignment check
+    if (dayAvailability.slot_interval_minutes && Number(dayAvailability.slot_interval_minutes) > 0) {
+      const stepMs = Number(dayAvailability.slot_interval_minutes) * 60_000;
+      const baseMs = availStart.getTime();
+
+      // Check start time aligns with the slot interval
+      const startAligned = (startDate.getTime() - baseMs) % stepMs === 0;
+
+      // Check the duration aligns with the slot interval
+      const durationMs = endDate.getTime() - startDate.getTime();
+      const durationAligned = durationMs % stepMs === 0;
+      
+      if (!startAligned || !durationAligned) {
+        return res.status(400).json({
+          message: `Requested time must align with ${dayAvailability.slot_interval_minutes}-minute slots (start time and duration must be multiples of ${dayAvailability.slot_interval_minutes} minutes)`
+        });
+      }
+    }
+
+    // Unavailability overlap
+    const [unavailabilityResult] = await db.execute(
+      `SELECT start_time, end_time
+       FROM employee_unavailability
+       WHERE employee_id = ? AND weekday = ?`,
+      [employee_id, bookingDayOfWeek]
+    );
+
+    const hasUnavailabilityConflict = unavailabilityResult.some(block => {
+      const blockStart = new Date(`${dayStr}T${block.start_time}`);
+      const blockEnd   = new Date(`${dayStr}T${block.end_time}`);
+      return (startDate < blockEnd) && (blockStart < endDate);
+    });
+
+    if (hasUnavailabilityConflict) {
+      return res.status(409).json({ message: 'Stylist is unavailable during this time slot' });
+    }
+
+    // Format local DATETIME strings
+    const toLocalSQL = (dt) => {
+      const Y  = dt.getFullYear();
+      const M  = String(dt.getMonth() + 1).padStart(2, '0');
+      const D  = String(dt.getDate()).padStart(2, '0');
+      const H  = String(dt.getHours()).padStart(2, '0');
+      const MI = String(dt.getMinutes()).padStart(2, '0');
+      const S  = String(dt.getSeconds()).padStart(2, '0');
+      return `${Y}-${M}-${D} ${H}:${MI}:${S}`;
+    };  
+
+    const requestStartStr = toLocalSQL(startDate);
+    const requestEndStr   = toLocalSQL(endDate);
+
+    // Check conflicts with existing bookings
+    const [conflictsResult] = await db.execute(
+      `SELECT b.booking_id, b.scheduled_start, b.scheduled_end
+       FROM bookings b
+       JOIN booking_services bs ON b.booking_id = bs.booking_id
+       WHERE bs.employee_id = ?
+         AND b.status NOT IN ('CANCELLED', 'NO_SHOW')
+         AND b.scheduled_start < ?
+         AND b.scheduled_end > ?`,
+      [employee_id, requestEndStr, requestStartStr]
+    );
+
+    if (conflictsResult.length > 0) {
+      // Convert database datetime to local time
+      const formatConflictTime = (timeStr) => {
+        if (!timeStr) return null;
+       
+        if (timeStr instanceof Date) {
+          const Y = timeStr.getFullYear();
+          const M = String(timeStr.getMonth() + 1).padStart(2, '0');
+          const D = String(timeStr.getDate()).padStart(2, '0');
+          const H = String(timeStr.getHours()).padStart(2, '0');
+          const MI = String(timeStr.getMinutes()).padStart(2, '0');
+          const S = String(timeStr.getSeconds()).padStart(2, '0');
+          return `${Y}-${M}-${D}T${H}:${MI}:${S}`;
+        }
+        return String(timeStr);
+      };
+
+      return res.status(409).json({
+        message: 'Time slot is no longer available. Please select a different time.',
+        conflicting_booking: {
+          booking_id: conflictsResult[0].booking_id,
+          scheduled_start: formatConflictTime(conflictsResult[0].scheduled_start),
+          scheduled_end: formatConflictTime(conflictsResult[0].scheduled_end)
+        }
+      });
+    }
+
+    await db.query('START TRANSACTION');
+    try {
+
+      const [bookingResult] = await db.execute(
+        `INSERT INTO bookings
+           (salon_id, customer_user_id, scheduled_start, scheduled_end, status, notes, created_at, updated_at)
+         VALUES
+           (?, ?, ?, ?, 'SCHEDULED', ?, NOW(), NOW())`,
+        [salon_id, customer_user_id, requestStartStr, requestEndStr, notes]
+      );
+
+      const booking_id = bookingResult.insertId;
+      const serviceIds = services.map(s => s.service_id);
+      const placeholders = serviceIds.map(() => '?').join(',');
+      const [serviceDetails] = await db.execute(
+        `SELECT service_id, duration_minutes, price, salon_id, name
+         FROM services
+         WHERE service_id IN (${placeholders})`,
+        serviceIds
+      );
+      
+      const detailsById = {};
+      serviceDetails.forEach(s => { detailsById[s.service_id] = s; });
+
+      // Link services to booking
+      for (const s of services) {
+        //Valid check because it requires the frontend to send a service_id
+        if (!s.service_id) throw new Error('Each service must have a service_id'); 
+        const sd = detailsById[s.service_id];
+        if (!sd) throw new Error(`Service ${s.service_id} not found`);
+        if (sd.salon_id !== parseInt(salon_id)) {
+          throw new Error(`Service ${sd.name} does not belong to this salon`);
+        }
+        await db.execute(
+          `INSERT INTO booking_services
+             (booking_id, employee_id, service_id, price, duration_minutes, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, NOW(), NOW())`,
+          [booking_id, employee_id, s.service_id, sd.price, sd.duration_minutes]
+        );
+      }
+
+      
+      const totalPrice = services.reduce((sum, s) => sum + Number(detailsById[s.service_id].price), 0);
+
+      await db.query('COMMIT');
+
+      return res.status(201).json({
+        message: 'Appointment booked successfully',
+        data: {
+          booking_id,
+          stylist: {
+            employee_id: parseInt(employee_id),
+            name: employeeResult[0].full_name,
+            title: employeeResult[0].title
+          },
+          appointment: {
+            scheduled_start: requestStartStr.replace(' ', 'T'),
+            scheduled_end: requestEndStr.replace(' ', 'T'),
+            duration_minutes: Math.round((endDate - startDate) / (1000 * 60)),
+            status: 'SCHEDULED'
+          },
+          services: services.map(s => ({
+            service_id: s.service_id,
+            service_name: detailsById[s.service_id].name,
+            price: Number(detailsById[s.service_id].price)
+          })),
+          total_price: totalPrice,
+          notes,
+          created_at: new Date().toISOString()
+        }
+      });
+
+    } catch (DBerror) {
+      await db.query('ROLLBACK');
+      throw DBerror;
+    }
+
+  } catch (error) {
+    console.error('bookTimeSlot error:', error);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+};
+
+
+// Get Salon Information
+exports.getSalonInfo = async (req, res) => {
+  const db = connection.promise();
+
+  try {
+    const { salon_id } = req.params; 
+    const [salonResult] = await db.execute(
+      'SELECT salon_id, name, description, category, phone, email, address, city, state, postal_code, country FROM salons WHERE salon_id = ?',
+      [salon_id]
+    );
+    if (salonResult.length === 0) {
+      return res.status(404).json({ message: 'Salon not found' });
+    }
+    return res.status(200).json({ data: salonResult[0] });
+  } catch (error) {
+    console.error('getSalonInfo error:', error);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+};
+
+// BS 1.1 - Get Salon Information for Owner
+exports.getSalonInformation = async (req, res) => {
+  const db = connection.promise();
+  
+  try {
+    const user_id = req.user?.user_id;
+    
+  
+    const [salonResult] = await db.execute(
+      'SELECT salon_id, name, description, category, phone, email, address, city, state, postal_code, country, status FROM salons WHERE owner_user_id = ?',
+      [user_id]
+    );
+    
+    if (salonResult.length === 0) {
+      return res.status(404).json({ message: 'Salon not found' });
+    }
+    
+    const salon_id = salonResult[0].salon_id;
+    
+    const getAvailabilityQuery = `
+        SELECT salon_availability_id, weekday, start_time, end_time
+        FROM salon_availability 
+        WHERE salon_id = ?
+        ORDER BY weekday
+    `;
+    const [availabilityResult] = await db.execute(getAvailabilityQuery, [salon_id]);
+    
+    const weeklyHours = {};
+    
+    VALID_WEEKDAYS.forEach(day => {
+        weeklyHours[day] = {
+            is_open: false,
+            start_time: null,
+            end_time: null
+        };
+    });
+    
+    availabilityResult.forEach(avail => {
+        const dayName = Object.keys(WEEKDAY_TO_NUMBER).find(day => WEEKDAY_TO_NUMBER[day] === avail.weekday);
+        if (dayName) {
+            weeklyHours[dayName] = {
+                is_open: true,
+                start_time: avail.start_time,
+                end_time: avail.end_time
+            };
+        }
+    });
+    
+    return res.status(200).json({ 
+      data: {
+        ...salonResult[0],
+        weekly_hours: weeklyHours
+      }
+    });
+  } catch (error) {
+    console.error('getSalonInformation error:', error);
+    return res.status(500).json({ message: 'Internal server error' });
   }
 };
