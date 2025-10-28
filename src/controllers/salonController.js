@@ -1079,10 +1079,15 @@ exports.getAvailableTimeSlotsRange = async (req, res) => {
   
   try {
       const { salon_id, employee_id } = req.params;
-      const { start_date, end_date, days = 7 } = req.query;
+      const { start_date, end_date, days = 7, service_duration = 30 } = req.query;
       
       if (!salon_id || isNaN(salon_id) || !employee_id || isNaN(employee_id)) {
           return res.status(400).json({ message: 'Missing required fields: salon_id or employee_id' });
+      }
+      
+      const serviceDurationMinutes = parseInt(service_duration);
+      if (isNaN(serviceDurationMinutes) || serviceDurationMinutes <= 0) {
+          return res.status(400).json({ message: 'Invalid service_duration. Must be a positive number (minutes)' });
       }
     
       
@@ -1226,49 +1231,79 @@ exports.getAvailableTimeSlotsRange = async (req, res) => {
               };
           } else {
               const availableSlots = [];
-              const slotInterval = availability.slot_interval_minutes || 30;
+              const availabilityStart = new Date(`${dateStr}T${availability.start_time}`);
+              const availabilityEnd = new Date(`${dateStr}T${availability.end_time}`);
               
-              const startTime = new Date(`${dateStr}T${availability.start_time}`);
-              const endTime = new Date(`${dateStr}T${availability.end_time}`);
+              const blockedTimes = [];
               
-              let currentTime = new Date(startTime);
-              
-              while (currentTime < endTime) {
-                  const slotStart = new Date(currentTime);
-                  const slotEnd = new Date(currentTime.getTime() + slotInterval * 60000);
-                  
-                  // Check conflict with unavailability
-                  const isBlocked = unavailability.some(block => {
-                      const blockStart = new Date(`${dateStr}T${block.start_time}`);
-                      const blockEnd = new Date(`${dateStr}T${block.end_time}`);
-                      return slotStart < blockEnd && slotEnd > blockStart;
+              unavailability.forEach(block => {
+                  blockedTimes.push({
+                      start: new Date(`${dateStr}T${block.start_time}`),
+                      end: new Date(`${dateStr}T${block.end_time}`)
                   });
-                  
-                  // Check conflict with existing bookings
-                  const isBooked = bookings.some(booking => {
-                      const bookingStart = new Date(booking.scheduled_start);
-                      const bookingEnd = new Date(booking.scheduled_end);
-                      return slotStart < bookingEnd && slotEnd > bookingStart;
+              });
+              
+              bookings.forEach(booking => {
+                  blockedTimes.push({
+                      start: new Date(booking.scheduled_start),
+                      end: new Date(booking.scheduled_end)
                   });
+              });
+              
+              blockedTimes.sort((a, b) => a.start - b.start);
+              
+              const now = new Date();
+              const todayStr = now.toISOString().split('T')[0];
+              const isCurrentDay = dateStr === todayStr;
+              
+              let currentSlotStart = availabilityStart;
+              
+              if (isCurrentDay && currentSlotStart < now) {
+                  currentSlotStart = now;
+              }
+              
+              for (const blocked of blockedTimes) {
+                  const gap = blocked.start.getTime() - currentSlotStart.getTime();
                   
-                  // Check if this slot is in the past (for current day or past dates)
-                  const now = new Date();
-                  const todayStr = now.toISOString().split('T')[0];
-                  const isCurrentDay = dateStr === todayStr;
-                  const isPastDate = dateStr < todayStr;
-                  const isPastSlot = (isCurrentDay && slotStart < now) || isPastDate;
+                  if (gap >= serviceDurationMinutes * 60000) {
+                      let slotStart = new Date(currentSlotStart);
+                      
+                      while (slotStart.getTime() + serviceDurationMinutes * 60000 <= blocked.start.getTime()) {
+                          const slotEnd = new Date(slotStart.getTime() + serviceDurationMinutes * 60000);
+                          
+                          const timeStr = slotStart.toTimeString().split(' ')[0].substring(0, 5);
+                          const endTimeStr = slotEnd.toTimeString().split(' ')[0].substring(0, 5);
+                          
+                          availableSlots.push({
+                              start_time: timeStr,
+                              end_time: endTimeStr,
+                              available: true
+                          });
+                          
+                          slotStart = new Date(slotStart.getTime() + serviceDurationMinutes * 60000);
+                      }
+                  }
                   
-                  if (!isBlocked && !isBooked && !isPastSlot) {
+                  currentSlotStart = new Date(Math.max(currentSlotStart.getTime(), blocked.end.getTime()));
+              }
+              
+              if (currentSlotStart.getTime() + serviceDurationMinutes * 60000 <= availabilityEnd.getTime()) {
+                  let slotStart = new Date(currentSlotStart);
+                  
+                  while (slotStart.getTime() + serviceDurationMinutes * 60000 <= availabilityEnd.getTime()) {
+                      const slotEnd = new Date(slotStart.getTime() + serviceDurationMinutes * 60000);
+                      
                       const timeStr = slotStart.toTimeString().split(' ')[0].substring(0, 5);
                       const endTimeStr = slotEnd.toTimeString().split(' ')[0].substring(0, 5);
+                      
                       availableSlots.push({
                           start_time: timeStr,
                           end_time: endTimeStr,
                           available: true
                       });
+                      
+                      slotStart = new Date(slotStart.getTime() + serviceDurationMinutes * 60000);
                   }
-                  
-                  currentTime = new Date(currentTime.getTime() + slotInterval * 60000);
               }
               
               dailySlots[dateStr] = {
@@ -1276,8 +1311,7 @@ exports.getAvailableTimeSlotsRange = async (req, res) => {
                   day_name: dayName,
                   availability: {
                       start_time: availability.start_time,
-                      end_time: availability.end_time,
-                      slot_interval_minutes: slotInterval
+                      end_time: availability.end_time
                   },
                   available_slots: availableSlots,
                   total_slots: availableSlots.length
