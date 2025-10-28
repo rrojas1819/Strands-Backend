@@ -283,7 +283,7 @@ exports.getStylistWeeklySchedule = async (req, res) => {
     const salon_id = employeeResult[0].salon_id;
 
     const getAvailabilityQuery = `
-      SELECT availability_id, employee_id, weekday, start_time, end_time, slot_interval_minutes, created_at, updated_at 
+      SELECT availability_id, employee_id, weekday, start_time, end_time, created_at, updated_at 
       FROM employee_availability 
       WHERE employee_id = ?
       ORDER BY FIELD(weekday, 'MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY')
@@ -291,7 +291,7 @@ exports.getStylistWeeklySchedule = async (req, res) => {
     const [availabilityResult] = await db.execute(getAvailabilityQuery, [employee_id]);
 
     const getUnavailabilityQuery = `
-      SELECT unavailability_id, employee_id, weekday, start_time, end_time, slot_interval_minutes, created_at, updated_at 
+      SELECT unavailability_id, employee_id, weekday, start_time, end_time, created_at, updated_at 
       FROM employee_unavailability 
       WHERE employee_id = ?
       ORDER BY weekday, start_time
@@ -319,11 +319,12 @@ exports.getStylistWeeklySchedule = async (req, res) => {
       }
     });
 
-    // Get all non-cancelled bookings
     const getBookingsQuery = `
-      SELECT b.booking_id, b.salon_id, b.customer_user_id, b.scheduled_start, b.scheduled_end, b.status, b.notes, b.created_at, b.updated_at
+      SELECT DISTINCT b.booking_id, b.salon_id, b.customer_user_id, b.scheduled_start, b.scheduled_end, b.status, b.notes, b.created_at, b.updated_at,
+             u.full_name AS customer_name, u.email AS customer_email, u.phone AS customer_phone
       FROM bookings b
       JOIN booking_services bs ON b.booking_id = bs.booking_id
+      JOIN users u ON b.customer_user_id = u.user_id
       WHERE bs.employee_id = ?
       ORDER BY b.scheduled_start ASC
     `;
@@ -344,8 +345,7 @@ exports.getStylistWeeklySchedule = async (req, res) => {
         weeklySchedule[dayName].availability = {
           availability_id: avail.availability_id,
           start_time: avail.start_time,
-          end_time: avail.end_time,
-          slot_interval_minutes: avail.slot_interval_minutes
+          end_time: avail.end_time
         };
       }
     });
@@ -378,8 +378,7 @@ exports.getStylistWeeklySchedule = async (req, res) => {
             weeklySchedule[dayName].unavailability.push({
               unavailability_id: unavail.unavailability_id,
               start_time: unavail.start_time,
-              end_time: unavail.end_time,
-              slot_interval_minutes: unavail.slot_interval_minutes
+              end_time: unavail.end_time
             });
           }
         }
@@ -388,7 +387,7 @@ exports.getStylistWeeklySchedule = async (req, res) => {
     });
 
     // Map bookings to days based on scheduled_start date
-    bookingsResult.forEach(booking => {
+    for (const booking of bookingsResult) {
       const bookingDate = new Date(booking.scheduled_start);
       const dayName = DAYS_OF_WEEK[bookingDate.getDay() === 0 ? 6 : bookingDate.getDay() - 1]; // Convert JS day to our Monday-Sunday format
       
@@ -396,17 +395,42 @@ exports.getStylistWeeklySchedule = async (req, res) => {
         const startTime = new Date(booking.scheduled_start).toTimeString().split(' ')[0];
         const endTime = new Date(booking.scheduled_end).toTimeString().split(' ')[0];
         
+        const getServicesQuery = `
+          SELECT bs.service_id, bs.price, bs.duration_minutes,
+                 s.name AS service_name
+          FROM booking_services bs
+          JOIN services s ON bs.service_id = s.service_id
+          WHERE bs.booking_id = ? AND bs.employee_id = ?
+        `;
+        const [servicesResult] = await db.execute(getServicesQuery, [booking.booking_id, employee_id]);
+        
+        const totalDuration = servicesResult.reduce((sum, s) => sum + s.duration_minutes, 0);
+        const totalPrice = servicesResult.reduce((sum, s) => sum + Number(s.price), 0);
+        
         weeklySchedule[dayName].bookings.push({
           booking_id: booking.booking_id,
           salon_id: booking.salon_id,
-          customer_user_id: booking.customer_user_id,
+          customer: {
+            user_id: booking.customer_user_id,
+            name: booking.customer_name,
+            email: booking.customer_email,
+            phone: booking.customer_phone
+          },
           scheduled_start: startTime,
           scheduled_end: endTime,
           status: booking.status,
-          notes: booking.notes
+          notes: booking.notes,
+          services: servicesResult.map(s => ({
+            service_id: s.service_id,
+            service_name: s.service_name,
+            duration_minutes: s.duration_minutes,
+            price: s.price
+          })),
+          total_duration_minutes: totalDuration,
+          total_price: totalPrice
         });
       }
-    });
+    }
 
     if (Object.keys(weeklySchedule).length === 0) {
         return res.status(404).json({ message: 'No schedule found for this stylist' });
