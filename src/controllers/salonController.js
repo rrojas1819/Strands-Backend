@@ -1867,6 +1867,26 @@ exports.bookTimeSlot = async (req, res) => {
       [employee_id, salon_id]
     );
     
+    if (employeeResult.length === 0) {
+      return res.status(404).json({ message: 'Employee not found or inactive' });
+    }
+
+    const [employeeServices] = await db.execute(
+      `SELECT service_id FROM employee_services WHERE employee_id = ? AND service_id IN (${placeholders})`,
+      [employee_id, ...serviceIds]
+    );
+
+    if (employeeServices.length !== serviceIds.length) {
+      const offeredServiceIds = employeeServices.map(es => es.service_id);
+      const missingServices = serviceIds.filter(sid => !offeredServiceIds.includes(sid));
+      const missingServiceNames = serviceDetails
+        .filter(s => missingServices.includes(s.service_id))
+        .map(s => s.name);
+      
+      return res.status(400).json({ 
+        message: `This employee does not offer the following service(s): ${missingServiceNames.join(', ')}` 
+      });
+    }
 
     // Pull all weekday availability for stylist
     const [availabilityResult] = await db.execute(
