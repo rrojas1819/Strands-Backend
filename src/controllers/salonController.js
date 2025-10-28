@@ -1498,26 +1498,72 @@ exports.removeServiceFromStylist = async (req, res) => {
       return res.status(404).json({ message: 'Service not found in your profile' });
     }
     
-    const deleteQuery = `
-      DELETE FROM employee_services 
-      WHERE employee_id = ? AND service_id = ?
+    const checkActiveBookingsQuery = `
+      SELECT b.booking_id, b.scheduled_start, b.status
+      FROM bookings b
+      JOIN booking_services bs ON b.booking_id = bs.booking_id
+      WHERE bs.service_id = ? 
+      AND b.status NOT IN ('CANCELED', 'COMPLETED')
+      LIMIT 1
     `;
-    const [result] = await db.execute(deleteQuery, [employee_id, service_id]);
+    const [activeBookings] = await db.execute(checkActiveBookingsQuery, [service_id]);
     
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ message: 'Service could not be removed' });
+    if (activeBookings.length > 0) {
+      return res.status(409).json({ 
+        message: 'Cannot remove service that has active bookings. Please cancel or complete all related bookings first.',
+        data: {
+          booking_id: activeBookings[0].booking_id,
+          scheduled_start: activeBookings[0].scheduled_start,
+          status: activeBookings[0].status
+        }
+      });
     }
     
-    return res.status(200).json({
-      message: 'Service removed from profile successfully',
-      data: {
-        employee_id: employee_id,
-        service: {
-          service_id: parseInt(service_id),
-          name: serviceLinkResult[0].service_name
-        }
+    await db.query('START TRANSACTION');
+    
+    try {
+      const deleteEmployeeServiceQuery = `
+        DELETE FROM employee_services 
+        WHERE employee_id = ? AND service_id = ?
+      `;
+      const [result] = await db.execute(deleteEmployeeServiceQuery, [employee_id, service_id]);
+      
+      if (result.affectedRows === 0) {
+        await db.query('ROLLBACK');
+        return res.status(404).json({ message: 'Service could not be removed' });
       }
-    });
+      
+      try {
+        await db.execute(
+          'DELETE FROM services WHERE service_id = ?',
+          [service_id]
+        );
+      } catch (deleteServiceError) {
+        await db.query('ROLLBACK');
+        console.error('Error deleting service from services table:', deleteServiceError);
+        return res.status(500).json({ 
+          message: 'Failed to delete service from services table',
+          error: deleteServiceError.message
+        });
+      }
+      
+      await db.query('COMMIT');
+      
+      return res.status(200).json({
+        message: 'Service removed from profile successfully',
+        data: {
+          employee_id: employee_id,
+          service: {
+            service_id: parseInt(service_id),
+            name: serviceLinkResult[0].service_name
+          }
+        }
+      });
+      
+    } catch (transactionError) {
+      await db.query('ROLLBACK');
+      throw transactionError;
+    }
     
   } catch (error) {
     console.error('removeServiceFromStylist error:', error);
