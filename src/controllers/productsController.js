@@ -68,3 +68,35 @@ exports.getProducts = async (req, res) => {
         });
     }
 };
+
+// SF 1.1 Delete Product
+exports.deleteProduct = async (req, res) => {
+    const db = connection.promise();
+
+    try {
+        const { product_id } = req.params;
+        const owner_user_id = req.user?.user_id;
+
+        if (!product_id) {
+            return res.status(400).json({ message: 'Product ID is required' });
+        }
+
+        const deleteProductQuery = 
+        `DELETE FROM products WHERE product_id = ? AND salon_id = (SELECT salon_id FROM salons WHERE owner_user_id = ?);`;
+
+        const [results] = await db.execute(deleteProductQuery, [product_id, owner_user_id]);
+
+        if (results.affectedRows === 0) {
+            return res.status(404).json({ message: 'Product not found' });
+        }
+
+        res.status(200).json({
+            message: "Product deleted successfully"
+        });
+    } catch (error) {
+        console.error('deleteProduct error:', error);
+        res.status(500).json({
+            message: "Internal server error"
+        });
+    }
+};
