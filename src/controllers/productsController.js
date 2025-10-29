@@ -100,3 +100,36 @@ exports.deleteProduct = async (req, res) => {
         });
     }
 };
+
+// SF 1.1 Update Product
+exports.updateProduct = async (req, res) => {
+    const db = connection.promise();
+
+    try {
+        const { product_id } = req.params;
+        const { name, description, sku, price, category, stock_qty } = req.body;
+        const owner_user_id = req.user?.user_id;
+
+        if (!name || !description || !sku || !price || !category || !stock_qty) {
+            return res.status(400).json({ message: 'Missing required fields' });
+        }
+
+        const updateProductQuery = 
+        `UPDATE products SET name = ?, description = ?, sku = ?, price = ?, category = ?, stock_qty = ? WHERE product_id = ? AND salon_id = (SELECT salon_id FROM salons WHERE owner_user_id = ?);`;
+        const [results] = await db.execute(updateProductQuery, [name, description, sku, price, category, stock_qty, product_id, owner_user_id]);
+
+        if (results.affectedRows === 0) {
+            return res.status(404).json({ message: 'Product not found or SKU already exists.' });
+        }
+
+        res.status(200).json({
+            message: "Product updated successfully"
+        });
+
+    } catch (error) {
+        console.error('updateProduct error:', error);
+        res.status(500).json({
+            message: "Internal server error"
+        });
+    }
+};
