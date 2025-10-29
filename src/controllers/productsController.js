@@ -36,3 +36,35 @@ exports.addProduct = async (req, res) => {
         });
     }
 };
+
+// SF 1.1 Get Products
+exports.getProducts = async (req, res) => {
+    const db = connection.promise();
+
+    try {
+
+        const { salon_id } = req.params;
+
+        if (!salon_id) {
+            return res.status(400).json({ message: 'Salon ID is required' });
+        }
+
+        const getProductsQuery = 
+        `SELECT product_id, name, description, sku, price, category, stock_qty FROM products WHERE salon_id = ?;`;
+
+        const [results] = await db.execute(getProductsQuery, [salon_id]);
+
+        if (results.length === 0) {
+            return res.status(404).json({ message: 'No products found' });
+        }
+
+        res.status(200).json({
+            products: results
+        });
+
+    } catch (error) {
+        res.status(500).json({
+            message: "Internal server error"
+        });
+    }
+};
