@@ -4,6 +4,17 @@ const validateEmail = (email) => {
     return emailRegex.test(email);
 };
 
+// Format a JS Date as local SQL datetime (YYYY-MM-DD HH:mm:ss)
+function toLocalSQL(dt) {
+    const Y = dt.getFullYear();
+    const M = String(dt.getMonth() + 1).padStart(2, '0');
+    const D = String(dt.getDate()).padStart(2, '0');
+    const H = String(dt.getHours()).padStart(2, '0');
+    const MI = String(dt.getMinutes()).padStart(2, '0');
+    const S = String(dt.getSeconds()).padStart(2, '0');
+    return `${Y}-${M}-${D} ${H}:${MI}:${S}`;
+}
+
 // Cleanup job for expired tokens every 15 minutes for more responsive cleanup
 const startTokenCleanup = (connection) => {
     setInterval(async () => {
@@ -50,5 +61,30 @@ const startTokenCleanup = (connection) => {
 
 module.exports = {
     validateEmail,
-    startTokenCleanup
+    startTokenCleanup,
+    startBookingsAutoComplete,
+    toLocalSQL
 };
+
+// Cleanup job to auto-complete finished bookings every 1 hour
+function startBookingsAutoComplete(connection) {
+    setInterval(async () => {
+        try {
+            const db = connection.promise();
+            //Small grace period
+            const GRACE_MS = 2 * 60 * 1000; // 2 minutes
+            const nowMinusGrace = new Date(Date.now() - GRACE_MS);
+            const currentLocal = toLocalSQL(nowMinusGrace);
+
+            const updateQuery = `
+                UPDATE bookings
+                SET status = 'COMPLETED'
+                WHERE status = 'SCHEDULED'
+                  AND scheduled_end IS NOT NULL
+                  AND scheduled_end < ?
+            `;
+            await db.execute(updateQuery, [currentLocal]);
+        } catch (error) {
+        }
+    }, 60 * 60 * 1000); 
+}
