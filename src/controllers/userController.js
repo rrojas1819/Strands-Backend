@@ -2,7 +2,7 @@ require('dotenv').config();
 const bcrypt = require('bcrypt');
 const connection = require('../config/databaseConnection');
 const { generateToken } = require('../middleware/auth.middleware');
-const { validateEmail } = require('../utils/utilies');
+const { validateEmail, toLocalSQL } = require('../utils/utilies');
 
 // Global constants
 const DAYS_OF_WEEK = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'];
@@ -262,18 +262,55 @@ exports.getStylistSalon = async (req, res) => {
 
 
 
-//BS 1.4 Get stylist's weekly schedule
+//BS 1.4 Get stylist's schedule for a date range
 /*REQUIRES FURTHER TESTING */
 exports.getStylistWeeklySchedule = async (req, res) => {
   const db = connection.promise();
 
   try {
     const user_id = req.user?.user_id;
+    const { start_date, end_date } = req.query;
 
     if (!user_id) {
       return res.status(401).json({ message: 'No user found' });
     }
 
+    // Validate date range params
+    if (!start_date || !end_date) {
+      return res.status(400).json({ message: 'start_date and end_date are required (MM-DD-YYYY)' });
+    }
+
+    // Parse dates (expecting MM-DD-YYYY per example), fallback to Date parsing
+    const parseMmDdYyyy = (s) => {
+      const parts = String(s).split('-');
+      if (parts.length === 3) {
+        const [mm, dd, yyyy] = parts.map((p) => Number(p));
+        if (!Number.isNaN(mm) && !Number.isNaN(dd) && !Number.isNaN(yyyy)) {
+          return new Date(yyyy, mm - 1, dd);
+        }
+      }
+      const d = new Date(s);
+      return Number.isNaN(d.getTime()) ? null : d;
+    };
+
+    const rangeStart = parseMmDdYyyy(start_date);
+    const rangeEnd = parseMmDdYyyy(end_date);
+
+    if (!rangeStart || !rangeEnd) {
+      return res.status(400).json({ message: 'Invalid start_date or end_date format' });
+    }
+
+    // Normalize to start/end of day
+    const startOfDay = new Date(rangeStart);
+    startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date(rangeEnd);
+    endOfDay.setHours(23, 59, 59, 999);
+
+    if (startOfDay.getTime() > endOfDay.getTime()) {
+      return res.status(400).json({ message: 'start_date must be before or equal to end_date' });
+    }
+
+    
 
     // Get employee_id and salon_id from user_id
     const getEmployeeQuery = 'SELECT employee_id, salon_id FROM employees WHERE user_id = ? AND active = 1';
@@ -326,88 +363,129 @@ exports.getStylistWeeklySchedule = async (req, res) => {
       JOIN booking_services bs ON b.booking_id = bs.booking_id
       JOIN users u ON b.customer_user_id = u.user_id
       WHERE bs.employee_id = ?
+        AND b.scheduled_start >= ?
+        AND b.scheduled_start <= ?
       ORDER BY b.scheduled_start ASC
     `;
-    const [bookingsResult] = await db.execute(getBookingsQuery, [employee_id]);
+    const requestStartStr = toLocalSQL(startOfDay);
+    const requestEndStr = toLocalSQL(endOfDay);
+    const [bookingsResult] = await db.execute(getBookingsQuery, [employee_id, requestStartStr, requestEndStr]);
 
-    const weeklySchedule = {};
-
-    DAYS_OF_WEEK.forEach(day => {
-      weeklySchedule[day] = {
-        availability: null,
-        unavailability: [],
-        bookings: []
-      };
-    });
-    availabilityResult.forEach(avail => {
+    // Index availability by weekday for O(1) lookup
+    const availabilityByWeekday = {};
+    for (const avail of availabilityResult) {
       const dayName = weekdayMap[avail.weekday];
-      if (weeklySchedule[dayName]) {
-        weeklySchedule[dayName].availability = {
+      if (dayName) {
+        availabilityByWeekday[dayName] = {
           availability_id: avail.availability_id,
           start_time: avail.start_time,
           end_time: avail.end_time
         };
       }
-    });
+    }
 
-    // Map unavailability data to days (convert weekday number to day name)
-    // Filter out unavailability periods that fall outside salon operating hours AND employee availability 
-    unavailabilityResult.forEach(unavail => {
+    // Group unavailability by weekday
+    const unavailabilityByWeekday = {};
+    for (const unavail of unavailabilityResult) {
       const dayName = weekdayMap[unavail.weekday];
-      if (weeklySchedule[dayName]) {
-        // Check if salon is open on this day
-        const salonHours = salonHoursMap[dayName];
-        const employeeAvailability = weeklySchedule[dayName].availability;
-        
-        if (salonHours && employeeAvailability) {
-          // Check if unavailability period overlaps with salon operating hours
+      if (!dayName) continue;
+      if (!unavailabilityByWeekday[dayName]) unavailabilityByWeekday[dayName] = [];
+      unavailabilityByWeekday[dayName].push(unavail);
+    }
+
+    const schedule = {};
+
+    const formatMmDdYyyy = (d) => {
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const dd = String(d.getDate()).padStart(2, '0');
+      const yyyy = d.getFullYear();
+      return `${mm}-${dd}-${yyyy}`;
+    };
+
+    const ymd = (d) => {
+      const year = d.getFullYear();
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    };
+    const bookingsByDate = {};
+    const bookingIds = [];
+    for (const booking of bookingsResult) {
+      const d = new Date(booking.scheduled_start);
+      const key = ymd(d);
+      if (!bookingsByDate[key]) bookingsByDate[key] = [];
+      bookingsByDate[key].push(booking);
+      bookingIds.push(booking.booking_id);
+    }
+
+    const servicesByBookingId = {};
+    if (bookingIds.length > 0) {
+      const placeholders = bookingIds.map(() => '?').join(',');
+      const getServicesBulkQuery = `
+        SELECT bs.booking_id, bs.service_id, bs.price, bs.duration_minutes,
+               s.name AS service_name
+        FROM booking_services bs
+        JOIN services s ON bs.service_id = s.service_id
+        WHERE bs.booking_id IN (${placeholders}) AND bs.employee_id = ?
+      `;
+      const params = [...bookingIds, employee_id];
+      const [servicesRows] = await db.execute(getServicesBulkQuery, params);
+      for (const row of servicesRows) {
+        if (!servicesByBookingId[row.booking_id]) servicesByBookingId[row.booking_id] = [];
+        servicesByBookingId[row.booking_id].push({
+          service_id: row.service_id,
+          service_name: row.service_name,
+          duration_minutes: row.duration_minutes,
+          price: row.price
+        });
+      }
+    }
+
+    for (let d = new Date(startOfDay); d.getTime() <= endOfDay.getTime(); d.setDate(d.getDate() + 1)) {
+      const dayIndex = d.getDay(); // 0..6 (Sun..Sat)
+      const dayName = weekdayMap[dayIndex];
+
+      const dayAvailability = availabilityByWeekday[dayName] || null;
+
+      const dayUnavailability = [];
+      const salonHours = salonHoursMap[dayName];
+      if (salonHours && dayAvailability) {
+        const list = unavailabilityByWeekday[dayName] || [];
+        for (const unavail of list) {
           const salonStart = salonHours.start_time;
           const salonEnd = salonHours.end_time;
           const unavailStart = unavail.start_time;
           const unavailEnd = unavail.end_time;
-          
-          // Check if unavailability period overlaps with employee availability
-          const empStart = employeeAvailability.start_time;
-          const empEnd = employeeAvailability.end_time;
-          
-          // Only include unavailability if it overlaps with both salon hours AND employee availability
+          const empStart = dayAvailability.start_time;
+          const empEnd = dayAvailability.end_time;
+
           const overlapsSalonHours = unavailStart < salonEnd && unavailEnd > salonStart;
           const overlapsEmployeeAvailability = unavailStart < empEnd && unavailEnd > empStart;
-          
+
           if (overlapsSalonHours && overlapsEmployeeAvailability) {
-            weeklySchedule[dayName].unavailability.push({
+            dayUnavailability.push({
               unavailability_id: unavail.unavailability_id,
               start_time: unavail.start_time,
               end_time: unavail.end_time
             });
           }
         }
-        // If salon is closed or employee has no availability on this day, don't include any unavailability
       }
-    });
 
-    // Map bookings to days based on scheduled_start date
-    for (const booking of bookingsResult) {
-      const bookingDate = new Date(booking.scheduled_start);
-      const dayName = DAYS_OF_WEEK[bookingDate.getDay() === 0 ? 6 : bookingDate.getDay() - 1]; // Convert JS day to our Monday-Sunday format
-      
-      if (weeklySchedule[dayName]) {
-        const startTime = new Date(booking.scheduled_start).toTimeString().split(' ')[0];
-        const endTime = new Date(booking.scheduled_end).toTimeString().split(' ')[0];
-        
-        const getServicesQuery = `
-          SELECT bs.service_id, bs.price, bs.duration_minutes,
-                 s.name AS service_name
-          FROM booking_services bs
-          JOIN services s ON bs.service_id = s.service_id
-          WHERE bs.booking_id = ? AND bs.employee_id = ?
-        `;
-        const [servicesResult] = await db.execute(getServicesQuery, [booking.booking_id, employee_id]);
-        
-        const totalDuration = servicesResult.reduce((sum, s) => sum + s.duration_minutes, 0);
+      const dateKey = ymd(d);
+      const bookingsForDate = bookingsByDate[dateKey] || [];
+      const dayBookings = [];
+      for (const booking of bookingsForDate) {
+        const startDate = new Date(booking.scheduled_start);
+        const endDate = new Date(booking.scheduled_end);
+        const startTime = startDate.toTimeString().split(' ')[0];
+        const endTime = endDate.toTimeString().split(' ')[0];
+
+        const servicesResult = servicesByBookingId[booking.booking_id] || [];
+        const totalDuration = servicesResult.reduce((sum, s) => sum + Number(s.duration_minutes), 0);
         const totalPrice = servicesResult.reduce((sum, s) => sum + Number(s.price), 0);
-        
-        weeklySchedule[dayName].bookings.push({
+
+        dayBookings.push({
           booking_id: booking.booking_id,
           salon_id: booking.salon_id,
           customer: {
@@ -423,22 +501,26 @@ exports.getStylistWeeklySchedule = async (req, res) => {
           services: servicesResult.map(s => ({
             service_id: s.service_id,
             service_name: s.service_name,
-            duration_minutes: s.duration_minutes,
+            duration_minutes: Number(s.duration_minutes),
             price: s.price
           })),
           total_duration_minutes: totalDuration,
           total_price: totalPrice
         });
       }
-    }
 
-    if (Object.keys(weeklySchedule).length === 0) {
-        return res.status(404).json({ message: 'No schedule found for this stylist' });
+      const displayDate = formatMmDdYyyy(d);
+      schedule[displayDate] = {
+        weekday: dayName,
+        availability: dayAvailability,
+        unavailability: dayUnavailability,
+        bookings: dayBookings
+      };
     }
 
     return res.status(200).json({ 
       data: {
-        schedule: weeklySchedule
+        schedule: schedule
       }
     });
 
