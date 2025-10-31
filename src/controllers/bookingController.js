@@ -228,7 +228,7 @@ exports.rescheduleBooking = async (req, res) => {
 
             //checking unavailability
             const [unavailRows] = await db.execute(`SELECT start_time, end_time FROM employee_unavailability WHERE employee_id = ? AND weekday = ?`,
-                                                   [empId, bookingDayOfWeek]
+                [empId, bookingDayOfWeek]
             );
             const hasConflict = unavailRows.some(block => {
                 const blockStart = new Date(`${dayStr}T${block.start_time}`);
@@ -241,7 +241,7 @@ exports.rescheduleBooking = async (req, res) => {
             const [conflicts] = await db.execute(`SELECT b.booking_id FROM bookings b JOIN booking_services bs ON b.booking_id = bs.booking_id
                                                  WHERE bs.employee_id = ? AND b.booking_id <> ?  AND b.status NOT IN ('CANCELED', 'COMPLETED')
                                                  AND b.scheduled_start < ? AND b.scheduled_end > ?`,
-                                                 [empId, Number(booking_id), requestEndStr, requestStartStr]
+                [empId, Number(booking_id), requestEndStr, requestStartStr]
             );
             if (conflicts.length > 0) return res.status(409).json({ message: 'Time slot is no longer available. Please select a different time.' });
         }
@@ -252,7 +252,7 @@ exports.rescheduleBooking = async (req, res) => {
         try {
             //cancelling the old booking
             await db.execute(`UPDATE bookings SET status = 'CANCELED' WHERE booking_id = ? AND customer_user_id = ? AND status = 'SCHEDULED'`,
-                             [booking_id, authUserId]
+                [booking_id, authUserId]
             );
 
             //creating the new booking
@@ -343,6 +343,268 @@ exports.cancelBooking = async (req, res) => {
         });
     } catch (err) {
         try { await connection.promise().rollback(); } catch (_) { }
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
+//UPH 1.2/1.21 salon owner/employee seeing customer visits, employees only see their own
+exports.listVisitCustomers = async (req, res) => {
+    const db = connection.promise();
+
+    try {
+        //get authenticated user and their role either OWNER or EMPLOYEE
+        const authUserId = req.user?.user_id;
+        const role = req.user?.role;
+
+        if (!authUserId) return res.status(401).json({ message: 'Unauthorized' });
+
+        //pagination
+        let { limit = 20, offset = 0 } = req.query;
+        limit  = Number.isFinite(+limit) ? Math.max(1, Math.min(+limit, 100)) : 20;
+        offset = Number.isFinite(+offset) ? Math.max(0, +offset) : 0;
+
+        let salonIds = [];
+        let employee_id = null;
+
+        if (role === 'OWNER') { //OWNER view
+            const [salonRows] = await db.execute(`SELECT salon_id FROM salons WHERE owner_user_id = ?`, [authUserId]);
+            if (salonRows.length === 0) return res.status(404).json({ message: 'Salon not found for this owner' });
+            salonIds = salonRows.map(s => s.salon_id);
+        } else { //EMPLOYEE view
+            const [empRows] = await db.execute(`SELECT employee_id, salon_id FROM employees WHERE user_id = ? AND active = 1`, [authUserId]);
+            if (empRows.length === 0) return res.status(404).json({ message: 'Employee profile not found' });
+            employee_id = empRows[0].employee_id;
+        }
+
+        const makeIn = (arr) => arr.map(() => '?').join(',');
+        //only counting completed bookings
+        let countQuery, countParams;
+        if (role === 'OWNER') { //OWNER view
+            countQuery = `SELECT COUNT(DISTINCT b.customer_user_id) AS cnt FROM bookings b
+                         WHERE b.salon_id IN (${makeIn(salonIds)}) AND b.status = 'COMPLETED'`;
+            countParams = salonIds;
+        } else { //EMPLOYEE view
+            countQuery = `SELECT COUNT(DISTINCT b.customer_user_id) AS cnt FROM bookings b
+                         JOIN booking_services bs ON bs.booking_id = b.booking_id
+                         WHERE bs.employee_id = ? AND b.status = 'COMPLETED'`;
+            countParams = [employee_id];
+        }
+        const [countRows] = await db.execute(countQuery, countParams);
+        const total_records = countRows[0]?.cnt || 0;
+
+        if (total_records === 0) { //if no records are found
+            return res.status(200).json({
+                data: {
+                    summary: { total_records: 0 },
+                    customers: [],
+                    limit,
+                    offset,
+                    has_more: false
+                }
+            });
+        }
+
+        // List customers with COMPLETED visit totals and last completed visit
+        let listQuery, listParams;
+        if (role === 'OWNER') { //OWNER view
+            listQuery = `SELECT b.customer_user_id AS user_id, u.full_name, u.email, u.phone,
+                        COUNT(*) AS total_visits, MAX(b.scheduled_start) AS last_visit
+                        FROM bookings b JOIN users u ON u.user_id = b.customer_user_id
+                        WHERE b.salon_id IN (${makeIn(salonIds)}) AND b.status = 'COMPLETED'
+                        GROUP BY b.customer_user_id, u.full_name, u.email, u.phone
+                        ORDER BY total_visits DESC, last_visit DESC LIMIT ${limit} OFFSET ${offset}`;
+listParams = [...salonIds];
+        } else { //EMPLOYEE view
+            listQuery = `SELECT b.customer_user_id AS user_id, u.full_name, u.email, u.phone,
+                        COUNT(*) AS total_visits, MAX(b.scheduled_start) AS last_visit
+                        FROM bookings b JOIN booking_services bs ON bs.booking_id = b.booking_id
+                        JOIN users u ON u.user_id = b.customer_user_id WHERE bs.employee_id = ? AND b.status = 'COMPLETED'
+                        GROUP BY b.customer_user_id, u.full_name, u.email, u.phone
+                        ORDER BY total_visits DESC, last_visit DESC LIMIT ${limit} OFFSET ${offset}`;
+listParams = [employee_id];
+        }
+        const [rows] = await db.execute(listQuery, listParams);
+
+        const customers = rows.map(r => ({
+            user_id: r.user_id,
+            full_name: r.full_name,
+            email: r.email,
+            phone: r.phone,
+            total_visits: Number(r.total_visits || 0),
+            last_visit: formatDateTime(r.last_visit)
+        }));
+
+        return res.status(200).json({
+            data: {
+                summary: { total_records },
+                customers,
+                limit,
+                offset,
+                has_more: offset + customers.length < total_records
+            }
+        });
+    } catch (error) {
+        console.error('listVisitCustomers error:', error);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
+//UPH 1.2/1.21 salon owner/employee seeing an individual customer's details
+exports.getCustomerVisitHistory = async (req, res) => {
+    const db = connection.promise();
+
+    try {
+        //get authenticated user and their role either OWNER or EMPLOYEE
+        const authUserId = req.user?.user_id;
+        const role = req.user?.role;
+
+        if (!authUserId) return res.status(401).json({ message: 'Unauthorized' });
+
+        //getting individual customer ID
+        const { customer_user_id: paramId } = req.params;
+        const customer_user_id = parseInt(paramId, 10);
+        if (!Number.isInteger(customer_user_id) || customer_user_id <= 0) return res.status(400).json({ message: 'Invalid customer ID' });
+
+        //pagination
+        let { limit = 20, offset = 0 } = req.query;
+        limit  = Number.isFinite(+limit) ? Math.max(1, Math.min(+limit, 100)) : 20;
+        offset = Number.isFinite(+offset) ? Math.max(0, +offset) : 0;
+
+        let salonIds = [];
+        let employee_id = null;
+
+        if (role === 'OWNER') { //OWNER view
+            const [salonRows] = await db.execute(`SELECT salon_id FROM salons WHERE owner_user_id = ?`, [authUserId]);
+            if (salonRows.length === 0) return res.status(404).json({ message: 'Salon not found for this owner' });
+            salonIds = salonRows.map(s => s.salon_id);
+        } else { //EMPLOYEE view
+            const [empRows] = await db.execute(`SELECT employee_id, salon_id FROM employees WHERE user_id = ? AND active = 1`, [authUserId]);
+            if (empRows.length === 0) return res.status(404).json({ message: 'Employee profile not found' });
+            employee_id = empRows[0].employee_id;
+        }
+
+        const makeIn = (arr) => arr.map(() => '?').join(',');
+        //count completed bookings
+        let countQuery, countParams;
+        if (role === 'OWNER') { //OWNER view
+            countQuery = `SELECT COUNT(*) AS cnt FROM bookings b
+                         WHERE b.customer_user_id = ? AND b.salon_id IN (${makeIn(salonIds)})
+                         AND b.status = 'COMPLETED'`;
+            countParams = [customer_user_id, ...salonIds];
+        } else { //EMPLOYEE view
+            countQuery = `SELECT COUNT(*) AS cnt FROM bookings b
+                         JOIN booking_services bs ON bs.booking_id = b.booking_id
+                         WHERE b.customer_user_id = ? AND bs.employee_id = ? AND b.status = 'COMPLETED'`;
+            countParams = [customer_user_id, employee_id];
+        }
+        const [countRows] = await db.execute(countQuery, countParams);
+        const total_records = countRows[0]?.cnt || 0;
+
+        if (total_records === 0) { //if no records are found
+            return res.status(200).json({
+                data: {
+                    customer: { user_id: customer_user_id },
+                    summary: { total_records: 0 },
+                    visits: [],
+                    limit,
+                    offset,
+                    has_more: false
+                }
+            });
+        }
+
+        let bookingQuery, bookingParams;
+        if (role === 'OWNER') { //OWNER view
+            bookingQuery = `SELECT b.booking_id, b.scheduled_start, b.scheduled_end, b.status, b.notes
+                            FROM bookings b WHERE b.customer_user_id = ? AND b.salon_id IN (${makeIn(salonIds)})
+                            AND b.status = 'COMPLETED' ORDER BY b.scheduled_start DESC LIMIT ${limit} OFFSET ${offset}`;
+bookingParams = [customer_user_id, ...salonIds];
+        } else { //EMPLOYEE view
+            bookingQuery = `SELECT b.booking_id, b.scheduled_start, b.scheduled_end, b.status, b.notes
+                           FROM bookings b JOIN booking_services bs ON bs.booking_id = b.booking_id
+                           WHERE b.customer_user_id = ? AND bs.employee_id = ? AND b.status = 'COMPLETED'
+                           GROUP BY b.booking_id ORDER BY b.scheduled_start DESC LIMIT ${limit} OFFSET ${offset}`;
+bookingParams = [customer_user_id, employee_id];
+        }
+        const [bookingRows] = await db.execute(bookingQuery, bookingParams);
+        const bookingIds = bookingRows.map(r => r.booking_id);
+
+        if (bookingIds.length === 0) { //if no records are found
+            return res.status(200).json({
+                data: {
+                    customer: { user_id: customer_user_id },
+                    summary: { total_records: 0 },
+                    visits: [],
+                    limit,
+                    offset,
+                    has_more: false
+                }
+            });
+        }
+
+        //services for the bookings
+        const svcPh = bookingIds.map(() => '?').join(',');
+        let svcRows = [];
+        if (role === 'OWNER') { //OWNER view
+            const [svc] = await db.execute(`SELECT bs.booking_id, bs.service_id, s.name AS service_name,
+                                           bs.duration_minutes, bs.price, bs.employee_id, u.full_name AS employee_name, e.title AS employee_title
+                                           FROM booking_services bs JOIN services s ON s.service_id = bs.service_id
+                                           LEFT JOIN employees e ON e.employee_id = bs.employee_id LEFT JOIN users u ON u.user_id = e.user_id
+                                           WHERE bs.booking_id IN (${svcPh}) ORDER BY bs.booking_id, s.name`, bookingIds
+            );
+            svcRows = svc;
+        } else { //EMPLOYEE view
+            const [svc] = await db.execute(`SELECT bs.booking_id, bs.service_id, s.name AS service_name,
+                                           bs.duration_minutes, bs.price, bs.employee_id, u.full_name AS employee_name, e.title AS employee_title
+                                           FROM booking_services bs JOIN services s ON s.service_id = bs.service_id
+                                           LEFT JOIN employees e ON e.employee_id = bs.employee_id LEFT JOIN users u ON u.user_id = e.user_id
+                                           WHERE bs.booking_id IN (${svcPh}) AND bs.employee_id = ? ORDER BY bs.booking_id, s.name`, [...bookingIds, employee_id]
+            );
+            svcRows = svc;
+        }
+        //getting each service by booking
+        const svcByBooking = new Map();
+        for (const r of svcRows) {
+            if (!svcByBooking.has(r.booking_id)) {
+                svcByBooking.set(r.booking_id, []);
+            }
+            svcByBooking.get(r.booking_id).push({
+                service_id: r.service_id,
+                service_name: r.service_name,
+                duration_minutes: Number(r.duration_minutes),
+                price: Number(r.price),
+                employee: r.employee_id
+                    ? { employee_id: r.employee_id, name: r.employee_name, title: r.employee_title, } : null,
+            });
+        }
+
+        //merging booking and service information and showing it as a visit
+        const visits = bookingRows.map(b => {
+            const services = svcByBooking.get(b.booking_id) || [];
+            const total_price = services.reduce((s, x) => s + Number(x.price || 0), 0);
+            return {
+                booking_id: b.booking_id,
+                scheduled_start: formatDateTime(b.scheduled_start),
+                scheduled_end: formatDateTime(b.scheduled_end),
+                status: b.status,
+                notes: b.notes,
+                services,
+                total_price
+            };
+        });
+
+        return res.status(200).json({
+            data: {
+                customer: { user_id: customer_user_id },
+                summary: { total_records },
+                visits,
+                limit,
+                offset,
+                has_more: offset + visits.length < total_records
+            }
+        });
+    } catch (error) {
+        console.error('getCustomerVisitHistory error:', error);
         return res.status(500).json({ message: 'Internal server error' });
     }
 };
