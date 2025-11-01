@@ -112,4 +112,79 @@ exports.loyaltyProgramAnalytics = async (req, res) => {
     }
 };
 
+function hourLabel(h) {
+    if (h === 0) return "12 AM";
+    if (h < 12) return `${h} AM`;
+    if (h === 12) return "12 PM";
+    return `${h - 12} PM`;
+  }
+
+// AFDV 1.2 Appointment Analytics
+exports.appointmentAnalytics = async (req, res) => {
+    const db = connection.promise();
+    try {
+        const appointmentsByDayQuery = 
+        `SELECT
+            dw AS day_idx,
+            day_name,
+            total_appointments
+            FROM (
+            SELECT
+                DAYOFWEEK(scheduled_start) AS dw,
+                DAYNAME(scheduled_start)   AS day_name,
+                COUNT(*)                   AS total_appointments
+            FROM bookings
+            WHERE status IN ('SCHEDULED','COMPLETED')
+            GROUP BY DAYOFWEEK(scheduled_start), DAYNAME(scheduled_start)
+            ) t
+            ORDER BY day_idx;`;
+        const [appointmentsByDay] = await db.execute(appointmentsByDayQuery);
+
+        const appointmentsByDayMap = appointmentsByDay.reduce((acc, row) => {
+            acc[row.day_name] = row.total_appointments;
+            return acc;
+        }, {});
+
+        const peakHoursQuery = `
+        SELECT HOUR(scheduled_start) AS hour_24, COUNT(*) AS total_appointments
+        FROM bookings
+        WHERE status IN ('SCHEDULED','COMPLETED')
+        GROUP BY HOUR(scheduled_start)
+        ORDER BY hour_24;`;
+        const [peakHours] = await db.execute(peakHoursQuery);
+
+        const peakHoursMap = {};
+        for (let h = 0; h < 24; h++) {
+            peakHoursMap[hourLabel(h)] = 0;
+        }
+        peakHours.forEach(row => {
+            peakHoursMap[hourLabel(row.hour_24)] = row.total_appointments;
+        });
+
+        const avgDurationQuery = 
+        `SELECT AVG(total_duration) AS avg_duration
+        FROM (
+        SELECT booking_id, SUM(duration_minutes) AS total_duration
+        FROM booking_services
+        WHERE booking_id IN (
+            SELECT booking_id 
+            FROM bookings 
+            WHERE status IN ('SCHEDULED','COMPLETED')
+        )
+        GROUP BY booking_id
+        ) AS res;`;
+        const [avgDuration] = await db.execute(avgDurationQuery);
+
+
+        res.status(200).json({
+            appointmentsByDay: appointmentsByDayMap,
+            peakHours: peakHoursMap,
+            avgDurationInMin: avgDuration[0].avg_duration
+        });
+    } catch (error) {
+        res.status(500).json({
+            message: "Internal server error"
+        });
+    }
+};
 
