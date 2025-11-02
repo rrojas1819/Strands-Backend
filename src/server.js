@@ -21,6 +21,7 @@ const analyticsRoutes = require('./routes/analytics');
 const unavailabilityRoutes = require('./routes/unavailability');
 const bookingsRoutes = require('./routes/bookings');
 const productsRoutes = require('./routes/products');
+const paymentsRoutes = require('./routes/payments');
 
 // Database Connection
 const db = require('./config/databaseConnection');
@@ -46,6 +47,7 @@ app.use('/api/admin/analytics', analyticsRoutes);
 app.use('/api/unavailability', unavailabilityRoutes);
 app.use('/api/bookings', bookingsRoutes);
 app.use('/api/products', productsRoutes);
+app.use('/api/payments', paymentsRoutes);
 
 // Start Server
 const PORT = process.env.PORT || 3000;

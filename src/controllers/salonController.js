@@ -1884,7 +1884,7 @@ exports.bookTimeSlot = async (req, res) => {
 
   try {
     const { salon_id, employee_id } = req.params;
-    const { scheduled_start, services, notes = '' } = req.body;
+    const { scheduled_start, services, notes = ''} = req.body;
     const customer_user_id = req.user?.user_id;
 
 
@@ -2082,7 +2082,7 @@ exports.bookTimeSlot = async (req, res) => {
         `INSERT INTO bookings
            (salon_id, customer_user_id, scheduled_start, scheduled_end, status, notes, created_at, updated_at)
          VALUES
-           (?, ?, ?, ?, 'SCHEDULED', ?, NOW(), NOW())`,
+           (?, ?, ?, ?, 'PENDING', ?, NOW(), NOW())`,
         [salon_id, customer_user_id, requestStartStr, requestEndStr, notes]
       );
 
@@ -2099,7 +2099,6 @@ exports.bookTimeSlot = async (req, res) => {
         );
       }
 
-      
       const totalPrice = services.reduce((sum, s) => sum + Number(detailsById[s.service_id].price), 0);
 
       await db.query('COMMIT');
@@ -2117,7 +2116,7 @@ exports.bookTimeSlot = async (req, res) => {
             scheduled_start: requestStartStr.replace(' ', 'T'),
             scheduled_end: requestEndStr.replace(' ', 'T'),
             duration_minutes: Math.round((endDate - startDate) / (1000 * 60)),
-            status: 'SCHEDULED'
+            status: 'PENDING'
           },
           services: services.map(s => ({
             service_id: s.service_id,
