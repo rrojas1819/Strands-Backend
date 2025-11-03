@@ -94,7 +94,7 @@ exports.processPayment = async (req, res) => {
             const insertPaymentQuery = `
                 INSERT INTO payments 
                 (credit_card_id, billing_address_id, amount, booking_id, order_id, status, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, 'PENDING', NOW(), NOW())
+                VALUES (?, ?, ?, ?, ?, 'SUCCEEDED', NOW(), NOW())
             `;
 
             const [paymentResults] = await db.execute(insertPaymentQuery, [
@@ -107,6 +107,15 @@ exports.processPayment = async (req, res) => {
 
             if (paymentResults.affectedRows === 0) {
                 await db.query('ROLLBACK');
+                if (booking_id) {
+                    try {
+                        await db.execute(
+                            `DELETE FROM bookings 
+                             WHERE booking_id = ? AND customer_user_id = ? AND status = 'PENDING'`,
+                            [booking_id, user_id]
+                        );
+                    } catch (_) {}
+                }
                 return res.status(500).json({ message: 'Failed to process payment' });
             }
 
@@ -121,6 +130,13 @@ exports.processPayment = async (req, res) => {
 
                 if (updateBookingResult.affectedRows === 0) {
                     await db.query('ROLLBACK');
+                    try {
+                        await db.execute(
+                            `DELETE FROM bookings 
+                             WHERE booking_id = ? AND customer_user_id = ? AND status = 'PENDING'`,
+                            [booking_id, user_id]
+                        );
+                    } catch (_) {}
                     return res.status(500).json({ 
                         message: 'Payment created but failed to update booking status' 
                     });
@@ -140,11 +156,34 @@ exports.processPayment = async (req, res) => {
 
         } catch (transactionError) {
             await db.query('ROLLBACK');
+            if (booking_id) {
+                try {
+                    await db.execute(
+                        `DELETE FROM bookings 
+                         WHERE booking_id = ? AND customer_user_id = ? AND status = 'PENDING'`,
+                        [booking_id, user_id]
+                    );
+                } catch (_) {}
+            }
             throw transactionError;
         }
 
     } catch (error) {
         console.error('processPayment error:', error);
+        // Best-effort cleanup of pending booking on any error path
+        try {
+            const user_id = req.user?.user_id;
+            const { booking_id } = req.body || {};
+            if (booking_id && user_id) {
+                await connection
+                    .promise()
+                    .execute(
+                        `DELETE FROM bookings 
+                         WHERE booking_id = ? AND customer_user_id = ? AND status = 'PENDING'`,
+                        [booking_id, user_id]
+                    );
+            }
+        } catch (_) {}
         res.status(500).json({
             message: 'Internal server error'
         });

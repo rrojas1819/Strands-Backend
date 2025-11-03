@@ -337,8 +337,16 @@ exports.cancelBooking = async (req, res) => {
         const booking = rows[0];
         const previousStatus = booking.status;
 
-        //update booking to CANCELLED in bookings
+        //update booking to CANCELED in bookings
         await db.execute(`UPDATE bookings SET status = 'CANCELED' WHERE booking_id = ?`, [bookingId]);
+
+        //mark any related payments as REFUNDED
+        await db.execute(
+            `UPDATE payments 
+             SET status = 'REFUNDED', updated_at = NOW()
+             WHERE booking_id = ? AND status <> 'REFUNDED'`,
+            [bookingId]
+        );
 
         //commit all db changes only if this point is reached, if a rollback is triggered then all changes do not take affect to keep synergy in db
         await db.commit();
