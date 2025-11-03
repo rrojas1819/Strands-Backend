@@ -22,6 +22,7 @@ const unavailabilityRoutes = require('./routes/unavailability');
 const bookingsRoutes = require('./routes/bookings');
 const productsRoutes = require('./routes/products');
 const paymentsRoutes = require('./routes/payments');
+const reviewRoutes = require('./routes/reviews');
 
 // Database Connection
 const db = require('./config/databaseConnection');
@@ -48,6 +49,7 @@ app.use('/api/unavailability', unavailabilityRoutes);
 app.use('/api/bookings', bookingsRoutes);
 app.use('/api/products', productsRoutes);
 app.use('/api/payments', paymentsRoutes);
+app.use('/api/reviews', reviewRoutes);
 
 // Start Server
 const PORT = process.env.PORT || 3000;
