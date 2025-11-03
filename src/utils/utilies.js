@@ -4,7 +4,7 @@ const validateEmail = (email) => {
     return emailRegex.test(email);
 };
 
-// Format a JS Date as local SQL datetime (YYYY-MM-DD HH:mm:ss)
+// Format a JS Date as local SQL datetime (YYYY-MM-DD HH:mm:ss) -- for SQL logic
 function toLocalSQL(dt) {
     const Y = dt.getFullYear();
     const M = String(dt.getMonth() + 1).padStart(2, '0');
@@ -14,6 +14,21 @@ function toLocalSQL(dt) {
     const S = String(dt.getSeconds()).padStart(2, '0');
     return `${Y}-${M}-${D} ${H}:${MI}:${S}`;
 }
+
+//format time with a 'T' separating the date and time -- for JSON responses
+const formatDateTime = (timeStr) => {
+    if (!timeStr) return null;
+    if (timeStr instanceof Date) {
+        const Y = timeStr.getFullYear();
+        const M = String(timeStr.getMonth() + 1).padStart(2, '0');
+        const D = String(timeStr.getDate()).padStart(2, '0');
+        const H = String(timeStr.getHours()).padStart(2, '0');
+        const MI = String(timeStr.getMinutes()).padStart(2, '0');
+        const S = String(timeStr.getSeconds()).padStart(2, '0');
+        return `${Y}-${M}-${D}T${H}:${MI}:${S}`;
+    }
+    return String(timeStr);
+};
 
 // Cleanup job for expired tokens every 15 minutes for more responsive cleanup
 const startTokenCleanup = (connection) => {
@@ -63,7 +78,8 @@ module.exports = {
     validateEmail,
     startTokenCleanup,
     startBookingsAutoComplete,
-    toLocalSQL
+    toLocalSQL,
+    formatDateTime
 };
 
 // Cleanup job to auto-complete finished bookings every 1 hour

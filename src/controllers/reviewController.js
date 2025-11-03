@@ -1,20 +1,5 @@
 const connection = require('../config/databaseConnection'); //db connection
 
-
-const formatDateTime = (timeStr) => {
-    if (!timeStr) return null;
-    if (timeStr instanceof Date) {
-        const Y = timeStr.getFullYear();
-        const M = String(timeStr.getMonth() + 1).padStart(2, '0');
-        const D = String(timeStr.getDate()).padStart(2, '0');
-        const H = String(timeStr.getHours()).padStart(2, '0');
-        const MI = String(timeStr.getMinutes()).padStart(2, '0');
-        const S = String(timeStr.getSeconds()).padStart(2, '0');
-        return `${Y}-${M}-${D}T${H}:${MI}:${S}`;
-    }
-    return String(timeStr);
-};
-
 //helper function to check for pagination offset
 function parseLimitOffset(q) {
     let { limit = 20, offset = 0 } = q || {};
