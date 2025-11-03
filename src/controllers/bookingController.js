@@ -165,12 +165,12 @@ exports.rescheduleBooking = async (req, res) => {
         const now = new Date();
         if (startDate < now) return res.status(400).json({ message: 'Cannot reschedule to a past time' });
 
-        //get the current SCHEDULED booking
+        //get the current booking (must be SCHEDULED)
         const [bkRows] = await db.execute(`SELECT booking_id, salon_id, customer_user_id, scheduled_start, scheduled_end, status
                                       FROM bookings WHERE booking_id = ? AND customer_user_id = ? AND status = 'SCHEDULED'`,
             [Number(booking_id), authUserId]
         );
-        if (bkRows.length === 0) return res.status(404).json({ message: 'Booking not found or not reschedulable' });
+        if (bkRows.length === 0) return res.status(404).json({ message: 'Booking not found or not reschedulable (must be SCHEDULED)' });
 
         //store info of current booking (now old)
         const oldBooking = bkRows[0];
@@ -250,12 +250,17 @@ exports.rescheduleBooking = async (req, res) => {
         await db.beginTransaction();
 
         try {
-            //cancelling the old booking
-            await db.execute(`UPDATE bookings SET status = 'CANCELED' WHERE booking_id = ? AND customer_user_id = ? AND status = 'SCHEDULED'`,
+            //cancelling the old booking (must be SCHEDULED)
+            const [cancelResult] = await db.execute(`UPDATE bookings SET status = 'CANCELED' WHERE booking_id = ? AND customer_user_id = ? AND status = 'SCHEDULED'`,
                 [booking_id, authUserId]
             );
 
-            //creating the new booking
+            if (cancelResult.affectedRows === 0) {
+                await db.rollback();
+                return res.status(404).json({ message: 'Booking not found or cannot be canceled (may already be canceled, completed, or not belong to you)' });
+            }
+
+           
             const [newBooking] = await db.execute(`INSERT INTO bookings (salon_id, customer_user_id, scheduled_start, scheduled_end, status, notes)
                                                   VALUES (?, ?, ?, ?, 'SCHEDULED', ?)`, [salon_id, authUserId, requestStartStr, requestEndStr, notes]
             );
@@ -267,6 +272,11 @@ exports.rescheduleBooking = async (req, res) => {
                                  VALUES (?, ?, ?, ?, ?)`, [newBookingId, s.employee_id, s.service_id, s.price, s.duration_minutes]
                 );
             }
+
+            //update payments to point to the new booking_id
+            await db.execute(`UPDATE payments SET booking_id = ?, updated_at = NOW() WHERE booking_id = ?`,
+                [newBookingId, Number(booking_id)]
+            );
 
             await db.commit(); //commiting db changes
 
@@ -313,7 +323,7 @@ exports.cancelBooking = async (req, res) => {
         //db interactions
         await db.beginTransaction();
 
-        //finding the booking (appointment) to cancel and locking it
+        //finding the booking (appointment) to cancel and locking it (must be SCHEDULED)
         const [rows] = await db.execute(`SELECT booking_id, customer_user_id, scheduled_start, status
                                     FROM bookings WHERE booking_id = ? AND customer_user_id = ? AND status = 'SCHEDULED'
                                     FOR UPDATE`, [bookingId, authUserId]
@@ -321,10 +331,11 @@ exports.cancelBooking = async (req, res) => {
 
         if (rows.length === 0) {
             await db.rollback();
-            return res.status(404).json({ message: 'Booking not found' });
+            return res.status(404).json({ message: 'Booking not found or cannot be canceled (must be SCHEDULED)' });
         }
 
         const booking = rows[0];
+        const previousStatus = booking.status;
 
         //update booking to CANCELLED in bookings
         await db.execute(`UPDATE bookings SET status = 'CANCELED' WHERE booking_id = ?`, [bookingId]);
@@ -336,13 +347,66 @@ exports.cancelBooking = async (req, res) => {
             message: 'Booking canceled',
             data: {
                 booking_id: booking.booking_id,
-                previous_status: 'SCHEDULED',
+                previous_status: previousStatus,
                 new_status: 'CANCELED',
                 canceled_at: new Date().toISOString()
             }
         });
     } catch (err) {
         try { await connection.promise().rollback(); } catch (_) { }
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
+// Delete a pending booking 
+//Potentially Not needed but we will keep it for now.
+exports.deletePendingBooking = async (req, res) => {
+    const db = connection.promise();
+
+    try {
+        const authUserId = req.user?.user_id;
+        const { booking_id } = req.body;
+
+        const bookingId = parseInt(booking_id, 10);
+        if (!Number.isInteger(bookingId) || bookingId <= 0) {
+            return res.status(400).json({ message: 'Invalid booking id' });
+        }
+        if (!authUserId) return res.status(401).json({ message: 'Unauthorized' });
+
+        await db.beginTransaction();
+
+        try {
+            const [rows] = await db.execute(`SELECT booking_id, customer_user_id, scheduled_start, status
+                                        FROM bookings WHERE booking_id = ? AND customer_user_id = ? AND status = 'PENDING'
+                                        FOR UPDATE`, [bookingId, authUserId]
+            );
+
+            if (rows.length === 0) {
+                await db.rollback();
+                return res.status(404).json({ message: 'Booking not found or cannot be deleted (must be PENDING)' });
+            }
+
+            const booking = rows[0];
+
+            await db.execute(`DELETE FROM booking_services WHERE booking_id = ?`, [bookingId]);
+
+            await db.execute(`DELETE FROM bookings WHERE booking_id = ?`, [bookingId]);
+
+            await db.commit();
+
+            return res.status(200).json({
+                message: 'Pending booking deleted successfully',
+                data: {
+                    booking_id: booking.booking_id,
+                    deleted_at: new Date().toISOString()
+                }
+            });
+        } catch (txErr) {
+            await db.rollback();
+            throw txErr;
+        }
+    } catch (err) {
+        console.error('deletePendingBooking error:', err);
         return res.status(500).json({ message: 'Internal server error' });
     }
 };
