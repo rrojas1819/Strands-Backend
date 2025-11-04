@@ -2,7 +2,7 @@ require('dotenv').config();
 const connection = require('../config/databaseConnection');
 const paymentSecurity = require('../utils/paymentSecurity');
 
-// Process a payment online
+// PLR 1.1 Process a payment online
 exports.processPayment = async (req, res) => {
     const db = connection.promise();
 
@@ -190,7 +190,7 @@ exports.processPayment = async (req, res) => {
     }
 };
 
-// Save a credit card permanently for future use
+// PLR 1.1 Save a credit card permanently for future use
 exports.saveCreditCard = async (req, res) => {
     const db = connection.promise();
 
@@ -330,7 +330,7 @@ exports.saveCreditCard = async (req, res) => {
     }
 };
 
-// Save a temporary credit card for immediate payment use
+// PLR 1.1 Save a temporary credit card for immediate payment use
 exports.saveTempCreditCard = async (req, res) => {
     const db = connection.promise();
 
@@ -446,7 +446,7 @@ exports.saveTempCreditCard = async (req, res) => {
     }
 };
 
-// Get saved credit cards
+//PLR 1.1 Get saved credit cards
 exports.getCreditCards = async (req, res) => {
     const db = connection.promise();
 
@@ -483,7 +483,7 @@ exports.getCreditCards = async (req, res) => {
     }
 };
 
-// Delete credit card
+//PLR 1.1 Delete credit card
 exports.deleteCreditCard = async (req, res) => {
     const db = connection.promise();
 
@@ -531,7 +531,7 @@ exports.deleteCreditCard = async (req, res) => {
     }
 };
 
-// Create a billing address
+//PLR 1.1 Create a billing address
 exports.createBillingAddress = async (req, res) => {
     const db = connection.promise();
 
@@ -595,7 +595,7 @@ exports.createBillingAddress = async (req, res) => {
     }
 };
 
-// Get billing address 
+// PLR 1.1Get billing address 
 exports.getBillingAddress = async (req, res) => {
     const db = connection.promise();
 
@@ -632,7 +632,7 @@ exports.getBillingAddress = async (req, res) => {
     }
 };
 
-// Update billing address
+//PLR 1.1 Update billing address
 exports.updateBillingAddress = async (req, res) => {
     const db = connection.promise();
 
@@ -704,7 +704,7 @@ exports.updateBillingAddress = async (req, res) => {
     }
 };
 
-// Delete billing address
+//PLR 1.1 Delete billing address
 exports.deleteBillingAddress = async (req, res) => {
     const db = connection.promise();
 

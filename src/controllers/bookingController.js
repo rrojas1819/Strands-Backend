@@ -366,32 +366,40 @@ exports.cancelBooking = async (req, res) => {
     }
 };
 
-// Delete a pending booking 
-//Potentially Not needed but we will keep it for now.
+// Delete a pending booking (when user backs out of transaction)
 exports.deletePendingBooking = async (req, res) => {
     const db = connection.promise();
 
     try {
         const authUserId = req.user?.user_id;
-        const { booking_id } = req.body;
+        const { booking_id } = req.params;
+
+        if (!authUserId) {
+            return res.status(401).json({ message: 'Unauthorized' });
+        }
 
         const bookingId = parseInt(booking_id, 10);
         if (!Number.isInteger(bookingId) || bookingId <= 0) {
             return res.status(400).json({ message: 'Invalid booking id' });
         }
-        if (!authUserId) return res.status(401).json({ message: 'Unauthorized' });
 
         await db.beginTransaction();
 
         try {
-            const [rows] = await db.execute(`SELECT booking_id, customer_user_id, scheduled_start, status
-                                        FROM bookings WHERE booking_id = ? AND customer_user_id = ? AND status = 'PENDING'
-                                        FOR UPDATE`, [bookingId, authUserId]
+            // Verify booking exists, belongs to user, and is PENDING
+            const [rows] = await db.execute(
+                `SELECT booking_id, customer_user_id, scheduled_start, status
+                 FROM bookings 
+                 WHERE booking_id = ? AND customer_user_id = ? AND status = 'PENDING'
+                 FOR UPDATE`,
+                [bookingId, authUserId]
             );
 
             if (rows.length === 0) {
                 await db.rollback();
-                return res.status(404).json({ message: 'Booking not found or cannot be deleted (must be PENDING)' });
+                return res.status(404).json({ 
+                    message: 'Booking not found or cannot be deleted (must be PENDING and belong to you)' 
+                });
             }
 
             const booking = rows[0];
