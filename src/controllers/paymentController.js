@@ -393,7 +393,11 @@ exports.saveTempCreditCard = async (req, res) => {
 
         if (existingTempCard.length > 0) {
             return res.status(200).json({
-                message: 'Credit card ready for payment'
+                message: 'Credit card ready for payment',
+                data: {
+                    credit_card_id: existingTempCard[0].credit_card_id,
+                    is_temporary: true
+                }
             });
         }
 
@@ -435,7 +439,15 @@ exports.saveTempCreditCard = async (req, res) => {
         }
 
         res.status(200).json({
-            message: 'Credit card ready for payment'
+            message: 'Credit card ready for payment',
+            data: {
+                credit_card_id: results.insertId,
+                brand: detectedBrand,
+                last4,
+                exp_month: expMonth,
+                exp_year: expYear,
+                is_temporary: true
+            }
         });
 
     } catch (error) {
