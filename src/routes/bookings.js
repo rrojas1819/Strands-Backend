@@ -13,7 +13,7 @@ router.post('/reschedule', authenticateToken, roleAuthorization(['CUSTOMER']), b
 router.post('/cancel', authenticateToken, roleAuthorization(['CUSTOMER']), bookingController.cancelBooking);
 
 // Delete pending booking (transaction didn't go through)
-router.delete('/deletePending', authenticateToken, roleAuthorization(['CUSTOMER']), bookingController.deletePendingBooking);
+router.delete('/:booking_id/deletePendingBooking', authenticateToken, roleAuthorization(['CUSTOMER']), bookingController.deletePendingBooking);
 
 //UPH 1.2/1.21 salon owner/stylist seeing customer visits, stylists' only see their own
 router.get('/visits/customers', authenticateToken, roleAuthorization(['OWNER', 'EMPLOYEE']), bookingController.listVisitCustomers);

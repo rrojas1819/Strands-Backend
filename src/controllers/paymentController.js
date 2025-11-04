@@ -2,7 +2,7 @@ require('dotenv').config();
 const connection = require('../config/databaseConnection');
 const paymentSecurity = require('../utils/paymentSecurity');
 
-// Process a payment online
+// PLR 1.1 Process a payment online
 exports.processPayment = async (req, res) => {
     const db = connection.promise();
 
@@ -94,7 +94,7 @@ exports.processPayment = async (req, res) => {
             const insertPaymentQuery = `
                 INSERT INTO payments 
                 (credit_card_id, billing_address_id, amount, booking_id, order_id, status, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, 'PENDING', NOW(), NOW())
+                VALUES (?, ?, ?, ?, ?, 'SUCCEEDED', NOW(), NOW())
             `;
 
             const [paymentResults] = await db.execute(insertPaymentQuery, [
@@ -107,6 +107,15 @@ exports.processPayment = async (req, res) => {
 
             if (paymentResults.affectedRows === 0) {
                 await db.query('ROLLBACK');
+                if (booking_id) {
+                    try {
+                        await db.execute(
+                            `DELETE FROM bookings 
+                             WHERE booking_id = ? AND customer_user_id = ? AND status = 'PENDING'`,
+                            [booking_id, user_id]
+                        );
+                    } catch (_) {}
+                }
                 return res.status(500).json({ message: 'Failed to process payment' });
             }
 
@@ -121,6 +130,13 @@ exports.processPayment = async (req, res) => {
 
                 if (updateBookingResult.affectedRows === 0) {
                     await db.query('ROLLBACK');
+                    try {
+                        await db.execute(
+                            `DELETE FROM bookings 
+                             WHERE booking_id = ? AND customer_user_id = ? AND status = 'PENDING'`,
+                            [booking_id, user_id]
+                        );
+                    } catch (_) {}
                     return res.status(500).json({ 
                         message: 'Payment created but failed to update booking status' 
                     });
@@ -140,18 +156,41 @@ exports.processPayment = async (req, res) => {
 
         } catch (transactionError) {
             await db.query('ROLLBACK');
+            if (booking_id) {
+                try {
+                    await db.execute(
+                        `DELETE FROM bookings 
+                         WHERE booking_id = ? AND customer_user_id = ? AND status = 'PENDING'`,
+                        [booking_id, user_id]
+                    );
+                } catch (_) {}
+            }
             throw transactionError;
         }
 
     } catch (error) {
         console.error('processPayment error:', error);
+        // Best-effort cleanup of pending booking on any error path
+        try {
+            const user_id = req.user?.user_id;
+            const { booking_id } = req.body || {};
+            if (booking_id && user_id) {
+                await connection
+                    .promise()
+                    .execute(
+                        `DELETE FROM bookings 
+                         WHERE booking_id = ? AND customer_user_id = ? AND status = 'PENDING'`,
+                        [booking_id, user_id]
+                    );
+            }
+        } catch (_) {}
         res.status(500).json({
             message: 'Internal server error'
         });
     }
 };
 
-// Save a credit card permanently for future use
+// PLR 1.1 Save a credit card permanently for future use
 exports.saveCreditCard = async (req, res) => {
     const db = connection.promise();
 
@@ -291,7 +330,7 @@ exports.saveCreditCard = async (req, res) => {
     }
 };
 
-// Save a temporary credit card for immediate payment use
+// PLR 1.1 Save a temporary credit card for immediate payment use
 exports.saveTempCreditCard = async (req, res) => {
     const db = connection.promise();
 
@@ -334,13 +373,13 @@ exports.saveTempCreditCard = async (req, res) => {
         // Generate card hash for duplicate checking
         const card_hash = paymentSecurity.generateCardHash(card_number, user_id);
 
-        // Check if user already has a saved (permanent) card
-        const [savedCards] = await db.execute(
-            'SELECT credit_card_id FROM credit_cards WHERE user_id = ? AND (is_temporary IS NULL OR is_temporary = FALSE)',
-            [user_id]
+        // Check if this specific card is already saved as a permanent card
+        const [existingPermanentCard] = await db.execute(
+            'SELECT credit_card_id FROM credit_cards WHERE user_id = ? AND card_hash = ? AND (is_temporary IS NULL OR is_temporary = FALSE)',
+            [user_id, card_hash]
         );
         
-        if (savedCards.length > 0) {
+        if (existingPermanentCard.length > 0) {
             return res.status(400).json({ 
                 message: 'You already have a saved credit card. Please use your saved card instead of using a temporary one.' 
             });
@@ -354,7 +393,11 @@ exports.saveTempCreditCard = async (req, res) => {
 
         if (existingTempCard.length > 0) {
             return res.status(200).json({
-                message: 'Credit card ready for payment'
+                message: 'Credit card ready for payment',
+                data: {
+                    credit_card_id: existingTempCard[0].credit_card_id,
+                    is_temporary: true
+                }
             });
         }
 
@@ -396,7 +439,15 @@ exports.saveTempCreditCard = async (req, res) => {
         }
 
         res.status(200).json({
-            message: 'Credit card ready for payment'
+            message: 'Credit card ready for payment',
+            data: {
+                credit_card_id: results.insertId,
+                brand: detectedBrand,
+                last4,
+                exp_month: expMonth,
+                exp_year: expYear,
+                is_temporary: true
+            }
         });
 
     } catch (error) {
@@ -407,7 +458,7 @@ exports.saveTempCreditCard = async (req, res) => {
     }
 };
 
-// Get saved credit cards
+//PLR 1.1 Get saved credit cards
 exports.getCreditCards = async (req, res) => {
     const db = connection.promise();
 
@@ -444,7 +495,7 @@ exports.getCreditCards = async (req, res) => {
     }
 };
 
-// Delete credit card
+//PLR 1.1 Delete credit card
 exports.deleteCreditCard = async (req, res) => {
     const db = connection.promise();
 
@@ -492,7 +543,7 @@ exports.deleteCreditCard = async (req, res) => {
     }
 };
 
-// Create a billing address
+//PLR 1.1 Create a billing address
 exports.createBillingAddress = async (req, res) => {
     const db = connection.promise();
 
@@ -556,7 +607,7 @@ exports.createBillingAddress = async (req, res) => {
     }
 };
 
-// Get billing address 
+// PLR 1.1Get billing address 
 exports.getBillingAddress = async (req, res) => {
     const db = connection.promise();
 
@@ -593,7 +644,7 @@ exports.getBillingAddress = async (req, res) => {
     }
 };
 
-// Update billing address
+//PLR 1.1 Update billing address
 exports.updateBillingAddress = async (req, res) => {
     const db = connection.promise();
 
@@ -665,7 +716,7 @@ exports.updateBillingAddress = async (req, res) => {
     }
 };
 
-// Delete billing address
+//PLR 1.1 Delete billing address
 exports.deleteBillingAddress = async (req, res) => {
     const db = connection.promise();
 
