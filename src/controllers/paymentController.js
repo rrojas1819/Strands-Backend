@@ -373,13 +373,13 @@ exports.saveTempCreditCard = async (req, res) => {
         // Generate card hash for duplicate checking
         const card_hash = paymentSecurity.generateCardHash(card_number, user_id);
 
-        // Check if user already has a saved (permanent) card
-        const [savedCards] = await db.execute(
-            'SELECT credit_card_id FROM credit_cards WHERE user_id = ? AND (is_temporary IS NULL OR is_temporary = FALSE)',
-            [user_id]
+        // Check if this specific card is already saved as a permanent card
+        const [existingPermanentCard] = await db.execute(
+            'SELECT credit_card_id FROM credit_cards WHERE user_id = ? AND card_hash = ? AND (is_temporary IS NULL OR is_temporary = FALSE)',
+            [user_id, card_hash]
         );
         
-        if (savedCards.length > 0) {
+        if (existingPermanentCard.length > 0) {
             return res.status(400).json({ 
                 message: 'You already have a saved credit card. Please use your saved card instead of using a temporary one.' 
             });

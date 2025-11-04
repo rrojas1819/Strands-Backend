@@ -10,6 +10,15 @@ const toLocalSQL = (dt) => {
     return `${Y}-${M}-${D} ${H}:${MI}:${S}`;
 };
 
+// Check if two dates are on the same day (ignoring time)
+const isSameDay = (date1, date2) => {
+    const d1 = new Date(date1);
+    const d2 = new Date(date2);
+    return d1.getFullYear() === d2.getFullYear() &&
+           d1.getMonth() === d2.getMonth() &&
+           d1.getDate() === d2.getDate();
+};
+
 const formatDateTime = (timeStr) => {
     if (!timeStr) return null;
     if (timeStr instanceof Date) {
@@ -176,6 +185,15 @@ exports.rescheduleBooking = async (req, res) => {
         const oldBooking = bkRows[0];
         const salon_id = oldBooking.salon_id;
 
+        // Check if booking is scheduled for the same day - cannot reschedule same day
+        const currentDate = new Date();
+        const oldBookingDate = new Date(oldBooking.scheduled_start);
+        if (isSameDay(currentDate, oldBookingDate)) {
+            return res.status(400).json({ 
+                message: 'Cannot reschedule a booking on the same day. Please reschedule at least one day in advance.' 
+            });
+        }
+
         //get the services associated with this booking
         const [servicesRows] = await db.execute(`SELECT service_id, employee_id, price, duration_minutes FROM booking_services WHERE booking_id = ?`,
             [Number(booking_id)]
@@ -336,6 +354,16 @@ exports.cancelBooking = async (req, res) => {
 
         const booking = rows[0];
         const previousStatus = booking.status;
+
+        // Check if booking is scheduled for the same day - cannot cancel same day
+        const now = new Date();
+        const bookingDate = new Date(booking.scheduled_start);
+        if (isSameDay(now, bookingDate)) {
+            await db.rollback();
+            return res.status(400).json({ 
+                message: 'Cannot cancel a booking on the same day. Please cancel at least one day in advance.' 
+            });
+        }
 
         //update booking to CANCELED in bookings
         await db.execute(`UPDATE bookings SET status = 'CANCELED' WHERE booking_id = ?`, [bookingId]);
