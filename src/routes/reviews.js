@@ -14,4 +14,9 @@ router.get('/salon/:salon_id/all', authenticateToken, roleAuthorization(['CUSTOM
 //getting an individual customer's salon review for updating purposes
 router.get('/salon/:salon_id/myReview', authenticateToken, roleAuthorization(['CUSTOMER']), reviewController.getMyReviewForSalon);
 
+//UPH 1.4 as an owner I want to reply to reviews for my salon
+router.post('/replies/create', authenticateToken, roleAuthorization(['OWNER']), reviewController.createReply);
+router.patch('/replies/update/:reply_id', authenticateToken, roleAuthorization(['OWNER']), reviewController.updateReply);
+router.delete('/replies/delete/:reply_id', authenticateToken, roleAuthorization(['OWNER']), reviewController.deleteReply);
+
 module.exports = router;
