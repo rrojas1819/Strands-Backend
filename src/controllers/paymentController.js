@@ -560,6 +560,14 @@ exports.createBillingAddress = async (req, res) => {
             return res.status(401).json({ message: 'Unauthorized' });
         }
 
+        if (!/^[a-zA-Z\s'-]+$/.test(city)) {
+            return res.status(400).json({ message: 'City field must only contain letters, spaces, hyphens, and apostrophes' });
+        }
+
+        if (!/^\d+$/.test(postal_code)) {
+            return res.status(400).json({ message: 'Postal code must only contain numbers' });
+        }
+
         // Check if user already has a billing address
         const [existingAddress] = await db.execute(
             'SELECT billing_address_id FROM billing_addresses WHERE user_id = ?',
@@ -662,6 +670,18 @@ exports.updateBillingAddress = async (req, res) => {
         );
         if (addressRows.length === 0) {
             return res.status(404).json({ message: 'Billing address not found. Please create one first.' });
+        }
+
+        if (req.body.city !== undefined) {
+            if (!/^[a-zA-Z\s'-]+$/.test(req.body.city)) {
+                return res.status(400).json({ message: 'City field must only contain letters, spaces, hyphens, and apostrophes' });
+            }
+        }
+
+        if (req.body.postal_code !== undefined) {
+            if (!/^\d+$/.test(req.body.postal_code)) {
+                return res.status(400).json({ message: 'Postal code must only contain numbers' });
+            }
         }
 
         // Build dynamic update query based on provided fields
