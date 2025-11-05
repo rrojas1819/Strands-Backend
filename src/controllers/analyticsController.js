@@ -83,7 +83,7 @@ exports.loyaltyProgramAnalytics = async (req, res) => {
         FROM loyalty_memberships lm
         JOIN salons s ON s.salon_id = lm.salon_id
         GROUP BY s.salon_id, s.name
-        ORDER BY participants DESC
+        ORDER BY participants DESC, golden_members DESC, avg_visits_per_member DESC
         LIMIT 3;`;
 
         const [top3PerformingSalons] = await db.execute(top3PerformingSalonsQuery);
@@ -277,7 +277,9 @@ exports.salonRevenueAnalytics = async (req, res) => {
         JOIN salons s ON sv.salon_id = s.salon_id
         WHERE p.status = 'SUCCEEDED'
         GROUP BY sv.service_id, sv.name, s.name
-        ORDER BY total_revenue DESC
+        ORDER BY 
+        total_revenue DESC,       
+        times_booked DESC         
         LIMIT 5;`;
         const [topServicesResults] = await db.execute(topServicesQuery);
 
