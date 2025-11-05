@@ -523,7 +523,8 @@ exports.viewUserOrders = async (req, res) => {
     const offsetInt = Math.max(0, Number.isFinite(Number(offset)) ? Number(offset) : 0);
 
     const employeesQuery = `
-    SELECT o.order_code, o.subtotal as subtotal_order_price, o.tax as order_tax, o.tax + o.subtotal as total_order_price, oi.purchase_price, p.name, p.description, p.sku, p.price as listed_price, p.category FROM orders o 
+    SELECT o.order_code, o.subtotal as subtotal_order_price, o.tax as order_tax, o.tax + o.subtotal as total_order_price, oi.purchase_price, p.name, p.description, p.sku, p.price as listed_price, p.category, DATE_FORMAT(o.created_at, '%Y-%m-%d') as ordered_date
+    FROM orders o 
     JOIN order_items oi ON o.order_id = oi.order_id 
     JOIN products p ON oi.product_id = p.product_id
     JOIN salons s ON o.salon_id = s.salon_id
@@ -588,7 +589,7 @@ exports.viewSalonOrders = async (req, res) => {
     const offsetInt = Math.max(0, Number.isFinite(Number(offset)) ? Number(offset) : 0);
 
     const employeesQuery = `
-    SELECT o.order_code, u.full_name as customer_name, o.order_code, o.subtotal as subtotal_order_price, o.tax as order_tax, o.tax + o.subtotal as total_order_price, oi.purchase_price, p.name, p.description, p.sku, p.price as listed_price, p.category
+    SELECT o.order_code, u.full_name as customer_name, o.order_code, o.subtotal as subtotal_order_price, o.tax as order_tax, o.tax + o.subtotal as total_order_price, oi.purchase_price, p.name, p.description, p.sku, p.price as listed_price, p.category, DATE_FORMAT(o.created_at, '%Y-%m-%d') as ordered_date
     FROM orders o 
     JOIN order_items oi ON o.order_id = oi.order_id 
     JOIN products p ON oi.product_id = p.product_id
