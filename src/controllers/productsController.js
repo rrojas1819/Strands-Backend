@@ -489,3 +489,68 @@ exports.checkout = async (req, res) => {
         });
     }
 };
+
+
+// SF 1.2 View Orders
+exports.viewUserOrders = async (req, res) => {
+    const db = connection.promise();
+
+  try {
+    const { salon_id, limit, offset } = req.body;
+    const owner_user_id = req.user?.user_id;
+
+    if (!salon_id || !limit || isNaN(offset)) {
+      return res.status(400).json({ message: 'Invalid fields.' });
+    }
+
+    const countQuery = 
+    `SELECT COUNT(*) as total 
+    FROM orders
+    WHERE salon_id = ? AND user_id = ?`;
+
+    const [countResult] = await db.execute(countQuery, [salon_id, owner_user_id]);
+
+    const total = countResult[0]?.total || 0;
+
+    if (total === 0) {
+      return res.status(500).json({
+        message: 'No orders found',
+      });
+    }
+
+    const limitInt = Math.max(0, Number.isFinite(Number(limit)) ? Number(limit) : 10);
+    const offsetInt = Math.max(0, Number.isFinite(Number(offset)) ? Number(offset) : 0);
+
+    const employeesQuery = `
+    SELECT o.subtotal as subtotal_order_price, o.tax as order_tax, o.tax + o.subtotal as total_order_price, oi.purchase_price, p.name, p.description, p.sku, p.price as listed_price, p.category FROM orders o 
+    JOIN order_items oi ON o.order_id = oi.order_id 
+    JOIN products p ON oi.product_id = p.product_id
+    WHERE o.salon_id = ? AND o.user_id = ?
+    LIMIT ${limitInt} OFFSET ${offsetInt}`;
+
+    const [employees] = await db.execute(employeesQuery, [salon_id, owner_user_id]);
+
+
+    const totalPages = Math.ceil(total / limit);
+    const currentPage = Math.floor(offset / limit) + 1;
+    const hasNextPage = offset + employees.length < total;
+    const hasPrevPage = offset > 0;
+
+    return res.status(200).json({
+      orders: employees,
+      pagination: {
+        current_page: currentPage,
+        total_pages: totalPages,
+        total_employees: total,
+        limit: limit,
+        offset: offset,
+        has_next_page: hasNextPage,
+        has_prev_page: hasPrevPage
+      }
+    });
+
+  } catch (err) {
+    console.error('viewPastOrders error:', err);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+};

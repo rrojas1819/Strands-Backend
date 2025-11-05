@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { addProduct, getProducts, deleteProduct, updateProduct, addToCart, viewCart, removeFromCart, updateCart, checkout } = require('../controllers/productsController');
+const { addProduct, getProducts, deleteProduct, updateProduct, addToCart, viewCart, removeFromCart, updateCart, checkout, viewUserOrders } = require('../controllers/productsController');
 const { authenticateToken, roleAuthorization } = require('../middleware/auth.middleware');
 
 //SF 1.1 Owner Shop
@@ -14,7 +14,7 @@ router.post('/customer/add-to-cart', authenticateToken, roleAuthorization(['CUST
 router.get('/customer/view-cart/:salon_id', authenticateToken, roleAuthorization(['CUSTOMER']), viewCart);
 router.delete('/customer/remove-from-cart', authenticateToken, roleAuthorization(['CUSTOMER']), removeFromCart);
 router.patch('/customer/update-cart', authenticateToken, roleAuthorization(['CUSTOMER']), updateCart);
-
 router.post('/customer/checkout', authenticateToken, roleAuthorization(['CUSTOMER']), checkout);
+router.post('/customer/view-orders', authenticateToken, roleAuthorization(['CUSTOMER']), viewUserOrders);
 
 module.exports = router;
