@@ -244,7 +244,39 @@ exports.viewCart = async (req, res) => {
         });
 
     } catch (error) {
-        console.error('updateProduct error:', error);
+        console.error('viewCart error:', error);
+        res.status(500).json({
+            message: "Internal server error"
+        });
+    }
+};
+
+// SF 1.2 Remove from Cart
+exports.removeFromCart = async (req, res) => {
+    const db = connection.promise();
+
+    try {
+        const { salon_id, product_id } = req.body;
+        const owner_user_id = req.user?.user_id;
+
+        if (!salon_id || !owner_user_id || !product_id) {
+            return res.status(400).json({ message: 'Missing required fields' });
+        }
+
+        const deleteProductQuery = 
+        `DELETE FROM cart_items WHERE product_id = ? AND cart_id = (SELECT cart_id FROM carts WHERE user_id = ? AND salon_id = ?);`;
+
+        const [results] = await db.execute(deleteProductQuery, [product_id, owner_user_id, salon_id]);
+
+        if (results.affectedRows === 0) {
+            return res.status(404).json({ message: 'Product not found' });
+        }
+
+        res.status(200).json({
+            message: "Product deleted successfully"
+        });
+    } catch (error) {
+        console.error('removeFromCart error:', error);
         res.status(500).json({
             message: "Internal server error"
         });
