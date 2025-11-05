@@ -318,3 +318,174 @@ exports.updateCart = async (req, res) => {
         });
     }
 };
+
+// SF 1.2 Checkout
+exports.checkout = async (req, res) => {
+    const db = connection.promise();
+
+    try {
+        const { salon_id, credit_card_id, billing_address_id } = req.body;;
+        const owner_user_id = req.user?.user_id;
+
+        if (!salon_id || !owner_user_id || !credit_card_id || !billing_address_id) {
+            return res.status(400).json({ message: 'Missing required fields' });
+        }
+
+        // Validate credit card belongs to user
+        const [cardRows] = await db.execute(
+            'SELECT credit_card_id FROM credit_cards WHERE credit_card_id = ? AND user_id = ?',
+            [credit_card_id, owner_user_id]
+        );
+
+        if (cardRows.length === 0) {
+            return res.status(404).json({ message: 'Credit card not found or does not belong to you' });
+        }
+
+        // Validate billing address belongs to user
+        const [addressRows] = await db.execute(
+            'SELECT billing_address_id FROM billing_addresses WHERE billing_address_id = ? AND user_id = ?',
+            [billing_address_id, owner_user_id]
+        );
+
+        if (addressRows.length === 0) {
+            return res.status(404).json({ message: 'Billing address not found or does not belong to you' });
+        }
+
+        // Get Cart Details
+        const getCartQuery = `SELECT c.cart_id, (SELECT SUM(p.price * ci.quantity) FROM cart_items ci JOIN products p ON ci.product_id = p.product_id WHERE ci.cart_id = c.cart_id) AS amount_due FROM carts c WHERE c.user_id = ? AND c.salon_id = ?;`;
+        const [cartRows] = await db.execute(getCartQuery, [owner_user_id, salon_id]);
+
+        if (cartRows.length === 0) {
+            return res.status(404).json({ message: 'Cart not found' });
+        }
+
+        await db.query('START TRANSACTION');
+
+        try {
+            // Check Stock Availability
+            const checkStockQuery = `SELECT p.product_id, p.stock_qty as Store_Stock, ci.quantity as User_Cart FROM products p JOIN cart_items ci ON ci.product_id = p.product_id WHERE ci.cart_id = ?;`;
+            const [stockRows] = await db.execute(checkStockQuery, [cartRows[0].cart_id]);
+
+            if (stockRows.length === 0) {
+                return res.status(404).json({ message: 'Product not found in this salon' });
+            }
+
+            // Check if any products have insufficient stock
+            const insufficientStock = stockRows.filter(row => row.User_Cart > row.Store_Stock);
+            if (insufficientStock.length > 0) {
+                return res.status(400).json({
+                    message: 'Insufficient stock',
+                    details: insufficientStock.map(r => ({
+                      product_id: r.product_id,
+                      store_stock: r.Store_Stock,
+                      user_cart: r.User_Cart
+                    }))
+                  });
+            }
+
+            // Reserve Inventory
+            const reserveInventoryQuery = `UPDATE products SET stock_qty = stock_qty - ? WHERE product_id = ?`;
+
+            for (const row of stockRows) {
+                await connection.execute(reserveInventoryQuery, [row.User_Cart, row.product_id]);
+            }
+            
+            // Copy cart to orders table
+            const copyCartQuery = 
+            `INSERT INTO orders (user_id, salon_id, subtotal, tax)
+            SELECT 
+                c.user_id,
+                c.salon_id,
+                SUM(p.price * ci.quantity) AS subtotal,
+                SUM(p.price * ci.quantity) * 0.06625 AS tax
+            FROM carts c
+            JOIN cart_items ci ON c.cart_id = ci.cart_id
+            JOIN products p ON p.product_id = ci.product_id
+            WHERE c.cart_id = ?
+            GROUP BY c.user_id, c.salon_id;`;
+
+            const [copyResults] = await db.execute(copyCartQuery, [cartRows[0].cart_id]);
+
+            if (copyResults.affectedRows === 0) {
+                await db.query('ROLLBACK');
+                return res.status(500).json({ message: 'Failed to copy cart to orders' });
+            }
+
+            // Create payment record
+            const insertPaymentQuery = `
+                INSERT INTO payments 
+                (credit_card_id, billing_address_id, amount, booking_id, order_id, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, 'SUCCEEDED', NOW(), NOW())
+            `;
+
+            const [paymentResults] = await db.execute(insertPaymentQuery, [credit_card_id, billing_address_id, cartRows[0].amount_due, null, copyResults.insertId]);
+
+
+
+            // Failed to process payment
+            if (paymentResults.affectedRows === 0) {
+                await db.query('ROLLBACK');
+                return res.status(500).json({ message: 'Failed to process payment' });
+            }
+
+            //Copy cart items 
+            const copyCartItemsQuery = 
+            `INSERT INTO order_items (order_id, product_id, quantity, purchase_price)
+            SELECT 
+                ? AS order_id,
+                ci.product_id,
+                ci.quantity,
+                p.price AS purchase_price
+            FROM cart_items AS ci
+            JOIN products AS p ON ci.product_id = p.product_id
+            WHERE ci.cart_id = ?;`;
+
+            const [copyCartItemsResults] = await db.execute(copyCartItemsQuery, [copyResults.insertId, cartRows[0].cart_id]);
+
+            if (copyCartItemsResults.affectedRows === 0) {
+                await db.query('ROLLBACK');
+                return res.status(500).json({ message: 'Failed to copy cart items to order items' });
+            }
+
+
+            // Delete cart items
+            const deleteCartItemsQuery = `DELETE FROM cart_items WHERE cart_id = ?`;
+            const [deleteCartItemsResults] = await db.execute(deleteCartItemsQuery, [cartRows[0].cart_id]);
+
+            if (deleteCartItemsResults.affectedRows === 0) {
+                await db.query('ROLLBACK');
+                return res.status(500).json({ message: 'Failed to delete cart items' });
+            }
+
+            // Delete cart
+            const deleteCartQuery = `DELETE FROM carts WHERE cart_id = ?`;
+            const [deleteResults] = await db.execute(deleteCartQuery, [cartRows[0].cart_id]);
+            
+            if (deleteResults.affectedRows === 0) {
+                await db.query('ROLLBACK');
+                return res.status(500).json({ message: 'Failed to delete cart' });
+            }
+
+            await db.query('COMMIT');
+
+            res.status(200).json({
+                message: 'Payment processed successfully',
+                data: {
+                    payment_id: paymentResults.insertId,
+                    amount: cartRows[0].amount_due
+                }
+            });
+
+        } catch (transactionError) {
+            await db.query('ROLLBACK');
+            console.error('checkoutCart error:', transactionError);
+            return res.status(500).json({ message: 'Transaction failed' });
+        }
+
+    } catch (error) {
+        console.error('checkoutCart error:', error);
+        res.status(500).json({
+            message: 'Internal server error'
+        });
+    }
+};
