@@ -188,3 +188,115 @@ exports.appointmentAnalytics = async (req, res) => {
     }
 };
 
+// AFDV 1.3 Salon Revenue Analytics
+exports.salonRevenueAnalytics = async (req, res) => {
+    const db = connection.promise();
+    try {
+        const perSalonRevenueAnalyticsQuery = 
+        `SELECT 
+        s.name AS salon_name,
+        SUM(CASE WHEN p.status = 'SUCCEEDED' THEN p.amount ELSE 0 END) AS salon_revenue,
+        SUM(CASE WHEN p.status = 'REFUNDED' THEN p.amount ELSE 0 END) AS refunded_amount
+        FROM payments p
+        LEFT JOIN orders o ON p.order_id = o.order_id
+        LEFT JOIN bookings b ON p.booking_id = b.booking_id
+        LEFT JOIN salons s ON s.salon_id = COALESCE(o.salon_id, b.salon_id)
+        GROUP BY s.salon_id, s.name;`;
+        const [perSalonRevenueAnalytics] = await db.execute(perSalonRevenueAnalyticsQuery);
+
+        const platformRevenueAnalyticsQuery = 
+        `SELECT 
+        SUM(CASE WHEN status = 'SUCCEEDED' THEN amount ELSE 0 END) AS platform_revenue,
+        SUM(CASE WHEN status = 'REFUNDED' THEN amount ELSE 0 END) AS refunded_amount,
+        COUNT(CASE WHEN status = 'SUCCEEDED' THEN 1 END) AS total_successful,
+        COUNT(CASE WHEN status = 'REFUNDED' THEN 1 END) AS total_refunded
+        FROM payments;`;
+        const [platformRevenueAnalytics] = await db.execute(platformRevenueAnalyticsQuery);
+        
+
+        const topSalonQuery = 
+        `SELECT 
+        s.name AS salon_name,
+        SUM(CASE WHEN p.order_id IS NOT NULL THEN p.amount ELSE 0 END) AS product_revenue,
+        SUM(CASE WHEN p.booking_id IS NOT NULL THEN p.amount ELSE 0 END) AS booking_revenue,
+        SUM(p.amount) AS total_revenue
+        FROM payments p
+        LEFT JOIN orders o ON p.order_id = o.order_id
+        LEFT JOIN bookings b ON p.booking_id = b.booking_id
+        LEFT JOIN salons s ON s.salon_id = COALESCE(o.salon_id, b.salon_id)
+        WHERE p.status = 'SUCCEEDED'
+        GROUP BY s.salon_id, s.name
+        ORDER BY total_revenue DESC
+        LIMIT 1;`;
+        const [topSalonResults] = await db.execute(topSalonQuery);
+
+        const topProductQuery = 
+        `SELECT 
+        pr.name AS product_name,
+        pr.price AS listing_price,
+        SUM(oi.quantity) AS units_sold,
+        SUM(oi.quantity * oi.purchase_price) AS total_revenue
+        FROM order_items oi
+        JOIN products pr ON oi.product_id = pr.product_id
+        JOIN orders o ON oi.order_id = o.order_id
+        GROUP BY pr.product_id, pr.name, pr.price
+        ORDER BY total_revenue DESC
+        LIMIT 1;`;
+        const [topProductResults] = await db.execute(topProductQuery);
+
+
+        const topStylistQuery = 
+        `SELECT 
+        u.full_name AS stylist_name,
+        s.name AS salon_name,
+        SUM(p.amount) AS total_revenue,
+        COUNT(DISTINCT bs.booking_id) AS total_bookings
+        FROM booking_services bs
+        JOIN employees e ON bs.employee_id = e.employee_id
+        JOIN users u ON e.user_id = u.user_id
+        JOIN salons s ON e.salon_id = s.salon_id
+        JOIN bookings b ON bs.booking_id = b.booking_id
+        JOIN payments p ON p.booking_id = b.booking_id
+        WHERE p.status = 'SUCCEEDED'
+        GROUP BY e.employee_id, u.full_name, s.name
+        ORDER BY total_revenue DESC
+        LIMIT 1;`;
+        const [topStylistResults] = await db.execute(topStylistQuery);
+
+
+        const topServicesQuery = 
+        `SELECT 
+        sv.name AS service_name,
+        s.name AS salon_name,
+        COUNT(DISTINCT bs.booking_id) AS times_booked,
+        SUM(p.amount) AS total_revenue
+        FROM payments p
+        JOIN bookings b ON p.booking_id = b.booking_id
+        JOIN booking_services bs ON b.booking_id = bs.booking_id
+        JOIN services sv ON bs.service_id = sv.service_id
+        JOIN salons s ON sv.salon_id = s.salon_id
+        WHERE p.status = 'SUCCEEDED'
+        GROUP BY sv.service_id, sv.name, s.name
+        ORDER BY total_revenue DESC
+        LIMIT 5;`;
+        const [topServicesResults] = await db.execute(topServicesQuery);
+
+        res.status(200).json({
+            perSalonRevenueAnalytics: perSalonRevenueAnalytics,
+            platformRevenueAnalytics: platformRevenueAnalytics,
+            topMetrics: {
+                topSalon: topSalonResults[0],
+                topProduct: topProductResults[0],
+                topStylist: topStylistResults[0],
+                topServices: topServicesResults,
+            }
+        });
+        
+    
+    } catch (error) {
+        console.error('salonRevenueAnalytics error:', error);
+        res.status(500).json({
+            message: "Internal server error"
+        });
+    }
+};
