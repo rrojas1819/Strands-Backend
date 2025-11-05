@@ -74,13 +74,7 @@ const startTokenCleanup = (connection) => {
     }, 15 * 60 * 1000); // Every 15 minutes
 };
 
-module.exports = {
-    validateEmail,
-    startTokenCleanup,
-    startBookingsAutoComplete,
-    toLocalSQL,
-    formatDateTime
-};
+
 
 // Cleanup job to auto-complete finished bookings every 1 hour
 function startBookingsAutoComplete(connection) {
@@ -104,3 +98,82 @@ function startBookingsAutoComplete(connection) {
         }
     }, 60 * 60 * 1000); 
 }
+
+// Job to update loyalty_seen for completed bookings with past end times every 15 minutes
+function startLoyaltySeenUpdate(connection) {
+    setInterval(async () => {
+        try {
+            const db = connection.promise();
+            const currentLocal = toLocalSQL(new Date());
+
+            const getCompletedBookingsQuery = `
+                SELECT booking_id, customer_user_id, salon_id
+                FROM bookings
+                WHERE status = 'COMPLETED'
+                  AND (loyalty_seen = 0 OR loyalty_seen IS NULL)
+                  AND scheduled_end IS NOT NULL
+                  AND scheduled_end < ?
+            `;
+            const [completedBookings] = await db.execute(getCompletedBookingsQuery, [currentLocal]);
+
+            for (const booking of completedBookings) {
+                try {
+                    await db.beginTransaction();
+                    
+                    const checkMembershipQuery = `
+                        SELECT membership_id, visits_count
+                        FROM loyalty_memberships
+                        WHERE user_id = ? AND salon_id = ?
+                        FOR UPDATE
+                    `;
+                    const [membership] = await db.execute(checkMembershipQuery, [booking.customer_user_id, booking.salon_id]);
+
+                    if (membership.length === 0) {
+                        const insertMembershipQuery = `
+                            INSERT INTO loyalty_memberships (user_id, salon_id, visits_count, created_at, updated_at)
+                            VALUES (?, ?, 0, NOW(), NOW())
+                        `;
+                        await db.execute(insertMembershipQuery, [booking.customer_user_id, booking.salon_id]);
+                    }
+
+                    const incrementVisitsQuery = `
+                        UPDATE loyalty_memberships
+                        SET visits_count = visits_count + 1, updated_at = NOW()
+                        WHERE user_id = ? AND salon_id = ?
+                    `;
+                    await db.execute(incrementVisitsQuery, [booking.customer_user_id, booking.salon_id]);
+
+                    const updateBookingQuery = `
+                        UPDATE bookings
+                        SET loyalty_seen = 1
+                        WHERE booking_id = ?
+                    `;
+                    await db.execute(updateBookingQuery, [booking.booking_id]);
+
+                    await db.commit();
+                } catch (bookingError) {
+                    await db.rollback();
+                }
+            }
+
+            const updateCanceledQuery = `
+                UPDATE bookings
+                SET loyalty_seen = 2
+                WHERE status = 'CANCELED'
+                  AND (loyalty_seen != 2 OR loyalty_seen IS NULL)
+            `;
+            await db.execute(updateCanceledQuery);
+        } catch (error) {
+            //console.error('Loyalty seen update job failed:', error);
+        }
+    }, 15 * 60 * 1000); // Every 15 minutes 
+}
+
+module.exports = {
+    validateEmail,
+    startTokenCleanup,
+    startBookingsAutoComplete,
+    toLocalSQL,
+    formatDateTime,
+    startLoyaltySeenUpdate
+};
