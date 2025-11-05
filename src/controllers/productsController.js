@@ -392,12 +392,13 @@ exports.checkout = async (req, res) => {
             
             // Copy cart to orders table
             const copyCartQuery = 
-            `INSERT INTO orders (user_id, salon_id, subtotal, tax)
+            `INSERT INTO orders (user_id, salon_id, subtotal, tax, order_code)
             SELECT 
                 c.user_id,
                 c.salon_id,
                 SUM(p.price * ci.quantity) AS subtotal,
-                SUM(p.price * ci.quantity) * 0.06625 AS tax
+                SUM(p.price * ci.quantity) * 0.06625 AS tax,
+                CONCAT('ORD-', UPPER(HEX(FLOOR(RAND() * 0xFFFFFF))))
             FROM carts c
             JOIN cart_items ci ON c.cart_id = ci.cart_id
             JOIN products p ON p.product_id = ci.product_id
@@ -525,6 +526,7 @@ exports.viewUserOrders = async (req, res) => {
     SELECT o.subtotal as subtotal_order_price, o.tax as order_tax, o.tax + o.subtotal as total_order_price, oi.purchase_price, p.name, p.description, p.sku, p.price as listed_price, p.category FROM orders o 
     JOIN order_items oi ON o.order_id = oi.order_id 
     JOIN products p ON oi.product_id = p.product_id
+    JOIN salons s ON o.salon_id = s.salon_id
     WHERE o.salon_id = ? AND o.user_id = ?
     LIMIT ${limitInt} OFFSET ${offsetInt}`;
 
@@ -551,6 +553,71 @@ exports.viewUserOrders = async (req, res) => {
 
   } catch (err) {
     console.error('viewPastOrders error:', err);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+};
+
+// SF 1.2 View Salon Orders
+exports.viewSalonOrders = async (req, res) => {
+    const db = connection.promise();
+
+  try {
+    const { limit, offset } = req.body;
+    const owner_user_id = req.user?.user_id;
+
+    if (!limit || isNaN(offset)) {
+      return res.status(400).json({ message: 'Invalid fields.' });
+    }
+
+    const countQuery = 
+    `SELECT COUNT(*) as total 
+    FROM orders
+    WHERE salon_id = (SELECT salon_id FROM salons WHERE owner_user_id = ?)`;
+
+    const [countResult] = await db.execute(countQuery, [owner_user_id]);
+
+    const total = countResult[0]?.total || 0;
+
+    if (total === 0) {
+      return res.status(500).json({
+        message: 'No orders found',
+      });
+    }
+
+    const limitInt = Math.max(0, Number.isFinite(Number(limit)) ? Number(limit) : 10);
+    const offsetInt = Math.max(0, Number.isFinite(Number(offset)) ? Number(offset) : 0);
+
+    const employeesQuery = `
+    SELECT u.full_name as customer_name, o.order_code, o.subtotal as subtotal_order_price, o.tax as order_tax, o.tax + o.subtotal as total_order_price, oi.purchase_price, p.name, p.description, p.sku, p.price as listed_price, p.category
+    FROM orders o 
+    JOIN order_items oi ON o.order_id = oi.order_id 
+    JOIN products p ON oi.product_id = p.product_id
+    JOIN users u ON o.user_id = u.user_id
+    WHERE o.salon_id = (SELECT salon_id FROM salons WHERE owner_user_id = ?)
+    LIMIT ${limitInt} OFFSET ${offsetInt}`;
+
+    const [employees] = await db.execute(employeesQuery, [owner_user_id]);
+
+    const totalPages = Math.ceil(total / limit);
+    const currentPage = Math.floor(offset / limit) + 1;
+    const hasNextPage = offset + employees.length < total;
+    const hasPrevPage = offset > 0;
+
+    return res.status(200).json({
+      orders: employees,
+      pagination: {
+        current_page: currentPage,
+        total_pages: totalPages,
+        total_employees: total,
+        limit: limit,
+        offset: offset,
+        has_next_page: hasNextPage,
+        has_prev_page: hasPrevPage
+      }
+    });
+
+  } catch (err) {
+    console.error('viewPastSalonOrders error:', err);
     return res.status(500).json({ message: 'Internal server error' });
   }
 };
