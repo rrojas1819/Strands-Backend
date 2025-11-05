@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { demographics, loyaltyProgramAnalytics, userEngagement, appointmentAnalytics } = require('../controllers/analyticsController');
+const { demographics, loyaltyProgramAnalytics, userEngagement, appointmentAnalytics, salonRevenueAnalytics } = require('../controllers/analyticsController');
 const { authenticateToken, roleAuthorization } = require('../middleware/auth.middleware');
 
 // AFVD 1.1 User Engagement
@@ -11,6 +11,9 @@ router.get('/appointment-analytics', authenticateToken, roleAuthorization(['ADMI
 
 // User Pie Chart
 router.get('/demographics', authenticateToken, roleAuthorization(['ADMIN']), demographics);
+
+// AFDV 1.3 Salon Revenue Analytics
+router.get('/salon-revenue-analytics', authenticateToken, roleAuthorization(['ADMIN']), salonRevenueAnalytics);
 
 // AFDV 1.4 Loyalty Program Analytics
 router.get('/loyalty-program', authenticateToken, roleAuthorization(['ADMIN']), loyaltyProgramAnalytics);
