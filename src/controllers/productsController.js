@@ -218,3 +218,35 @@ exports.addToCart = async (req, res) => {
         });
     }
 };
+
+// SF 1.2 View Cart
+exports.viewCart = async (req, res) => {
+    const db = connection.promise();
+
+    try {
+        const { salon_id } = req.params;
+        const owner_user_id = req.user?.user_id;
+
+        if (!salon_id || !owner_user_id) {
+            return res.status(400).json({ message: 'Missing required fields' });
+        }
+
+        const updateProductQuery = 
+        `SELECT p.product_id, p.name, p.description, p.sku, p.price, p.category, p.stock_qty ,ci.quantity FROM cart_items ci JOIN products p ON p.product_id = ci.product_id WHERE cart_id = (SELECT cart_id FROM carts WHERE user_id = ? AND salon_id = ?);`;
+        const [results] = await db.execute(updateProductQuery, [owner_user_id, salon_id]);
+
+        if (results.length === 0) {
+            return res.status(404).json({ message: 'Cart not found' });
+        }
+
+        res.status(200).json({
+            items: results
+        });
+
+    } catch (error) {
+        console.error('updateProduct error:', error);
+        res.status(500).json({
+            message: "Internal server error"
+        });
+    }
+};
