@@ -28,13 +28,14 @@ const reviewRoutes = require('./routes/reviews');
 const db = require('./config/databaseConnection');
 
 // Get utilities and get start Token Cleanup
-const { startTokenCleanup, startBookingsAutoComplete } = require('./utils/utilies');
+const { startTokenCleanup, startBookingsAutoComplete, startLoyaltySeenUpdate } = require('./utils/utilies');
 
 // Set up Express and CORS
 const app = express();
 
 startTokenCleanup(db);
 startBookingsAutoComplete(db);
+startLoyaltySeenUpdate(db);
 app.use(cors());
 app.use(express.json());
 
