@@ -211,8 +211,8 @@ exports.processPayment = async (req, res) => {
             // Create payment record
             const insertPaymentQuery = `
                 INSERT INTO payments 
-                (credit_card_id, billing_address_id, amount, booking_id, order_id, status, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, 'SUCCEEDED', NOW(), NOW())
+                (credit_card_id, billing_address_id, amount, booking_id, order_id, reward_id, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, 'SUCCEEDED', NOW(), NOW())
             `;
 
             const [paymentResults] = await db.execute(insertPaymentQuery, [
@@ -220,7 +220,8 @@ exports.processPayment = async (req, res) => {
                 billing_address_id,
                 finalAmount,//rounded amount is now final amount
                 booking_id || null,
-                order_id || null
+                order_id || null,
+                (use_loyalty_discount && loyaltyEligible && rewardId) ? rewardId : null
             ]);
 
             if (paymentResults.affectedRows === 0) {
