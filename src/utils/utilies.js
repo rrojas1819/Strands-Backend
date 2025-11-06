@@ -143,6 +143,56 @@ function startLoyaltySeenUpdate(connection) {
                     `;
                     await db.execute(incrementVisitsQuery, [booking.customer_user_id, booking.salon_id]);
 
+                    const getLoyaltyProgramQuery = `
+                        SELECT target_visits, discount_percentage, note
+                        FROM loyalty_programs
+                        WHERE salon_id = ? AND active = 1
+                    `;
+                    const [loyaltyProgram] = await db.execute(getLoyaltyProgramQuery, [booking.salon_id]);
+
+                    if (loyaltyProgram.length > 0) {
+                        const program = loyaltyProgram[0];
+                        const target_visits = program.target_visits;
+
+                        const [updatedMembership] = await db.execute(
+                            `SELECT visits_count FROM loyalty_memberships WHERE user_id = ? AND salon_id = ?`,
+                            [booking.customer_user_id, booking.salon_id]
+                        );
+
+                        if (updatedMembership.length > 0) {
+                            const current_visits = updatedMembership[0].visits_count;
+
+                            if (current_visits >= target_visits) {
+                                const new_visits_count = current_visits - target_visits;
+
+                                const currentLocal = toLocalSQL(new Date());
+                                const insertRewardQuery = `
+                                    INSERT INTO available_rewards 
+                                    (user_id, salon_id, active, discount_percentage, note, redeemed_at, creationDate, created_at, updated_at)
+                                    VALUES (?, ?, 1, ?, ?, NULL, ?, NOW(), NOW())
+                                `;
+                                await db.execute(insertRewardQuery, [
+                                    booking.customer_user_id,
+                                    booking.salon_id,
+                                    program.discount_percentage,
+                                    program.note,
+                                    currentLocal
+                                ]);
+
+                                const resetVisitsQuery = `
+                                    UPDATE loyalty_memberships
+                                    SET visits_count = ?, updated_at = NOW()
+                                    WHERE user_id = ? AND salon_id = ?
+                                `;
+                                await db.execute(resetVisitsQuery, [
+                                    new_visits_count,
+                                    booking.customer_user_id,
+                                    booking.salon_id
+                                ]);
+                            }
+                        }
+                    }
+
                     const updateBookingQuery = `
                         UPDATE bookings
                         SET loyalty_seen = 1
