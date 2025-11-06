@@ -522,8 +522,8 @@ exports.viewUserOrders = async (req, res) => {
     const limitInt = Math.max(0, Number.isFinite(Number(limit)) ? Number(limit) : 10);
     const offsetInt = Math.max(0, Number.isFinite(Number(offset)) ? Number(offset) : 0);
 
-    const employeesQuery = `
-    SELECT o.order_code, o.subtotal as subtotal_order_price, o.tax as order_tax, o.tax + o.subtotal as total_order_price, oi.purchase_price, p.name, p.description, p.sku, p.price as listed_price, p.category, DATE_FORMAT(o.created_at, '%Y-%m-%d') as ordered_date
+    const viewUserOrdersQuery = `
+    SELECT o.order_code, o.subtotal as subtotal_order_price, o.tax as order_tax, o.tax + o.subtotal as total_order_price, oi.purchase_price, oi.quantity, p.name, p.description, p.sku, p.price as listed_price, p.category, o.created_at as ordered_date
     FROM orders o 
     JOIN order_items oi ON o.order_id = oi.order_id 
     JOIN products p ON oi.product_id = p.product_id
@@ -531,7 +531,7 @@ exports.viewUserOrders = async (req, res) => {
     WHERE o.salon_id = ? AND o.user_id = ?
     LIMIT ${limitInt} OFFSET ${offsetInt}`;
 
-    const [employees] = await db.execute(employeesQuery, [salon_id, owner_user_id]);
+    const [employees] = await db.execute(viewUserOrdersQuery, [salon_id, owner_user_id]);
 
 
     const totalPages = Math.ceil(total / limit);
@@ -588,16 +588,16 @@ exports.viewSalonOrders = async (req, res) => {
     const limitInt = Math.max(0, Number.isFinite(Number(limit)) ? Number(limit) : 10);
     const offsetInt = Math.max(0, Number.isFinite(Number(offset)) ? Number(offset) : 0);
 
-    const employeesQuery = `
-    SELECT o.order_code, u.full_name as customer_name, o.order_code, o.subtotal as subtotal_order_price, o.tax as order_tax, o.tax + o.subtotal as total_order_price, oi.purchase_price, p.name, p.description, p.sku, p.price as listed_price, p.category, DATE_FORMAT(o.created_at, '%Y-%m-%d') as ordered_date
+    const viewSalonOrdersQuery = `
+    SELECT o.order_code, u.full_name as customer_name, o.order_code, o.subtotal as subtotal_order_price, o.tax as order_tax, o.tax + o.subtotal as total_order_price, oi.quantity, oi.purchase_price, p.name, p.description, p.sku, p.price as listed_price, p.category, o.created_at as ordered_date
     FROM orders o 
     JOIN order_items oi ON o.order_id = oi.order_id 
     JOIN products p ON oi.product_id = p.product_id
     JOIN users u ON o.user_id = u.user_id
     WHERE o.salon_id = (SELECT salon_id FROM salons WHERE owner_user_id = ?)
-    LIMIT ${limitInt} OFFSET ${offsetInt}`;
+    LIMIT ${limitInt} OFFSET ${offsetInt};`;
 
-    const [employees] = await db.execute(employeesQuery, [owner_user_id]);
+    const [employees] = await db.execute(viewSalonOrdersQuery, [owner_user_id]);
 
     const totalPages = Math.ceil(total / limit);
     const currentPage = Math.floor(offset / limit) + 1;
