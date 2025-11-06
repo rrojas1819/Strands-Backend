@@ -725,9 +725,46 @@ bookingParams = [customer_user_id, employee_id];
         }
 
         //merging booking and service information and showing it as a visit
-        const visits = bookingRows.map(b => {
+        const visits = await Promise.all(bookingRows.map(async (b) => {
             const services = svcByBooking.get(b.booking_id) || [];
             const total_price = services.reduce((s, x) => s + Number(x.price || 0), 0);
+
+            // Get payment information for this booking
+            const [payments] = await db.execute(
+                `SELECT amount, reward_id, status
+                 FROM payments
+                 WHERE booking_id = ? AND status = 'SUCCEEDED'
+                 ORDER BY created_at DESC
+                 LIMIT 1`,
+                [b.booking_id]
+            );
+
+            let actualAmountPaid = null;
+            let rewardInfo = null;
+
+            if (payments.length > 0) {
+                actualAmountPaid = Number(payments[0].amount);
+                
+                if (payments[0].reward_id) {
+                    const [rewards] = await db.execute(
+                        `SELECT reward_id, discount_percentage, note, creationDate, redeemed_at
+                         FROM available_rewards
+                         WHERE reward_id = ?`,
+                        [payments[0].reward_id]
+                    );
+                    
+                    if (rewards.length > 0) {
+                        rewardInfo = {
+                            reward_id: rewards[0].reward_id,
+                            discount_percentage: Number(rewards[0].discount_percentage),
+                            note: rewards[0].note,
+                            creationDate: formatDateTime(rewards[0].creationDate),
+                            redeemed_at: formatDateTime(rewards[0].redeemed_at)
+                        };
+                    }
+                }
+            }
+
             return {
                 booking_id: b.booking_id,
                 scheduled_start: formatDateTime(b.scheduled_start),
@@ -735,9 +772,11 @@ bookingParams = [customer_user_id, employee_id];
                 status: b.status,
                 notes: b.notes,
                 services,
-                total_price
+                total_price,
+                actual_amount_paid: actualAmountPaid,
+                reward: rewardInfo
             };
-        });
+        }));
 
         return res.status(200).json({
             data: {

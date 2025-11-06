@@ -2,7 +2,7 @@ require('dotenv').config();
 const bcrypt = require('bcrypt');
 const connection = require('../config/databaseConnection');
 const { generateToken } = require('../middleware/auth.middleware');
-const { validateEmail, toLocalSQL } = require('../utils/utilies');
+const { validateEmail, toLocalSQL, formatDateTime } = require('../utils/utilies');
 
 // Global constants
 const DAYS_OF_WEEK = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'];
@@ -474,8 +474,7 @@ exports.getStylistWeeklySchedule = async (req, res) => {
 
       const dateKey = ymd(d);
       const bookingsForDate = bookingsByDate[dateKey] || [];
-      const dayBookings = [];
-      for (const booking of bookingsForDate) {
+      const dayBookings = await Promise.all(bookingsForDate.map(async (booking) => {
         const startDate = new Date(booking.scheduled_start);
         const endDate = new Date(booking.scheduled_end);
         const startTime = startDate.toTimeString().split(' ')[0];
@@ -485,7 +484,43 @@ exports.getStylistWeeklySchedule = async (req, res) => {
         const totalDuration = servicesResult.reduce((sum, s) => sum + Number(s.duration_minutes), 0);
         const totalPrice = servicesResult.reduce((sum, s) => sum + Number(s.price), 0);
 
-        dayBookings.push({
+        // Get payment information for this booking
+        const [payments] = await db.execute(
+          `SELECT amount, reward_id, status
+           FROM payments
+           WHERE booking_id = ? AND status = 'SUCCEEDED'
+           ORDER BY created_at DESC
+           LIMIT 1`,
+          [booking.booking_id]
+        );
+
+        let actualAmountPaid = null;
+        let rewardInfo = null;
+
+        if (payments.length > 0) {
+          actualAmountPaid = Number(payments[0].amount);
+          
+          if (payments[0].reward_id) {
+            const [rewards] = await db.execute(
+              `SELECT reward_id, discount_percentage, note, creationDate, redeemed_at
+               FROM available_rewards
+               WHERE reward_id = ?`,
+              [payments[0].reward_id]
+            );
+            
+            if (rewards.length > 0) {
+              rewardInfo = {
+                reward_id: rewards[0].reward_id,
+                discount_percentage: Number(rewards[0].discount_percentage),
+                note: rewards[0].note,
+                creationDate: formatDateTime(rewards[0].creationDate),
+                redeemed_at: formatDateTime(rewards[0].redeemed_at)
+              };
+            }
+          }
+        }
+
+        return {
           booking_id: booking.booking_id,
           salon_id: booking.salon_id,
           customer: {
@@ -505,9 +540,11 @@ exports.getStylistWeeklySchedule = async (req, res) => {
             price: s.price
           })),
           total_duration_minutes: totalDuration,
-          total_price: totalPrice
-        });
-      }
+          total_price: totalPrice,
+          actual_amount_paid: actualAmountPaid,
+          reward: rewardInfo
+        };
+      }));
 
       const displayDate = formatMmDdYyyy(d);
       schedule[displayDate] = {
