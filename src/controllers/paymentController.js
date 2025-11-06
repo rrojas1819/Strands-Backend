@@ -90,7 +90,8 @@ exports.processPayment = async (req, res) => {
             amount,
             order_id,
             booking_id,
-            use_loyalty_discount = false
+            use_loyalty_discount = false,
+            reward_id
         } = req.body;
 
         // Validate required fields
@@ -170,12 +171,17 @@ exports.processPayment = async (req, res) => {
             salon_id = bookingRows[0].salon_id;
 
             if (use_loyalty_discount) {
+                if (!reward_id) {
+                    return res.status(400).json({
+                        message: 'reward_id is required when use_loyalty_discount is true'
+                    });
+                }
+
                 const [availableRewards] = await db.execute(
                     `SELECT reward_id, discount_percentage
                      FROM available_rewards
-                     WHERE user_id = ? AND salon_id = ? AND active = 1 AND redeemed_at IS NULL
-                     LIMIT 1`,
-                    [user_id, salon_id]
+                     WHERE reward_id = ? AND user_id = ? AND salon_id = ? AND active = 1 AND redeemed_at IS NULL`,
+                    [reward_id, user_id, salon_id]
                 );
 
                 if (availableRewards.length > 0) {
@@ -184,7 +190,7 @@ exports.processPayment = async (req, res) => {
                     rewardId = availableRewards[0].reward_id;
                 } else {
                     return res.status(400).json({
-                        message: 'No available reward to redeem. You need to earn a reward first.'
+                        message: 'The specified reward is not available to redeem. It may have already been redeemed or does not exist.'
                     });
                 }
             }
