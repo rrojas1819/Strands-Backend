@@ -1,6 +1,82 @@
 require('dotenv').config();
 const connection = require('../config/databaseConnection');
 const paymentSecurity = require('../utils/paymentSecurity');
+const { toLocalSQL, formatDateTime } = require('../utils/utilies');
+
+// PLR 1.5 Get available rewards for a salon
+exports.getAvailableRewards = async (req, res) => {
+    const db = connection.promise();
+
+    try {
+        const user_id = req.user?.user_id;
+        const { salon_id } = req.body;
+
+        if (!user_id) {
+            return res.status(401).json({ message: 'Unauthorized' });
+        }
+
+        if (!salon_id) {
+            return res.status(400).json({ message: 'salon_id is required' });
+        }
+
+        const [availableRewards] = await db.execute(
+            `SELECT reward_id, discount_percentage, note, creationDate
+             FROM available_rewards
+             WHERE user_id = ? AND salon_id = ? AND active = 1 AND redeemed_at IS NULL
+             ORDER BY creationDate DESC`,
+            [user_id, salon_id]
+        );
+
+        const [loyaltyProgram] = await db.execute(
+            `SELECT target_visits, discount_percentage, note
+             FROM loyalty_programs
+             WHERE salon_id = ? AND active = 1`,
+            [salon_id]
+        );
+
+        if (loyaltyProgram.length === 0) {
+            return res.status(200).json({
+                rewards: [],
+                loyalty_program: null,
+                message: 'No active loyalty program found for this salon'
+            });
+        }
+
+        const programData = loyaltyProgram[0];
+
+        const formattedRewards = availableRewards.map(reward => {
+            let createdAt;
+            if (reward.creationDate instanceof Date) {
+                createdAt = reward.creationDate;
+            } else {
+                const timestampStr = String(reward.creationDate);
+                if (timestampStr.includes('Z') || timestampStr.includes('+') || (timestampStr.includes('-') && timestampStr.match(/-/g)?.length === 3)) {
+                    createdAt = new Date(timestampStr);
+                } else {
+                    createdAt = new Date(timestampStr.replace(' ', 'T'));
+                }
+            }
+            return {
+                ...reward,
+                creationDate: formatDateTime(createdAt)
+            };
+        });
+
+        return res.status(200).json({
+            rewards: formattedRewards,
+            loyalty_program: {
+                target_visits: programData.target_visits,
+                discount_percentage: programData.discount_percentage,
+                note: programData.note
+            },
+            total_available: formattedRewards.length
+        });
+
+    } catch (error) {
+        console.error('getAvailableRewards error:', error);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
 
 // PLR 1.1 Process a payment online
 exports.processPayment = async (req, res) => {
@@ -13,7 +89,8 @@ exports.processPayment = async (req, res) => {
             billing_address_id,
             amount,
             order_id,
-            booking_id
+            booking_id,
+            use_loyalty_discount = false
         } = req.body;
 
         // Validate required fields
@@ -65,9 +142,14 @@ exports.processPayment = async (req, res) => {
         }
 
         // If booking_id is provided, validate booking exists, belongs to user, and is in PENDING status
+        let salon_id = null;
+        let loyaltyEligible = false;
+        let loyaltyDiscountPercentage = null;
+        let rewardId = null;
+
         if (booking_id) {
             const [bookingRows] = await db.execute(
-                'SELECT booking_id, status, customer_user_id FROM bookings WHERE booking_id = ?',
+                'SELECT booking_id, status, customer_user_id, salon_id FROM bookings WHERE booking_id = ?',
                 [booking_id]
             );
             
@@ -83,6 +165,36 @@ exports.processPayment = async (req, res) => {
                 return res.status(400).json({ 
                     message: `Cannot process payment for booking with status '${bookingRows[0].status}'. Booking must be in PENDING status.` 
                 });
+            }
+
+            salon_id = bookingRows[0].salon_id;
+
+            if (use_loyalty_discount) {
+                const [availableRewards] = await db.execute(
+                    `SELECT reward_id, discount_percentage
+                     FROM available_rewards
+                     WHERE user_id = ? AND salon_id = ? AND active = 1 AND redeemed_at IS NULL
+                     LIMIT 1`,
+                    [user_id, salon_id]
+                );
+
+                if (availableRewards.length > 0) {
+                    loyaltyEligible = true;
+                    loyaltyDiscountPercentage = availableRewards[0].discount_percentage;
+                    rewardId = availableRewards[0].reward_id;
+                } else {
+                    return res.status(400).json({
+                        message: 'No available reward to redeem. You need to earn a reward first.'
+                    });
+                }
+            }
+        }
+
+        let finalAmount = roundedAmount;
+        if (loyaltyEligible && use_loyalty_discount) {
+            finalAmount = Math.round(roundedAmount * (1 - loyaltyDiscountPercentage / 100) * 100) / 100;
+            if (finalAmount < 0.01) {
+                return res.status(400).json({ message: 'Discounted amount must be at least 0.01' });
             }
         }
 
@@ -100,7 +212,7 @@ exports.processPayment = async (req, res) => {
             const [paymentResults] = await db.execute(insertPaymentQuery, [
                 credit_card_id,
                 billing_address_id,
-                roundedAmount,
+                finalAmount,//rounded amount is now final amount
                 booking_id || null,
                 order_id || null
             ]);
@@ -117,6 +229,32 @@ exports.processPayment = async (req, res) => {
                     } catch (_) {}
                 }
                 return res.status(500).json({ message: 'Failed to process payment' });
+            }
+
+            if (booking_id && use_loyalty_discount && loyaltyEligible && rewardId) {
+                const redeemedAt = toLocalSQL(new Date());
+                const [updateRewardResult] = await db.execute(
+                    `UPDATE available_rewards
+                     SET redeemed_at = ?, active = 0, updated_at = NOW()
+                     WHERE reward_id = ? AND user_id = ? AND salon_id = ? AND active = 1 AND redeemed_at IS NULL`,
+                    [redeemedAt, rewardId, user_id, salon_id]
+                );
+
+                if (updateRewardResult.affectedRows !== 1) {
+                    await db.query('ROLLBACK');
+                    if (booking_id) {
+                        try {
+                            await db.execute(
+                                `DELETE FROM bookings 
+                                 WHERE booking_id = ? AND customer_user_id = ? AND status = 'PENDING'`,
+                                [booking_id, user_id]
+                            );
+                        } catch (_) {}
+                    }
+                    return res.status(400).json({ 
+                        message: 'Cannot redeem loyalty discount: reward no longer available' 
+                    });
+                }
             }
 
             // If booking_id was provided, update booking status from PENDING to SCHEDULED
@@ -149,7 +287,9 @@ exports.processPayment = async (req, res) => {
                 message: 'Payment processed successfully',
                 data: {
                     payment_id: paymentResults.insertId,
-                    amount: roundedAmount,
+                    amount: finalAmount,
+                    original_amount: loyaltyEligible && use_loyalty_discount ? roundedAmount : undefined,
+                    discount_applied: loyaltyEligible && use_loyalty_discount,
                     ...(booking_id ? { booking_status_updated: true } : {})
                 }
             });

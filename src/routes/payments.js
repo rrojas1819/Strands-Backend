@@ -6,6 +6,10 @@ const { authenticateToken, roleAuthorization } = require('../middleware/auth.mid
 // PLR 1.1
 router.post('/process', authenticateToken, roleAuthorization(['CUSTOMER']), paymentController.processPayment);
 
+// PLR 1.5 Get available rewards for a salon
+router.post('/availableRewards', authenticateToken, roleAuthorization(['CUSTOMER']), paymentController.getAvailableRewards);
+
+
 // PLR 1.1 / PLR 1.101 save and get credit cards
 router.post('/saveCreditCard', authenticateToken, roleAuthorization(['CUSTOMER']), paymentController.saveCreditCard);
 router.post('/saveTempCreditCard', authenticateToken, roleAuthorization(['CUSTOMER']), paymentController.saveTempCreditCard);

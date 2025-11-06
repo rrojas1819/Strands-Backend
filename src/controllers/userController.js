@@ -563,7 +563,7 @@ exports.viewLoyaltyProgram = async (req, res) => {
       const getTotalVisitsQuery = `SELECT SUM(visits_count) as total_visits FROM loyalty_memberships WHERE user_id = ?;`;
       const [totalVisits] = await db.execute(getTotalVisitsQuery, [user_id]);
 
-      const getUserRewardsQuery = `SELECT reward_id, created_at AS earned_at, active, redeemed_at, discount_percentage, note FROM available_rewards WHERE salon_id = ? AND user_id = ?;`;
+      const getUserRewardsQuery = `SELECT reward_id, creationDate AS earned_at, active, redeemed_at, discount_percentage, note FROM available_rewards WHERE salon_id = ? AND user_id = ?;`;
       const [userRewards] = await db.execute(getUserRewardsQuery, [salon_id, user_id]);
   
       return res.status(200).json({ 
