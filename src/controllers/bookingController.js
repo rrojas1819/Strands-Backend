@@ -440,6 +440,74 @@ exports.cancelBooking = async (req, res) => {
     }
 };
 
+//BS 1.7 stylist cancels booking/appointment
+exports.cancelBookingAsStylist = async (req, res) => {
+    const db = connection.promise();
+
+    try {
+        const authUserId = req.user?.user_id;
+        const { booking_id } = req.body;
+
+        const bookingId = parseInt(booking_id, 10);
+        if (!Number.isInteger(bookingId) || bookingId <= 0) {
+            return res.status(400).json({ message: 'Invalid booking id' });
+        }
+        if (!authUserId) return res.status(401).json({ message: 'Unauthorized' });
+
+        await db.beginTransaction();
+
+        const [empRows] = await db.execute(`SELECT e.employee_id, e.user_id FROM employees e 
+                                        WHERE e.user_id = ?`, [authUserId]
+        );
+        if (!empRows.length) {
+            await db.rollback();
+            return res.status(404).json({ message: 'Employee not found' });
+        }
+
+        const employeeId = empRows[0].employee_id;
+
+        const [rows] = await db.execute(`SELECT b.booking_id, b.customer_user_id, b.scheduled_start, b.status
+                                    FROM bookings b
+                                    JOIN booking_services bs ON b.booking_id = bs.booking_id
+                                    WHERE b.booking_id = ? AND bs.employee_id = ? AND b.status = 'SCHEDULED'
+                                    FOR UPDATE`, [bookingId, employeeId]
+        );
+
+        if (rows.length === 0) {
+            await db.rollback();
+            return res.status(404).json({ message: 'Booking not found or cannot be canceled (must be SCHEDULED and assigned to you)' });
+        }
+
+        const booking = rows[0];
+        const previousStatus = booking.status;
+
+        await db.execute(`UPDATE bookings SET status = 'CANCELED' WHERE booking_id = ?`, [bookingId]);
+
+        await db.execute(
+            `UPDATE payments 
+             SET status = 'REFUNDED', updated_at = NOW()
+             WHERE booking_id = ? AND status <> 'REFUNDED'`,
+            [bookingId]
+        );
+
+        await db.commit();
+
+        return res.status(200).json({
+            message: 'Booking canceled by stylist',
+            data: {
+                booking_id: booking.booking_id,
+                previous_status: previousStatus,
+                new_status: 'CANCELED',
+                canceled_at: new Date().toISOString()
+            }
+        });
+    } catch (err) {
+        try { await db.rollback(); } catch (_) { }
+        console.error('cancelBookingAsStylist error:', err);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
 // Delete a pending booking (when user backs out of transaction)
 exports.deletePendingBooking = async (req, res) => {
     const db = connection.promise();

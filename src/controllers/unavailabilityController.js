@@ -1,4 +1,5 @@
 const connection = require('../config/databaseConnection'); //db connection
+const { formatDateTime } = require('../utils/utilies');
 
 //validating time for SQL
 const TIME_RX = /^([01]\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?$/;
@@ -66,6 +67,46 @@ exports.createRecurringBlock = async (req, res) => {
                                        LIMIT 1`, [employeeId, weekday, start, end]
         ); if (overlap.length) return res.status(409).json({ message: 'Overlaps an existing recurring block' });
 
+        //BS 1.7 Check for conflicting SCHEDULED appointments
+        const [bookings] = await db.execute(
+            `SELECT DISTINCT b.booking_id, b.scheduled_start, b.scheduled_end, u.full_name AS customer_name
+             FROM bookings b
+             JOIN booking_services bs ON b.booking_id = bs.booking_id
+             LEFT JOIN users u ON b.customer_user_id = u.user_id
+             WHERE bs.employee_id = ?
+               AND b.status = 'SCHEDULED'
+               AND b.scheduled_start >= NOW()
+             ORDER BY b.scheduled_start ASC`,
+            [employeeId]
+        );
+
+        const conflictingAppointments = [];
+        for (const booking of bookings) {
+            const bookingStart = new Date(booking.scheduled_start);
+            const bookingEnd = new Date(booking.scheduled_end);
+            const bookingWeekday = bookingStart.getUTCDay();
+
+            if (bookingWeekday !== weekday) continue;
+
+            const bookingStartNormalized = bookingStart.toISOString().slice(11, 16);
+            const bookingEndNormalized = bookingEnd.toISOString().slice(11, 16);
+
+            if (bookingStartNormalized < end && bookingEndNormalized > start) {
+                conflictingAppointments.push({
+                    booking_id: booking.booking_id,
+                    scheduled_start: formatDateTime(booking.scheduled_start),
+                    scheduled_end: formatDateTime(booking.scheduled_end),
+                    customer_name: booking.customer_name || null
+                });
+            }
+        }
+
+        if (conflictingAppointments.length > 0) {
+            return res.status(409).json({
+                message: 'Cannot create block: conflicting appointments found',
+                conflicting_appointments: conflictingAppointments
+            });
+        }
 
         //insert new blocked time
         const [ins] = await db.execute(`INSERT INTO employee_unavailability
