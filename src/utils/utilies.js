@@ -9,17 +9,15 @@ function toMySQLUtc(date) {
     return date.toISOString().slice(0, 19).replace('T', ' ');
 }
 
-//format time with a 'T' separating the date and time -- for JSON responses (UTC)
 const formatDateTime = (timeStr) => {
     if (!timeStr) return null;
     if (timeStr instanceof Date) {
-        // Format as UTC (YYYY-MM-DDTHH:mm:ss)
-        return timeStr.toISOString().slice(0, 19);
+        return timeStr.toISOString();
     }
     // If it's already a string, try to parse it as a date and format as UTC
     const date = new Date(timeStr);
     if (!isNaN(date.getTime())) {
-        return date.toISOString().slice(0, 19);
+        return date.toISOString();
     }
     return String(timeStr);
 };
