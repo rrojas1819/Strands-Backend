@@ -150,6 +150,12 @@ exports.login = async (req, res) => {
         const tokenExpiry = new Date(Date.now() + 2 * 60 * 60 * 1000);
         const updateTokenQuery = 'UPDATE auth_credentials SET token_expires_at = ? WHERE user_id = ?';
         await db.execute(updateTokenQuery, [tokenExpiry, existingUsers[0].user_id]);
+
+
+        // Track login
+        const trackLoginQuery = 'INSERT INTO logins (user_id, login_date) VALUES (?, NOW())';
+        await db.execute(trackLoginQuery, [existingUsers[0].user_id]);
+
         res.status(200).json({
             message: "Login successful",
             data: {
