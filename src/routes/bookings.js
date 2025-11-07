@@ -12,6 +12,9 @@ router.post('/reschedule', authenticateToken, roleAuthorization(['CUSTOMER']), b
 //BS 1.3 customer cancels booking/appointment
 router.post('/cancel', authenticateToken, roleAuthorization(['CUSTOMER']), bookingController.cancelBooking);
 
+//BS 1.7 stylist cancels booking/appointment
+router.post('/stylist/cancel', authenticateToken, roleAuthorization(['EMPLOYEE']), bookingController.cancelBookingAsStylist);
+
 // Delete pending booking (transaction didn't go through)
 router.delete('/:booking_id/deletePendingBooking', authenticateToken, roleAuthorization(['CUSTOMER']), bookingController.deletePendingBooking);
 

@@ -492,7 +492,7 @@ exports.getStylistWeeklySchedule = async (req, res) => {
     });
 
     for (let d = new Date(startOfDay); d.getTime() <= endOfDay.getTime(); d.setUTCDate(d.getUTCDate() + 1)) {
-      const dayIndex = d.getDay(); // 0..6 (Sun..Sat) - getDay() works correctly with UTC dates
+      const dayIndex = d.getUTCDay(); // 0..6 (Sun..Sat) - use UTC to match the UTC date calculation
       const dayName = weekdayMap[dayIndex];
 
       const dayAvailability = availabilityByWeekday[dayName] || null;
@@ -525,10 +525,9 @@ exports.getStylistWeeklySchedule = async (req, res) => {
       const dateKey = ymd(d);
       const bookingsForDate = bookingsByDate[dateKey] || [];
       const dayBookings = bookingsForDate.map(booking => {
-        const startDate = new Date(booking.scheduled_start);
-        const endDate = new Date(booking.scheduled_end);
-        const startTime = startDate.toISOString().slice(11, 19); // HH:mm:ss from UTC
-        const endTime = endDate.toISOString().slice(11, 19);
+        // Return full ISO datetime strings so frontend can properly convert to local timezone
+        const startTime = formatDateTime(booking.scheduled_start);
+        const endTime = formatDateTime(booking.scheduled_end);
 
         const servicesResult = servicesByBookingId[booking.booking_id] || [];
         const totalDuration = servicesResult.reduce((sum, s) => sum + Number(s.duration_minutes), 0);

@@ -1180,7 +1180,7 @@ exports.getAvailableTimeSlotsRange = async (req, res) => {
           WHERE bs.employee_id = ? 
           AND b.scheduled_start >= ? 
           AND b.scheduled_start <= ?
-          AND b.status NOT IN ('CANCELLED', 'NO_SHOW')
+          AND b.status NOT IN ('CANCELED', 'NO_SHOW')
           ORDER BY b.scheduled_start
       `;
       const startDateUtc = toMySQLUtc(startDate);
@@ -1905,12 +1905,21 @@ exports.bookTimeSlot = async (req, res) => {
       return res.status(400).json({ message: 'At least one service is required' });
     }
 
-    // Parse as Date - treat input as UTC
-    const startDate = new Date(scheduled_start);
+    let startDate;
+    if (typeof scheduled_start === 'string') {
+      if (scheduled_start.includes('Z') || scheduled_start.match(/[+-]\d{2}:\d{2}$/)) {
+        startDate = new Date(scheduled_start);
+      } else {
+        // No timezone info - treat as UTC by appending 'Z'
+        startDate = new Date(scheduled_start + 'Z');
+      }
+    } else {
+      startDate = new Date(scheduled_start);
+    }
 
     if (isNaN(startDate.getTime())) {
       return res.status(400).json({
-        message: 'Invalid date format. EX: "2025-10-28T13:00:00"'
+        message: 'Invalid date format. EX: "2025-10-28T13:00:00" or "2025-10-28T13:00:00Z"'
       });
     }
     
@@ -2038,7 +2047,7 @@ exports.bookTimeSlot = async (req, res) => {
        FROM bookings b
        JOIN booking_services bs ON b.booking_id = bs.booking_id
        WHERE bs.employee_id = ?
-         AND b.status NOT IN ('CANCELLED', 'NO_SHOW')
+         AND b.status NOT IN ('CANCELED', 'NO_SHOW')
          AND b.scheduled_start < ?
          AND b.scheduled_end > ?`,
       [employee_id, requestEndStr, requestStartStr]
@@ -2046,6 +2055,7 @@ exports.bookTimeSlot = async (req, res) => {
 
     if (conflictsResult.length > 0) {
       // Format database datetime as UTC for response
+      console.log(conflictsResult);
       return res.status(409).json({
         message: 'Time slot is no longer available. Please select a different time.',
         conflicting_booking: {
