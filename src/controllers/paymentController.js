@@ -1,7 +1,7 @@
 require('dotenv').config();
 const connection = require('../config/databaseConnection');
 const paymentSecurity = require('../utils/paymentSecurity');
-const { toLocalSQL, formatDateTime } = require('../utils/utilies');
+const { toMySQLUtc, formatDateTime } = require('../utils/utilies');
 
 // PLR 1.5 Get available rewards for a salon
 exports.getAvailableRewards = async (req, res) => {
@@ -239,7 +239,7 @@ exports.processPayment = async (req, res) => {
             }
 
             if (booking_id && use_loyalty_discount && loyaltyEligible && rewardId) {
-                const redeemedAt = toLocalSQL(new Date());
+                const redeemedAt = toMySQLUtc(new Date());
                 const [updateRewardResult] = await db.execute(
                     `UPDATE available_rewards
                      SET redeemed_at = ?, active = 0, updated_at = NOW()

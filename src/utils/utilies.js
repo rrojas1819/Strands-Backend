@@ -4,28 +4,22 @@ const validateEmail = (email) => {
     return emailRegex.test(email);
 };
 
-// Format a JS Date as local SQL datetime (YYYY-MM-DD HH:mm:ss) -- for SQL logic
-function toLocalSQL(dt) {
-    const Y = dt.getFullYear();
-    const M = String(dt.getMonth() + 1).padStart(2, '0');
-    const D = String(dt.getDate()).padStart(2, '0');
-    const H = String(dt.getHours()).padStart(2, '0');
-    const MI = String(dt.getMinutes()).padStart(2, '0');
-    const S = String(dt.getSeconds()).padStart(2, '0');
-    return `${Y}-${M}-${D} ${H}:${MI}:${S}`;
+// Format a JS Date as UTC SQL datetime (YYYY-MM-DD HH:mm:ss) -- for SQL logic
+function toMySQLUtc(date) {
+    return date.toISOString().slice(0, 19).replace('T', ' ');
 }
 
-//format time with a 'T' separating the date and time -- for JSON responses
+//format time with a 'T' separating the date and time -- for JSON responses (UTC)
 const formatDateTime = (timeStr) => {
     if (!timeStr) return null;
     if (timeStr instanceof Date) {
-        const Y = timeStr.getFullYear();
-        const M = String(timeStr.getMonth() + 1).padStart(2, '0');
-        const D = String(timeStr.getDate()).padStart(2, '0');
-        const H = String(timeStr.getHours()).padStart(2, '0');
-        const MI = String(timeStr.getMinutes()).padStart(2, '0');
-        const S = String(timeStr.getSeconds()).padStart(2, '0');
-        return `${Y}-${M}-${D}T${H}:${MI}:${S}`;
+        // Format as UTC (YYYY-MM-DDTHH:mm:ss)
+        return timeStr.toISOString().slice(0, 19);
+    }
+    // If it's already a string, try to parse it as a date and format as UTC
+    const date = new Date(timeStr);
+    if (!isNaN(date.getTime())) {
+        return date.toISOString().slice(0, 19);
     }
     return String(timeStr);
 };
@@ -84,7 +78,7 @@ function startBookingsAutoComplete(connection) {
             //Small grace period
             const GRACE_MS = 2 * 60 * 1000; // 2 minutes
             const nowMinusGrace = new Date(Date.now() - GRACE_MS);
-            const currentLocal = toLocalSQL(nowMinusGrace);
+            const currentUtc = toMySQLUtc(nowMinusGrace);
 
             const updateQuery = `
                 UPDATE bookings
@@ -93,7 +87,7 @@ function startBookingsAutoComplete(connection) {
                   AND scheduled_end IS NOT NULL
                   AND scheduled_end < ?
             `;
-            await db.execute(updateQuery, [currentLocal]);
+            await db.execute(updateQuery, [currentUtc]);
         } catch (error) {
         }
     }, 60 * 60 * 1000); 
@@ -104,7 +98,7 @@ function startLoyaltySeenUpdate(connection) {
     setInterval(async () => {
         try {
             const db = connection.promise();
-            const currentLocal = toLocalSQL(new Date());
+            const currentUtc = toMySQLUtc(new Date());
 
             const getCompletedBookingsQuery = `
                 SELECT booking_id, customer_user_id, salon_id
@@ -114,7 +108,7 @@ function startLoyaltySeenUpdate(connection) {
                   AND scheduled_end IS NOT NULL
                   AND scheduled_end < ?
             `;
-            const [completedBookings] = await db.execute(getCompletedBookingsQuery, [currentLocal]);
+            const [completedBookings] = await db.execute(getCompletedBookingsQuery, [currentUtc]);
 
             for (const booking of completedBookings) {
                 try {
@@ -165,7 +159,7 @@ function startLoyaltySeenUpdate(connection) {
                             if (current_visits >= target_visits) {
                                 const new_visits_count = current_visits - target_visits;
 
-                                const currentLocal = toLocalSQL(new Date());
+                                const currentUtc = toMySQLUtc(new Date());
                                 const insertRewardQuery = `
                                     INSERT INTO available_rewards 
                                     (user_id, salon_id, active, discount_percentage, note, redeemed_at, creationDate, created_at, updated_at)
@@ -176,7 +170,7 @@ function startLoyaltySeenUpdate(connection) {
                                     booking.salon_id,
                                     program.discount_percentage,
                                     program.note,
-                                    currentLocal
+                                    currentUtc
                                 ]);
 
                                 const resetVisitsQuery = `
@@ -223,7 +217,7 @@ module.exports = {
     validateEmail,
     startTokenCleanup,
     startBookingsAutoComplete,
-    toLocalSQL,
+    toMySQLUtc,
     formatDateTime,
     startLoyaltySeenUpdate
 };

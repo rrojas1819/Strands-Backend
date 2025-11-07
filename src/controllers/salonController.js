@@ -1,5 +1,5 @@
 const connection = require('../config/databaseConnection'); //db connection
-const { validateEmail } = require('../utils/utilies');
+const { validateEmail, toMySQLUtc, formatDateTime } = require('../utils/utilies');
 
 //allowed salon categories
 const ALLOWED_CATEGORIES = new Set([
@@ -1091,20 +1091,20 @@ exports.getAvailableTimeSlotsRange = async (req, res) => {
       }
     
       
-      // Determine date range
+      // Determine date range - use UTC
       let startDate, endDate;
       const today = new Date();
-      today.setHours(0, 0, 0, 0);
+      today.setUTCHours(0, 0, 0, 0);
       const dayInMs = 24 * 60 * 60 * 1000;
       
       if (start_date && end_date) {
-          startDate = new Date(start_date + 'T00:00:00');
-          endDate = new Date(end_date + 'T00:00:00');
+          startDate = new Date(start_date + 'T00:00:00Z');
+          endDate = new Date(end_date + 'T00:00:00Z');
       } else if (start_date) {
-          startDate = new Date(start_date + 'T00:00:00');
+          startDate = new Date(start_date + 'T00:00:00Z');
           endDate = new Date(startDate.getTime() + (parseInt(days) - 1) * dayInMs);
       } else {
-          // Default to next 7 days from today
+          // Default to next 7 days from today (UTC)
           startDate = new Date(today);
           endDate = new Date(today.getTime() + (parseInt(days) - 1) * dayInMs);
       }
@@ -1179,11 +1179,13 @@ exports.getAvailableTimeSlotsRange = async (req, res) => {
           JOIN booking_services bs ON b.booking_id = bs.booking_id
           WHERE bs.employee_id = ? 
           AND b.scheduled_start >= ? 
-          AND b.scheduled_start < DATE_ADD(?, INTERVAL 1 DAY)
+          AND b.scheduled_start <= ?
           AND b.status NOT IN ('CANCELLED', 'NO_SHOW')
           ORDER BY b.scheduled_start
       `;
-      const [bookingsResult] = await db.execute(getBookingsQuery, [employee_id, startDate.toISOString().split('T')[0] + ' 00:00:00', endDate.toISOString().split('T')[0] + ' 00:00:00']);
+      const startDateUtc = toMySQLUtc(startDate);
+      const endDateUtc = toMySQLUtc(new Date(endDate.getTime() + dayInMs - 1)); // End of day
+      const [bookingsResult] = await db.execute(getBookingsQuery, [employee_id, startDateUtc, endDateUtc]);
       
       // Create availability map by weekday
       const availabilityMap = {};
@@ -1215,7 +1217,7 @@ exports.getAvailableTimeSlotsRange = async (req, res) => {
       
       while (currentDate <= endDate) {
           const dateStr = currentDate.toISOString().split('T')[0];
-          const dayOfWeek = currentDate.getDay();
+          const dayOfWeek = currentDate.getUTCDay();
           const dayName = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][dayOfWeek];
           
           const availability = availabilityMap[dayOfWeek];
@@ -1231,15 +1233,16 @@ exports.getAvailableTimeSlotsRange = async (req, res) => {
               };
           } else {
               const availableSlots = [];
-              const availabilityStart = new Date(`${dateStr}T${availability.start_time}`);
-              const availabilityEnd = new Date(`${dateStr}T${availability.end_time}`);
+              // Parse availability times as UTC
+              const availabilityStart = new Date(`${dateStr}T${availability.start_time}Z`);
+              const availabilityEnd = new Date(`${dateStr}T${availability.end_time}Z`);
               
               const blockedTimes = [];
               
               unavailability.forEach(block => {
                   blockedTimes.push({
-                      start: new Date(`${dateStr}T${block.start_time}`),
-                      end: new Date(`${dateStr}T${block.end_time}`)
+                      start: new Date(`${dateStr}T${block.start_time}Z`),
+                      end: new Date(`${dateStr}T${block.end_time}Z`)
                   });
               });
               
@@ -1259,7 +1262,10 @@ exports.getAvailableTimeSlotsRange = async (req, res) => {
               let currentSlotStart = availabilityStart;
               
               if (isCurrentDay && currentSlotStart < now) {
-                  currentSlotStart = now;
+                  // Round up to next slot interval
+                  const slotIntervalMs = (availability.slot_interval_minutes || 30) * 60 * 1000;
+                  const roundedNow = new Date(Math.ceil(now.getTime() / slotIntervalMs) * slotIntervalMs);
+                  currentSlotStart = roundedNow > availabilityStart ? roundedNow : availabilityStart;
               }
               
               for (const blocked of blockedTimes) {
@@ -1271,8 +1277,8 @@ exports.getAvailableTimeSlotsRange = async (req, res) => {
                       while (slotStart.getTime() + serviceDurationMinutes * 60000 <= blocked.start.getTime()) {
                           const slotEnd = new Date(slotStart.getTime() + serviceDurationMinutes * 60000);
                           
-                          const timeStr = slotStart.toTimeString().split(' ')[0].substring(0, 5);
-                          const endTimeStr = slotEnd.toTimeString().split(' ')[0].substring(0, 5);
+                          const timeStr = slotStart.toISOString().slice(11, 16); // HH:mm format from UTC
+                          const endTimeStr = slotEnd.toISOString().slice(11, 16);
                           
                           availableSlots.push({
                               start_time: timeStr,
@@ -1293,8 +1299,8 @@ exports.getAvailableTimeSlotsRange = async (req, res) => {
                   while (slotStart.getTime() + serviceDurationMinutes * 60000 <= availabilityEnd.getTime()) {
                       const slotEnd = new Date(slotStart.getTime() + serviceDurationMinutes * 60000);
                       
-                      const timeStr = slotStart.toTimeString().split(' ')[0].substring(0, 5);
-                      const endTimeStr = slotEnd.toTimeString().split(' ')[0].substring(0, 5);
+                      const timeStr = slotStart.toISOString().slice(11, 16); // HH:mm format from UTC
+                      const endTimeStr = slotEnd.toISOString().slice(11, 16);
                       
                       availableSlots.push({
                           start_time: timeStr,
@@ -1318,7 +1324,7 @@ exports.getAvailableTimeSlotsRange = async (req, res) => {
               };
           }
           
-          currentDate.setDate(currentDate.getDate() + 1);
+          currentDate.setUTCDate(currentDate.getUTCDate() + 1);
       }
       
       return res.status(200).json({
@@ -1899,7 +1905,7 @@ exports.bookTimeSlot = async (req, res) => {
       return res.status(400).json({ message: 'At least one service is required' });
     }
 
-    // Parse as Date and keep everything in LOCAL time (same as weekly schedule)
+    // Parse as Date - treat input as UTC
     const startDate = new Date(scheduled_start);
 
     if (isNaN(startDate.getTime())) {
@@ -1980,24 +1986,24 @@ exports.bookTimeSlot = async (req, res) => {
     }
 
 
-    //Get the day of the week for the booking
-    const bookingDayOfWeek = startDate.getDay();
+    //Get the day of the week for the booking (UTC)
+    const bookingDayOfWeek = startDate.getUTCDay();
     const dayAvailability = availabilityResult.find(a => a.weekday === bookingDayOfWeek);
     if (!dayAvailability) {
       return res.status(400).json({ message: 'Stylist is not available on this day' });
     }
 
 
-    // Build local YYYY-MM-DD for the booking date
-    const y  = startDate.getFullYear();
-    const m  = String(startDate.getMonth() + 1).padStart(2, '0');
-    const d  = String(startDate.getDate()).padStart(2, '0');
+    // Build UTC YYYY-MM-DD for the booking date
+    const y  = startDate.getUTCFullYear();
+    const m  = String(startDate.getUTCMonth() + 1).padStart(2, '0');
+    const d  = String(startDate.getUTCDate()).padStart(2, '0');
     const dayStr = `${y}-${m}-${d}`;
 
 
-    // Compare within availability window using Date objects on the SAME local date
-    const availStart = new Date(`${dayStr}T${dayAvailability.start_time}`);
-    const availEnd   = new Date(`${dayStr}T${dayAvailability.end_time}`);
+    // Compare within availability window - parse availability times as UTC
+    const availStart = new Date(`${dayStr}T${dayAvailability.start_time}Z`);
+    const availEnd   = new Date(`${dayStr}T${dayAvailability.end_time}Z`);
     if (startDate < availStart || endDate > availEnd) {
       return res.status(400).json({
         message: `Booking time must be within stylist's availability (${dayAvailability.start_time} - ${dayAvailability.end_time})`
@@ -2013,8 +2019,8 @@ exports.bookTimeSlot = async (req, res) => {
     );
 
     const hasUnavailabilityConflict = unavailabilityResult.some(block => {
-      const blockStart = new Date(`${dayStr}T${block.start_time}`);
-      const blockEnd   = new Date(`${dayStr}T${block.end_time}`);
+      const blockStart = new Date(`${dayStr}T${block.start_time}Z`);
+      const blockEnd   = new Date(`${dayStr}T${block.end_time}Z`);
       return (startDate < blockEnd) && (blockStart < endDate);
     });
 
@@ -2022,19 +2028,9 @@ exports.bookTimeSlot = async (req, res) => {
       return res.status(409).json({ message: 'Stylist is unavailable during this time slot' });
     }
 
-    // Format local DATETIME strings
-    const toLocalSQL = (dt) => {
-      const Y  = dt.getFullYear();
-      const M  = String(dt.getMonth() + 1).padStart(2, '0');
-      const D  = String(dt.getDate()).padStart(2, '0');
-      const H  = String(dt.getHours()).padStart(2, '0');
-      const MI = String(dt.getMinutes()).padStart(2, '0');
-      const S  = String(dt.getSeconds()).padStart(2, '0');
-      return `${Y}-${M}-${D} ${H}:${MI}:${S}`;
-    };  
-
-    const requestStartStr = toLocalSQL(startDate);
-    const requestEndStr   = toLocalSQL(endDate);
+    // Format as UTC for database storage
+    const requestStartStr = toMySQLUtc(startDate);
+    const requestEndStr   = toMySQLUtc(endDate);
 
     // Check conflicts with existing bookings
     const [conflictsResult] = await db.execute(
@@ -2049,28 +2045,13 @@ exports.bookTimeSlot = async (req, res) => {
     );
 
     if (conflictsResult.length > 0) {
-      // Convert database datetime to local time
-      const formatConflictTime = (timeStr) => {
-        if (!timeStr) return null;
-       
-        if (timeStr instanceof Date) {
-          const Y = timeStr.getFullYear();
-          const M = String(timeStr.getMonth() + 1).padStart(2, '0');
-          const D = String(timeStr.getDate()).padStart(2, '0');
-          const H = String(timeStr.getHours()).padStart(2, '0');
-          const MI = String(timeStr.getMinutes()).padStart(2, '0');
-          const S = String(timeStr.getSeconds()).padStart(2, '0');
-          return `${Y}-${M}-${D}T${H}:${MI}:${S}`;
-        }
-        return String(timeStr);
-      };
-
+      // Format database datetime as UTC for response
       return res.status(409).json({
         message: 'Time slot is no longer available. Please select a different time.',
         conflicting_booking: {
           booking_id: conflictsResult[0].booking_id,
-          scheduled_start: formatConflictTime(conflictsResult[0].scheduled_start),
-          scheduled_end: formatConflictTime(conflictsResult[0].scheduled_end)
+          scheduled_start: formatDateTime(conflictsResult[0].scheduled_start),
+          scheduled_end: formatDateTime(conflictsResult[0].scheduled_end)
         }
       });
     }
