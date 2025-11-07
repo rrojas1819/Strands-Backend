@@ -232,13 +232,15 @@ exports.salonRevenueAnalytics = async (req, res) => {
 
         const topProductQuery = 
         `SELECT 
-        pr.name AS product_name,
-        pr.price AS listing_price,
-        SUM(oi.quantity) AS units_sold,
-        SUM(oi.quantity * oi.purchase_price) AS total_revenue
+            s.name AS salon_name,
+            pr.name AS product_name,
+            pr.price AS listing_price,
+            SUM(oi.quantity) AS units_sold,
+            SUM(oi.quantity * oi.purchase_price) AS total_revenue
         FROM order_items oi
         JOIN products pr ON oi.product_id = pr.product_id
         JOIN orders o ON oi.order_id = o.order_id
+        JOIN salons s ON s.salon_id = pr.salon_id
         GROUP BY pr.product_id, pr.name, pr.price
         ORDER BY total_revenue DESC
         LIMIT 1;`;
