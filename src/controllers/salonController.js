@@ -2104,8 +2104,8 @@ exports.bookTimeSlot = async (req, res) => {
             title: employeeResult[0].title
           },
           appointment: {
-            scheduled_start: requestStartStr.replace(' ', 'T'),
-            scheduled_end: requestEndStr.replace(' ', 'T'),
+            scheduled_start: formatDateTime(startDate),
+            scheduled_end: formatDateTime(endDate),
             duration_minutes: Math.round((endDate - startDate) / (1000 * 60)),
             status: 'PENDING'
           },

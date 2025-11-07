@@ -216,12 +216,20 @@ exports.rescheduleBooking = async (req, res) => {
         if (!booking_id || isNaN(booking_id)) return res.status(400).json({ message: 'Invalid booking_id' });
         if (!scheduled_start) return res.status(400).json({ message: 'scheduled_start is required' });
 
-        // Parse as Date - treat input as UTC
-        const startDate = new Date(scheduled_start);
+        let startDate;
+        if (typeof scheduled_start === 'string') {
+            if (scheduled_start.includes('Z') || scheduled_start.match(/[+-]\d{2}:\d{2}$/)) {
+                startDate = new Date(scheduled_start);
+            } else {
+                startDate = new Date(scheduled_start + 'Z');
+            }
+        } else {
+            startDate = new Date(scheduled_start);
+        }
 
         if (isNaN(startDate.getTime())) {
             return res.status(400).json({
-                message: 'Invalid date format. EX: "2025-10-28T13:00:00"'
+                message: 'Invalid date format. EX: "2025-10-28T13:00:00" or "2025-10-28T13:00:00Z"'
             });
         }
 
@@ -350,8 +358,8 @@ exports.rescheduleBooking = async (req, res) => {
                     old_booking_id: Number(booking_id),
                     new_booking_id: newBookingId,
                     appointment: {
-                        scheduled_start: requestStartStr.replace(' ', 'T'),
-                        scheduled_end: requestEndStr.replace(' ', 'T'),
+                        scheduled_start: formatDateTime(startDate),
+                        scheduled_end: formatDateTime(endDate),
                         duration_minutes: Math.round((endDate - startDate) / (1000 * 60)),
                         status: 'SCHEDULED'
                     },
