@@ -6,12 +6,12 @@ exports.userEngagement = async (req, res) => {
     const db = connection.promise();
 
     try {
-        const checkUserQuery = `
-        SELECT 
-        (SELECT COUNT(*) FROM users WHERE DATE(last_login_at) = CURDATE()) as today_logins,
-        (SELECT COUNT(*) FROM users WHERE DATE(last_login_at) = CURDATE() - INTERVAL 1 DAY) as yesterday_logins,
-        (SELECT COUNT(*) FROM users WHERE last_login_at >= CURDATE() - INTERVAL 7 DAY AND last_login_at <  CURDATE()) AS past_week_logins,
-        (SELECT COUNT(*) FROM users WHERE last_login_at >= CURDATE() - INTERVAL 14 DAY AND last_login_at <  CURDATE() - INTERVAL 7 DAY) AS previous_week_logins,
+        const checkUserQuery = 
+        `SELECT 
+        (SELECT COUNT(*) FROM logins WHERE DATE(login_date) = CURDATE()) AS today_logins,
+        (SELECT COUNT(*) FROM logins WHERE DATE(login_date) = CURDATE() - INTERVAL 1 DAY) AS yesterday_logins,
+        (SELECT COUNT(*) FROM logins WHERE login_date >= CURDATE() - INTERVAL 7 DAY AND login_date < CURDATE()) AS past_week_logins,
+        (SELECT COUNT(*) FROM logins WHERE login_date >= CURDATE() - INTERVAL 14 DAY AND login_date < CURDATE() - INTERVAL 7 DAY) AS previous_week_logins,
         (SELECT COUNT(*) FROM bookings) as total_bookings,
         (SELECT COUNT(*) AS total_repeat_users FROM ( SELECT salon_id, customer_user_id FROM bookings WHERE status IN ('SCHEDULED', 'COMPLETED') GROUP BY salon_id, customer_user_id HAVING COUNT(*) >= 2) AS repeats) AS repeat_bookers;
         `;
