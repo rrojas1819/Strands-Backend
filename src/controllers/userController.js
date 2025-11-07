@@ -620,3 +620,47 @@ exports.viewLoyaltyProgram = async (req, res) => {
     return res.status(500).json({ message: 'Internal Server Error' });
   }
 };
+
+// PLR 1.2 View Stylist Metrics
+exports.viewStylistMetrics = async (req, res) => {
+  const db = connection.promise();
+
+  try {
+    const user_id = req.user?.user_id;
+
+    if (!user_id) {
+      return res.status(401).json({ message: 'Invalid fields.' });
+    }
+
+    const revenueMetricsQuery = 
+    `SELECT(
+    SELECT COALESCE(SUM(p.amount), 0)
+    FROM payments p
+    JOIN bookings b ON b.booking_id = p.booking_id
+    JOIN booking_services bs ON bs.booking_id = b.booking_id
+    WHERE p.status = 'SUCCEEDED'
+      AND p.created_at >= CURDATE()
+      AND p.created_at < CURDATE() + INTERVAL 1 DAY
+      AND bs.employee_id = (SELECT employee_id FROM employees WHERE user_id = ?)
+  ) AS revenue_today,
+  (SELECT COALESCE(SUM(p.amount), 0)
+    FROM payments p
+    JOIN bookings b ON b.booking_id = p.booking_id
+    JOIN booking_services bs ON bs.booking_id = b.booking_id
+    WHERE p.status = 'SUCCEEDED'
+      AND p.created_at >= CURDATE() - INTERVAL 7 DAY
+      AND p.created_at < CURDATE() + INTERVAL 1 DAY
+      AND bs.employee_id = (SELECT employee_id FROM employees WHERE user_id = ?)
+  ) AS revenue_past_week;`;
+
+    const [revenueMetrics] = await db.execute(revenueMetricsQuery, [user_id, user_id]);
+
+    return res.status(200).json({
+      revenueMetrics: revenueMetrics[0]
+    });
+
+  } catch (err) {
+    return res.status(500).json({ message: 'Internal Server Error' });
+  }
+
+};

@@ -2249,3 +2249,99 @@ exports.trackSalonEvent = async (req, res) => {
     return res.status(500).json({ message: 'Internal server error' });
   }
 };
+
+// PLR 1.2 View Salon Metrics
+exports.getTopSalonMetrics = async (req, res) => {
+  const db = connection.promise();
+
+  try {
+    const owner_user_id = req.user?.user_id;
+
+    if (!owner_user_id) {
+      return res.status(401).json({ message: 'Invalid fields.' });
+    }
+
+    const topSalonStylistQuery = 
+    `SELECT 
+      u.full_name AS stylist_name,
+      s.name AS salon_name,
+      SUM(p.amount) AS total_revenue,
+      COUNT(DISTINCT bs.booking_id) AS total_bookings
+    FROM booking_services bs
+    JOIN employees e ON bs.employee_id = e.employee_id
+    JOIN users u ON e.user_id = u.user_id
+    JOIN salons s ON e.salon_id = s.salon_id
+    JOIN bookings b ON bs.booking_id = b.booking_id
+    JOIN payments p ON p.booking_id = b.booking_id
+    WHERE p.status = 'SUCCEEDED' AND s.salon_id = (SELECT salon_id FROM salons WHERE owner_user_id = ?)
+    GROUP BY  e.employee_id, u.full_name, s.name
+    ORDER BY total_revenue DESC
+    LIMIT 1;`;
+
+    const [topSalonStylistResults] = await db.execute(topSalonStylistQuery, [owner_user_id]);
+
+    const salonServicesQuery = 
+    `SELECT 
+        sv.name AS service_name,
+        s.name AS salon_name,
+        COUNT(DISTINCT bs.booking_id) AS times_booked,
+        SUM(p.amount) AS total_revenue
+    FROM payments p
+    JOIN bookings b ON p.booking_id = b.booking_id
+    JOIN booking_services bs ON b.booking_id = bs.booking_id
+    JOIN services sv ON bs.service_id = sv.service_id
+    JOIN salons s ON sv.salon_id = s.salon_id
+    WHERE p.status = 'SUCCEEDED' AND s.salon_id = (SELECT salon_id FROM salons WHERE owner_user_id = ?)
+    GROUP BY sv.service_id, sv.name, s.name
+    ORDER BY total_revenue DESC, times_booked DESC;`;
+
+    const [salonServicesResults] = await db.execute(salonServicesQuery, [owner_user_id]);
+
+    const productRevenueQuery = 
+    `SELECT 
+      pr.name AS product_name,
+      pr.price AS listing_price,
+      SUM(oi.quantity) AS units_sold,
+      SUM(oi.quantity * oi.purchase_price) AS total_revenue
+    FROM order_items oi
+    JOIN products pr ON oi.product_id = pr.product_id
+    JOIN orders o ON oi.order_id = o.order_id
+    JOIN salons s ON s.salon_id = pr.salon_id
+    WHERE s.salon_id = (SELECT salon_id FROM salons WHERE owner_user_id = ?)
+    GROUP BY pr.product_id, pr.name, pr.price, s.name
+    ORDER BY total_revenue DESC, units_sold DESC;`;
+    const [productRevenueResults] = await db.execute(productRevenueQuery, [owner_user_id]);
+
+    const totalProductRevenueQuery = 
+    `SELECT COALESCE(SUM(oi.quantity * oi.purchase_price), 0) AS total_product_revenue
+    FROM order_items oi
+    JOIN products pr ON oi.product_id = pr.product_id
+    JOIN orders o ON oi.order_id = o.order_id
+    JOIN salons s ON s.salon_id = pr.salon_id
+    WHERE s.salon_id = (SELECT salon_id FROM salons WHERE owner_user_id = ?)
+    GROUP BY s.salon_id, s.name;`;
+    const [totalProductRevenueResults] = await db.execute(totalProductRevenueQuery, [owner_user_id]);
+
+
+    const totalSalonRevenueQuery =
+    `SELECT 
+        COALESCE(SUM(p.amount), 0) AS total_revenue
+    FROM payments p
+    JOIN bookings b ON p.booking_id = b.booking_id
+    JOIN salons s ON b.salon_id = s.salon_id
+    WHERE p.status = 'SUCCEEDED' AND s.salon_id = (SELECT salon_id FROM salons WHERE owner_user_id = ?)
+    GROUP BY s.salon_id, s.name;`;
+    const [totalSalonRevenueResults] = await db.execute(totalSalonRevenueQuery, [owner_user_id]);
+
+    return res.status(200).json({
+      topStylist: topSalonStylistResults[0],
+      totalProductRevenue: totalProductRevenueResults[0].total_product_revenue,
+      totalSalonRevenue: totalSalonRevenueResults[0].total_revenue,
+      services: salonServicesResults,
+      productsRevenue: productRevenueResults
+    });
+
+  } catch (err) {
+    return res.status(500).json({ message: 'Internal Server Error' });
+  }
+};

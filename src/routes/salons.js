@@ -55,6 +55,7 @@ router.get('/information', authenticateToken, roleAuthorization(['OWNER']), salo
 // AFVD 1.1 User Engagement Tracking
 router.post('/track-salon-event', authenticateToken, roleAuthorization(['CUSTOMER']), salonController.trackSalonEvent);
 
-
+// PLR 1.2 View Salon Metrics
+router.get('/top-metrics', authenticateToken, roleAuthorization(['OWNER']), salonController.getTopSalonMetrics);
 
 module.exports = router;
