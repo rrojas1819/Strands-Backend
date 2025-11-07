@@ -1,36 +1,13 @@
 const connection = require('../config/databaseConnection'); //db connection
-
-const toLocalSQL = (dt) => {
-    const Y = dt.getFullYear();
-    const M = String(dt.getMonth() + 1).padStart(2, '0');
-    const D = String(dt.getDate()).padStart(2, '0');
-    const H = String(dt.getHours()).padStart(2, '0');
-    const MI = String(dt.getMinutes()).padStart(2, '0');
-    const S = String(dt.getSeconds()).padStart(2, '0');
-    return `${Y}-${M}-${D} ${H}:${MI}:${S}`;
-};
+const { toMySQLUtc, formatDateTime } = require('../utils/utilies');
 
 // Check if two dates are on the same day (ignoring time)
 const isSameDay = (date1, date2) => {
     const d1 = new Date(date1);
     const d2 = new Date(date2);
-    return d1.getFullYear() === d2.getFullYear() &&
-           d1.getMonth() === d2.getMonth() &&
-           d1.getDate() === d2.getDate();
-};
-
-const formatDateTime = (timeStr) => {
-    if (!timeStr) return null;
-    if (timeStr instanceof Date) {
-        const Y = timeStr.getFullYear();
-        const M = String(timeStr.getMonth() + 1).padStart(2, '0');
-        const D = String(timeStr.getDate()).padStart(2, '0');
-        const H = String(timeStr.getHours()).padStart(2, '0');
-        const MI = String(timeStr.getMinutes()).padStart(2, '0');
-        const S = String(timeStr.getSeconds()).padStart(2, '0');
-        return `${Y}-${M}-${D}T${H}:${MI}:${S}`;
-    }
-    return String(timeStr);
+    return d1.getUTCFullYear() === d2.getUTCFullYear() &&
+           d1.getUTCMonth() === d2.getUTCMonth() &&
+           d1.getUTCDate() === d2.getUTCDate();
 };
 
 // Customer views their appointments
@@ -73,57 +50,96 @@ exports.getMyAppointments = async (req, res) => {
             });
         }
 
-        const appointmentData = await Promise.all(bookings.map(async (booking) => {
-            const [services] = await db.execute(
-                `SELECT 
-                    bs.service_id,
-                    bs.employee_id,
-                    bs.price,
-                    bs.duration_minutes,
-                    sv.name AS service_name,
-                    u.full_name AS stylist_name,
-                    e.title AS stylist_title
-                 FROM booking_services bs
-                 JOIN services sv ON bs.service_id = sv.service_id
-                 LEFT JOIN employees e ON bs.employee_id = e.employee_id
-                 LEFT JOIN users u ON e.user_id = u.user_id
-                 WHERE bs.booking_id = ?`,
-                [booking.booking_id]
-            );
+        // Extract booking IDs for bulk queries
+        const bookingIds = bookings.map(b => b.booking_id);
+        const placeholders = bookingIds.map(() => '?').join(',');
 
-            // Get payment information for this booking
-            const [payments] = await db.execute(
-                `SELECT amount, reward_id, status
-                 FROM payments
-                 WHERE booking_id = ? AND status = 'SUCCEEDED'
-                 ORDER BY created_at DESC
-                 LIMIT 1`,
-                [booking.booking_id]
+        // Bulk query: Get all services for all bookings
+        const [allServices] = await db.execute(
+            `SELECT 
+                bs.booking_id,
+                bs.service_id,
+                bs.employee_id,
+                bs.price,
+                bs.duration_minutes,
+                sv.name AS service_name,
+                u.full_name AS stylist_name,
+                e.title AS stylist_title
+             FROM booking_services bs
+             JOIN services sv ON bs.service_id = sv.service_id
+             LEFT JOIN employees e ON bs.employee_id = e.employee_id
+             LEFT JOIN users u ON e.user_id = u.user_id
+             WHERE bs.booking_id IN (${placeholders})`,
+            bookingIds
+        );
+
+        // Bulk query
+        const [allPayments] = await db.execute(
+            `SELECT p.booking_id, p.amount, p.reward_id, p.status
+             FROM payments p
+             WHERE p.booking_id IN (${placeholders})
+             AND p.status = 'SUCCEEDED'
+             AND p.created_at = (
+                 SELECT MAX(created_at) 
+                 FROM payments p2 
+                 WHERE p2.booking_id = p.booking_id 
+                 AND p2.status = 'SUCCEEDED'
+             )`,
+            bookingIds
+        );
+
+        // Extract reward IDs and bulk query rewards
+        const rewardIds = allPayments.filter(p => p.reward_id).map(p => p.reward_id);
+        let allRewards = [];
+        if (rewardIds.length > 0) {
+            const rewardPlaceholders = rewardIds.map(() => '?').join(',');
+            [allRewards] = await db.execute(
+                `SELECT reward_id, discount_percentage, note, creationDate, redeemed_at
+                 FROM available_rewards
+                 WHERE reward_id IN (${rewardPlaceholders})`,
+                rewardIds
             );
+        }
+
+        // Group results
+        const servicesByBooking = {};
+        allServices.forEach(s => {
+            if (!servicesByBooking[s.booking_id]) {
+                servicesByBooking[s.booking_id] = [];
+            }
+            servicesByBooking[s.booking_id].push(s);
+        });
+
+        const paymentsByBooking = {};
+        allPayments.forEach(p => {
+            paymentsByBooking[p.booking_id] = p;
+        });
+
+        const rewardsById = {};
+        allRewards.forEach(r => {
+            rewardsById[r.reward_id] = r;
+        });
+
+        // Map results back to bookings
+        const appointmentData = bookings.map(booking => {
+            const services = servicesByBooking[booking.booking_id] || [];
+            const payment = paymentsByBooking[booking.booking_id];
 
             let actualAmountPaid = null;
             let rewardInfo = null;
 
-            if (payments.length > 0) {
-                actualAmountPaid = Number(payments[0].amount);
+            if (payment) {
+                actualAmountPaid = Number(payment.amount);
                 
-                if (payments[0].reward_id) {
-                    const [rewards] = await db.execute(
-                        `SELECT reward_id, discount_percentage, note, creationDate, redeemed_at
-                         FROM available_rewards
-                         WHERE reward_id = ?`,
-                        [payments[0].reward_id]
-                    );
-                    
-                    if (rewards.length > 0) {
-                        rewardInfo = {
-                            reward_id: rewards[0].reward_id,
-                            discount_percentage: Number(rewards[0].discount_percentage),
-                            note: rewards[0].note,
-                            creationDate: formatDateTime(rewards[0].creationDate),
-                            redeemed_at: formatDateTime(rewards[0].redeemed_at)
-                        };
-                    }
+                if (payment.reward_id && rewardsById[payment.reward_id]) {
+                    const reward = rewardsById[payment.reward_id];
+                    rewardInfo = {
+                        reward_id: reward.reward_id,
+                        discount_percentage: Number(reward.discount_percentage),
+                        note: reward.note,
+                        creationDate: formatDateTime(reward.creationDate),
+                        redeemed_at: formatDateTime(reward.redeemed_at)
+                    };
                 }
             }
 
@@ -173,7 +189,7 @@ exports.getMyAppointments = async (req, res) => {
                 reward: rewardInfo,
                 notes: booking.notes
             };
-        }));
+        });
 
         return res.status(200).json({
             message: 'Appointments retrieved successfully',
@@ -200,7 +216,7 @@ exports.rescheduleBooking = async (req, res) => {
         if (!booking_id || isNaN(booking_id)) return res.status(400).json({ message: 'Invalid booking_id' });
         if (!scheduled_start) return res.status(400).json({ message: 'scheduled_start is required' });
 
-        // Parse as Date and keep everything in LOCAL time (same as weekly schedule)
+        // Parse as Date - treat input as UTC
         const startDate = new Date(scheduled_start);
 
         if (isNaN(startDate.getTime())) {
@@ -244,26 +260,17 @@ exports.rescheduleBooking = async (req, res) => {
 
         //getting all employees involved with the original booking along with the day
         const employeeIds = [...new Set(servicesRows.map(r => r.employee_id))];
-        const bookingDayOfWeek = startDate.getDay();
+        const bookingDayOfWeek = startDate.getUTCDay();
 
-        // Build local YYYY-MM-DD for the booking date
-        const y = startDate.getFullYear();
-        const m = String(startDate.getMonth() + 1).padStart(2, '0');
-        const d = String(startDate.getDate()).padStart(2, '0');
+        // Build UTC YYYY-MM-DD for the booking date
+        const y = startDate.getUTCFullYear();
+        const m = String(startDate.getUTCMonth() + 1).padStart(2, '0');
+        const d = String(startDate.getUTCDate()).padStart(2, '0');
         const dayStr = `${y}-${m}-${d}`;
 
-        //always use local time
-        const toLocalSQL = (dt) => {
-            const Y = dt.getFullYear();
-            const M = String(dt.getMonth() + 1).padStart(2, '0');
-            const D = String(dt.getDate()).padStart(2, '0');
-            const H = String(dt.getHours()).padStart(2, '0');
-            const MI = String(dt.getMinutes()).padStart(2, '0');
-            const S = String(dt.getSeconds()).padStart(2, '0');
-            return `${Y}-${M}-${D} ${H}:${MI}:${S}`;
-        };
-        const requestStartStr = toLocalSQL(startDate);
-        const requestEndStr = toLocalSQL(endDate);
+        // Format as UTC for database storage
+        const requestStartStr = toMySQLUtc(startDate);
+        const requestEndStr = toMySQLUtc(endDate);
 
         //checking availability of all employees
         for (const empId of employeeIds) {
@@ -277,9 +284,10 @@ exports.rescheduleBooking = async (req, res) => {
             const dayAvailability = availRows.find(a => a.weekday === bookingDayOfWeek);
             if (!dayAvailability) return res.status(400).json({ message: 'Stylist is not available on this day' });
 
-            //checking working hours
-            const availStart = new Date(`${dayStr}T${dayAvailability.start_time}`);
-            const availEnd = new Date(`${dayStr}T${dayAvailability.end_time}`);
+            //checking working hours - availability times are stored as TIME, so we need to combine with UTC date
+            // Parse availability times as UTC on the booking date
+            const availStart = new Date(`${dayStr}T${dayAvailability.start_time}Z`);
+            const availEnd = new Date(`${dayStr}T${dayAvailability.end_time}Z`);
             if (startDate < availStart || endDate > availEnd) return res.status(400).json({ message: `Booking time must be within stylist availability (${dayAvailability.start_time} - ${dayAvailability.end_time})` });
 
             //checking unavailability
@@ -287,8 +295,8 @@ exports.rescheduleBooking = async (req, res) => {
                 [empId, bookingDayOfWeek]
             );
             const hasConflict = unavailRows.some(block => {
-                const blockStart = new Date(`${dayStr}T${block.start_time}`);
-                const blockEnd = new Date(`${dayStr}T${block.end_time}`);
+                const blockStart = new Date(`${dayStr}T${block.start_time}Z`);
+                const blockEnd = new Date(`${dayStr}T${block.end_time}Z`);
                 return (startDate < blockEnd) && (blockStart < endDate);
             });
             if (hasConflict) return res.status(409).json({ message: 'Stylist is unavailable during this time slot' });
@@ -724,44 +732,69 @@ bookingParams = [customer_user_id, employee_id];
             });
         }
 
-        //merging booking and service information and showing it as a visit
-        const visits = await Promise.all(bookingRows.map(async (b) => {
+        // Bulk query
+        if (bookingIds.length > 0) {
+            const paymentPlaceholders = bookingIds.map(() => '?').join(',');
+            [allPayments] = await db.execute(
+                `SELECT p.booking_id, p.amount, p.reward_id, p.status
+                 FROM payments p
+                 WHERE p.booking_id IN (${paymentPlaceholders})
+                 AND p.status = 'SUCCEEDED'
+                 AND p.created_at = (
+                     SELECT MAX(created_at) 
+                     FROM payments p2 
+                     WHERE p2.booking_id = p.booking_id 
+                     AND p2.status = 'SUCCEEDED'
+                 )`,
+                bookingIds
+            );
+        }
+
+        // Extract reward IDs and bulk query rewards
+        const rewardIds = allPayments.filter(p => p.reward_id).map(p => p.reward_id);
+        let allRewards = [];
+        if (rewardIds.length > 0) {
+            const rewardPlaceholders = rewardIds.map(() => '?').join(',');
+            [allRewards] = await db.execute(
+                `SELECT reward_id, discount_percentage, note, creationDate, redeemed_at
+                 FROM available_rewards
+                 WHERE reward_id IN (${rewardPlaceholders})`,
+                rewardIds
+            );
+        }
+
+        // Group payments and rewards
+        const paymentsByBooking = {};
+        allPayments.forEach(p => {
+            paymentsByBooking[p.booking_id] = p;
+        });
+
+        const rewardsById = {};
+        allRewards.forEach(r => {
+            rewardsById[r.reward_id] = r;
+        });
+
+        // Merging booking and service information and showing it as a visit
+        const visits = bookingRows.map(b => {
             const services = svcByBooking.get(b.booking_id) || [];
             const total_price = services.reduce((s, x) => s + Number(x.price || 0), 0);
 
-            // Get payment information for this booking
-            const [payments] = await db.execute(
-                `SELECT amount, reward_id, status
-                 FROM payments
-                 WHERE booking_id = ? AND status = 'SUCCEEDED'
-                 ORDER BY created_at DESC
-                 LIMIT 1`,
-                [b.booking_id]
-            );
-
+            const payment = paymentsByBooking[b.booking_id];
             let actualAmountPaid = null;
             let rewardInfo = null;
 
-            if (payments.length > 0) {
-                actualAmountPaid = Number(payments[0].amount);
+            if (payment) {
+                actualAmountPaid = Number(payment.amount);
                 
-                if (payments[0].reward_id) {
-                    const [rewards] = await db.execute(
-                        `SELECT reward_id, discount_percentage, note, creationDate, redeemed_at
-                         FROM available_rewards
-                         WHERE reward_id = ?`,
-                        [payments[0].reward_id]
-                    );
-                    
-                    if (rewards.length > 0) {
-                        rewardInfo = {
-                            reward_id: rewards[0].reward_id,
-                            discount_percentage: Number(rewards[0].discount_percentage),
-                            note: rewards[0].note,
-                            creationDate: formatDateTime(rewards[0].creationDate),
-                            redeemed_at: formatDateTime(rewards[0].redeemed_at)
-                        };
-                    }
+                if (payment.reward_id && rewardsById[payment.reward_id]) {
+                    const reward = rewardsById[payment.reward_id];
+                    rewardInfo = {
+                        reward_id: reward.reward_id,
+                        discount_percentage: Number(reward.discount_percentage),
+                        note: reward.note,
+                        creationDate: formatDateTime(reward.creationDate),
+                        redeemed_at: formatDateTime(reward.redeemed_at)
+                    };
                 }
             }
 
@@ -776,7 +809,7 @@ bookingParams = [customer_user_id, employee_id];
                 actual_amount_paid: actualAmountPaid,
                 reward: rewardInfo
             };
-        }));
+        });
 
         return res.status(200).json({
             data: {

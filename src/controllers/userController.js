@@ -2,7 +2,7 @@ require('dotenv').config();
 const bcrypt = require('bcrypt');
 const connection = require('../config/databaseConnection');
 const { generateToken } = require('../middleware/auth.middleware');
-const { validateEmail, toLocalSQL, formatDateTime } = require('../utils/utilies');
+const { validateEmail, toMySQLUtc, formatDateTime } = require('../utils/utilies');
 
 // Global constants
 const DAYS_OF_WEEK = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'];
@@ -286,13 +286,14 @@ exports.getStylistWeeklySchedule = async (req, res) => {
       return res.status(400).json({ message: 'start_date and end_date are required (MM-DD-YYYY)' });
     }
 
-    // Parse dates (expecting MM-DD-YYYY per example), fallback to Date parsing
+    // Parse dates (expecting MM-DD-YYYY per example), create UTC dates
     const parseMmDdYyyy = (s) => {
       const parts = String(s).split('-');
       if (parts.length === 3) {
         const [mm, dd, yyyy] = parts.map((p) => Number(p));
         if (!Number.isNaN(mm) && !Number.isNaN(dd) && !Number.isNaN(yyyy)) {
-          return new Date(yyyy, mm - 1, dd);
+          // Create UTC date
+          return new Date(Date.UTC(yyyy, mm - 1, dd));
         }
       }
       const d = new Date(s);
@@ -306,11 +307,11 @@ exports.getStylistWeeklySchedule = async (req, res) => {
       return res.status(400).json({ message: 'Invalid start_date or end_date format' });
     }
 
-    // Normalize to start/end of day
+    // Normalize to start/end of day (UTC)
     const startOfDay = new Date(rangeStart);
-    startOfDay.setHours(0, 0, 0, 0);
+    startOfDay.setUTCHours(0, 0, 0, 0);
     const endOfDay = new Date(rangeEnd);
-    endOfDay.setHours(23, 59, 59, 999);
+    endOfDay.setUTCHours(23, 59, 59, 999);
 
     if (startOfDay.getTime() > endOfDay.getTime()) {
       return res.status(400).json({ message: 'start_date must be before or equal to end_date' });
@@ -373,8 +374,8 @@ exports.getStylistWeeklySchedule = async (req, res) => {
         AND b.scheduled_start <= ?
       ORDER BY b.scheduled_start ASC
     `;
-    const requestStartStr = toLocalSQL(startOfDay);
-    const requestEndStr = toLocalSQL(endOfDay);
+    const requestStartStr = toMySQLUtc(startOfDay);
+    const requestEndStr = toMySQLUtc(endOfDay);
     const [bookingsResult] = await db.execute(getBookingsQuery, [employee_id, requestStartStr, requestEndStr]);
 
     // Index availability by weekday for O(1) lookup
@@ -402,16 +403,16 @@ exports.getStylistWeeklySchedule = async (req, res) => {
     const schedule = {};
 
     const formatMmDdYyyy = (d) => {
-      const mm = String(d.getMonth() + 1).padStart(2, '0');
-      const dd = String(d.getDate()).padStart(2, '0');
-      const yyyy = d.getFullYear();
+      const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+      const dd = String(d.getUTCDate()).padStart(2, '0');
+      const yyyy = d.getUTCFullYear();
       return `${mm}-${dd}-${yyyy}`;
     };
 
     const ymd = (d) => {
-      const year = d.getFullYear();
-      const month = String(d.getMonth() + 1).padStart(2, '0');
-      const day = String(d.getDate()).padStart(2, '0');
+      const year = d.getUTCFullYear();
+      const month = String(d.getUTCMonth() + 1).padStart(2, '0');
+      const day = String(d.getUTCDate()).padStart(2, '0');
       return `${year}-${month}-${day}`;
     };
     const bookingsByDate = {};
@@ -447,8 +448,51 @@ exports.getStylistWeeklySchedule = async (req, res) => {
       }
     }
 
-    for (let d = new Date(startOfDay); d.getTime() <= endOfDay.getTime(); d.setDate(d.getDate() + 1)) {
-      const dayIndex = d.getDay(); // 0..6 (Sun..Sat)
+    // Bulk query
+    let allPayments = [];
+    if (bookingIds.length > 0) {
+      const paymentPlaceholders = bookingIds.map(() => '?').join(',');
+      [allPayments] = await db.execute(
+        `SELECT p.booking_id, p.amount, p.reward_id, p.status
+         FROM payments p
+         WHERE p.booking_id IN (${paymentPlaceholders})
+         AND p.status = 'SUCCEEDED'
+         AND p.created_at = (
+             SELECT MAX(created_at) 
+             FROM payments p2 
+             WHERE p2.booking_id = p.booking_id 
+             AND p2.status = 'SUCCEEDED'
+         )`,
+        bookingIds
+      );
+    }
+
+    // Extract reward IDs and bulk query rewards
+    const rewardIds = allPayments.filter(p => p.reward_id).map(p => p.reward_id);
+    let allRewards = [];
+    if (rewardIds.length > 0) {
+      const rewardPlaceholders = rewardIds.map(() => '?').join(',');
+      [allRewards] = await db.execute(
+        `SELECT reward_id, discount_percentage, note, creationDate, redeemed_at
+         FROM available_rewards
+         WHERE reward_id IN (${rewardPlaceholders})`,
+        rewardIds
+      );
+    }
+
+    // Group payments and rewards
+    const paymentsByBooking = {};
+    allPayments.forEach(p => {
+      paymentsByBooking[p.booking_id] = p;
+    });
+
+    const rewardsById = {};
+    allRewards.forEach(r => {
+      rewardsById[r.reward_id] = r;
+    });
+
+    for (let d = new Date(startOfDay); d.getTime() <= endOfDay.getTime(); d.setUTCDate(d.getUTCDate() + 1)) {
+      const dayIndex = d.getDay(); // 0..6 (Sun..Sat) - getDay() works correctly with UTC dates
       const dayName = weekdayMap[dayIndex];
 
       const dayAvailability = availabilityByWeekday[dayName] || null;
@@ -480,49 +524,32 @@ exports.getStylistWeeklySchedule = async (req, res) => {
 
       const dateKey = ymd(d);
       const bookingsForDate = bookingsByDate[dateKey] || [];
-      const dayBookings = await Promise.all(bookingsForDate.map(async (booking) => {
+      const dayBookings = bookingsForDate.map(booking => {
         const startDate = new Date(booking.scheduled_start);
         const endDate = new Date(booking.scheduled_end);
-        const startTime = startDate.toTimeString().split(' ')[0];
-        const endTime = endDate.toTimeString().split(' ')[0];
+        const startTime = startDate.toISOString().slice(11, 19); // HH:mm:ss from UTC
+        const endTime = endDate.toISOString().slice(11, 19);
 
         const servicesResult = servicesByBookingId[booking.booking_id] || [];
         const totalDuration = servicesResult.reduce((sum, s) => sum + Number(s.duration_minutes), 0);
         const totalPrice = servicesResult.reduce((sum, s) => sum + Number(s.price), 0);
 
-        // Get payment information for this booking
-        const [payments] = await db.execute(
-          `SELECT amount, reward_id, status
-           FROM payments
-           WHERE booking_id = ? AND status = 'SUCCEEDED'
-           ORDER BY created_at DESC
-           LIMIT 1`,
-          [booking.booking_id]
-        );
-
+        const payment = paymentsByBooking[booking.booking_id];
         let actualAmountPaid = null;
         let rewardInfo = null;
 
-        if (payments.length > 0) {
-          actualAmountPaid = Number(payments[0].amount);
+        if (payment) {
+          actualAmountPaid = Number(payment.amount);
           
-          if (payments[0].reward_id) {
-            const [rewards] = await db.execute(
-              `SELECT reward_id, discount_percentage, note, creationDate, redeemed_at
-               FROM available_rewards
-               WHERE reward_id = ?`,
-              [payments[0].reward_id]
-            );
-            
-            if (rewards.length > 0) {
-              rewardInfo = {
-                reward_id: rewards[0].reward_id,
-                discount_percentage: Number(rewards[0].discount_percentage),
-                note: rewards[0].note,
-                creationDate: formatDateTime(rewards[0].creationDate),
-                redeemed_at: formatDateTime(rewards[0].redeemed_at)
-              };
-            }
+          if (payment.reward_id && rewardsById[payment.reward_id]) {
+            const reward = rewardsById[payment.reward_id];
+            rewardInfo = {
+              reward_id: reward.reward_id,
+              discount_percentage: Number(reward.discount_percentage),
+              note: reward.note,
+              creationDate: formatDateTime(reward.creationDate),
+              redeemed_at: formatDateTime(reward.redeemed_at)
+            };
           }
         }
 
@@ -550,7 +577,7 @@ exports.getStylistWeeklySchedule = async (req, res) => {
           actual_amount_paid: actualAmountPaid,
           reward: rewardInfo
         };
-      }));
+      });
 
       const displayDate = formatMmDdYyyy(d);
       schedule[displayDate] = {
