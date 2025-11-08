@@ -24,6 +24,7 @@ const productsRoutes = require('./routes/products');
 const paymentsRoutes = require('./routes/payments');
 const reviewRoutes = require('./routes/reviews');
 const staffReviewsRoutes = require('./routes/staffReviews');
+const appointmentNotesRoutes = require('./routes/appointmentNotes');
 
 // Database Connection
 const db = require('./config/databaseConnection');
@@ -53,6 +54,7 @@ app.use('/api/products', productsRoutes);
 app.use('/api/payments', paymentsRoutes);
 app.use('/api/reviews', reviewRoutes);
 app.use('/api/staff-reviews', staffReviewsRoutes);
+app.use('/api/appointment-notes', appointmentNotesRoutes);
 
 // Start Server
 const PORT = process.env.PORT || 3000;
