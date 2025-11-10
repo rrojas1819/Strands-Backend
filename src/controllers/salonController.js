@@ -1,5 +1,5 @@
 const connection = require('../config/databaseConnection'); //db connection
-const { validateEmail, toMySQLUtc, formatDateTime } = require('../utils/utilies');
+const { validateEmail, toMySQLUtc, formatDateTime, logUtcDebug, localAvailabilityToUtc } = require('../utils/utilies');
 
 //allowed salon categories
 const ALLOWED_CATEGORIES = new Set([
@@ -1515,11 +1515,12 @@ exports.removeServiceFromStylist = async (req, res) => {
     const [activeBookings] = await db.execute(checkActiveBookingsQuery, [service_id]);
     
     if (activeBookings.length > 0) {
+      logUtcDebug('salonController.removeServiceFromStylist raw scheduled_start', activeBookings[0].scheduled_start);
       return res.status(409).json({ 
         message: 'Cannot remove service that has active bookings. Please cancel or complete all related bookings first.',
         data: {
           booking_id: activeBookings[0].booking_id,
-          scheduled_start: activeBookings[0].scheduled_start,
+          scheduled_start: formatDateTime(activeBookings[0].scheduled_start),
           status: activeBookings[0].status
         }
       });
@@ -1906,20 +1907,26 @@ exports.bookTimeSlot = async (req, res) => {
     }
 
     let startDate;
+    let bookingOffset = 'Z';
     if (typeof scheduled_start === 'string') {
-      if (scheduled_start.includes('Z') || scheduled_start.match(/[+-]\d{2}:\d{2}$/)) {
-        startDate = new Date(scheduled_start);
-      } else {
-        // No timezone info - treat as UTC by appending 'Z'
-        startDate = new Date(scheduled_start + 'Z');
+      const hasTimezone = /([zZ]|[+-]\d{2}:\d{2})$/.test(scheduled_start);
+      if (!hasTimezone) {
+        return res.status(400).json({
+          message: 'scheduled_start must include a timezone offset (e.g., 2025-11-12T09:00:00-05:00 or 2025-11-12T14:00:00Z)'
+        });
       }
+      const offsetMatch = scheduled_start.match(/([zZ]|[+-]\d{2}:\d{2})$/);
+      if (offsetMatch) {
+        bookingOffset = offsetMatch[1] === 'Z' || offsetMatch[1] === 'z' ? 'Z' : offsetMatch[1];
+      }
+      startDate = new Date(scheduled_start);
     } else {
       startDate = new Date(scheduled_start);
     }
 
     if (isNaN(startDate.getTime())) {
       return res.status(400).json({
-        message: 'Invalid date format. EX: "2025-10-28T13:00:00" or "2025-10-28T13:00:00Z"'
+        message: 'Invalid scheduled_start. Provide a valid ISO 8601 datetime with timezone.'
       });
     }
     
@@ -2010,9 +2017,10 @@ exports.bookTimeSlot = async (req, res) => {
     const dayStr = `${y}-${m}-${d}`;
 
 
-    // Compare within availability window - parse availability times as UTC
-    const availStart = new Date(`${dayStr}T${dayAvailability.start_time}Z`);
-    const availEnd   = new Date(`${dayStr}T${dayAvailability.end_time}Z`);
+    const availStart = localAvailabilityToUtc(dayAvailability.start_time, dayStr, bookingOffset);
+    const availEnd   = localAvailabilityToUtc(dayAvailability.end_time, dayStr, bookingOffset);
+    logUtcDebug('salonController.bookTimeSlot availStart (UTC)', availStart);
+    logUtcDebug('salonController.bookTimeSlot availEnd (UTC)', availEnd);
     if (startDate < availStart || endDate > availEnd) {
       return res.status(400).json({
         message: `Booking time must be within stylist's availability (${dayAvailability.start_time} - ${dayAvailability.end_time})`
@@ -2028,8 +2036,8 @@ exports.bookTimeSlot = async (req, res) => {
     );
 
     const hasUnavailabilityConflict = unavailabilityResult.some(block => {
-      const blockStart = new Date(`${dayStr}T${block.start_time}Z`);
-      const blockEnd   = new Date(`${dayStr}T${block.end_time}Z`);
+      const blockStart = localAvailabilityToUtc(block.start_time, dayStr, bookingOffset);
+      const blockEnd   = localAvailabilityToUtc(block.end_time, dayStr, bookingOffset);
       return (startDate < blockEnd) && (blockStart < endDate);
     });
 
@@ -2037,9 +2045,14 @@ exports.bookTimeSlot = async (req, res) => {
       return res.status(409).json({ message: 'Stylist is unavailable during this time slot' });
     }
 
+    logUtcDebug('salonController.bookTimeSlot computed startDate', startDate);
+    logUtcDebug('salonController.bookTimeSlot computed endDate', endDate);
+
     // Format as UTC for database storage
     const requestStartStr = toMySQLUtc(startDate);
     const requestEndStr   = toMySQLUtc(endDate);
+    logUtcDebug('salonController.bookTimeSlot requestStartStr', requestStartStr);
+    logUtcDebug('salonController.bookTimeSlot requestEndStr', requestEndStr);
 
     // Check conflicts with existing bookings
     const [conflictsResult] = await db.execute(
@@ -2054,6 +2067,7 @@ exports.bookTimeSlot = async (req, res) => {
     );
 
     if (conflictsResult.length > 0) {
+      logUtcDebug('salonController.bookTimeSlot raw scheduled_start', conflictsResult[0].scheduled_start);
       // Format database datetime as UTC for response
       console.log(conflictsResult);
       return res.status(409).json({
@@ -2068,6 +2082,9 @@ exports.bookTimeSlot = async (req, res) => {
 
     await db.query('START TRANSACTION');
     try {
+
+      logUtcDebug('salonController.bookTimeSlot inserting booking scheduled_start', requestStartStr);
+      logUtcDebug('salonController.bookTimeSlot inserting booking scheduled_end', requestEndStr);
 
       const [bookingResult] = await db.execute(
         `INSERT INTO bookings
@@ -2091,6 +2108,9 @@ exports.bookTimeSlot = async (req, res) => {
       }
 
       const totalPrice = services.reduce((sum, s) => sum + Number(detailsById[s.service_id].price), 0);
+
+      logUtcDebug('salonController.bookTimeSlot response scheduled_start', startDate);
+      logUtcDebug('salonController.bookTimeSlot response scheduled_end', endDate);
 
       await db.query('COMMIT');
 
