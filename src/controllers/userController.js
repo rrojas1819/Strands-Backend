@@ -2,7 +2,7 @@ require('dotenv').config();
 const bcrypt = require('bcrypt');
 const connection = require('../config/databaseConnection');
 const { generateToken } = require('../middleware/auth.middleware');
-const { validateEmail, toMySQLUtc, formatDateTime } = require('../utils/utilies');
+const { validateEmail, toMySQLUtc, formatDateTime, logUtcDebug } = require('../utils/utilies');
 
 // Global constants
 const DAYS_OF_WEEK = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'];
@@ -149,7 +149,7 @@ exports.login = async (req, res) => {
         // Store token expiration time (2 hours from now)
         const tokenExpiry = new Date(Date.now() + 2 * 60 * 60 * 1000);
         const updateTokenQuery = 'UPDATE auth_credentials SET token_expires_at = ? WHERE user_id = ?';
-        await db.execute(updateTokenQuery, [tokenExpiry, existingUsers[0].user_id]);
+        await db.execute(updateTokenQuery, [toMySQLUtc(tokenExpiry), existingUsers[0].user_id]);
 
 
         // Track login
@@ -525,6 +525,8 @@ exports.getStylistWeeklySchedule = async (req, res) => {
       const dateKey = ymd(d);
       const bookingsForDate = bookingsByDate[dateKey] || [];
       const dayBookings = bookingsForDate.map(booking => {
+        logUtcDebug('userController.getStylistWeeklySchedule raw scheduled_start', booking.scheduled_start);
+        logUtcDebug('userController.getStylistWeeklySchedule raw scheduled_end', booking.scheduled_end);
         // Return full ISO datetime strings so frontend can properly convert to local timezone
         const startTime = formatDateTime(booking.scheduled_start);
         const endTime = formatDateTime(booking.scheduled_end);

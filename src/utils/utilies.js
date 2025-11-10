@@ -1,12 +1,33 @@
+function logUtcDebug(label, value) {
+    if (process.env.UTC_DEBUG === '1') {
+        const type = value instanceof Date ? 'Date' : typeof value;
+        const printable =
+            value instanceof Date ? value.toISOString() : value;
+        console.log(`[UTC DEBUG] ${label}:`, printable, `(type: ${type})`);
+    }
+}
 
 const validateEmail = (email) => {
     const emailRegex = /^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$/;
     return emailRegex.test(email);
 };
 
-// Format a JS Date as UTC SQL datetime (YYYY-MM-DD HH:mm:ss) -- for SQL logic
 function toMySQLUtc(date) {
     return date.toISOString().slice(0, 19).replace('T', ' ');
+}
+
+function localAvailabilityToUtc(availabilityTime, dateStr, offsetStr) {
+    if (offsetStr === 'Z' || offsetStr === 'z') {
+        return new Date(`${dateStr}T${availabilityTime}Z`);
+    }
+    
+    const offsetMatch = offsetStr.match(/([+-])(\d{2}):(\d{2})/);
+    if (!offsetMatch) {
+        return new Date(`${dateStr}T${availabilityTime}Z`);
+    }
+    
+    const localDateTime = `${dateStr}T${availabilityTime}${offsetStr}`;
+    return new Date(localDateTime);
 }
 
 const formatDateTime = (timeStr) => {
@@ -14,8 +35,15 @@ const formatDateTime = (timeStr) => {
     if (timeStr instanceof Date) {
         return timeStr.toISOString();
     }
-    // If it's already a string, try to parse it as a date and format as UTC
-    const date = new Date(timeStr);
+    let parsedInput = timeStr;
+    if (typeof timeStr === 'string') {
+        const isNaiveMySQL = timeStr.includes(' ') && !timeStr.includes('T') && !/[zZ]|[+-]\d{2}:\d{2}$/.test(timeStr);
+        if (isNaiveMySQL) {
+            // Convert 'YYYY-MM-DD HH:mm:ss' -> 'YYYY-MM-DDTHH:mm:ssZ' (treat as UTC)
+            parsedInput = `${timeStr.replace(' ', 'T')}Z`;
+        }
+    }
+    const date = new Date(parsedInput);
     if (!isNaN(date.getTime())) {
         return date.toISOString();
     }
@@ -217,5 +245,7 @@ module.exports = {
     startBookingsAutoComplete,
     toMySQLUtc,
     formatDateTime,
-    startLoyaltySeenUpdate
+    startLoyaltySeenUpdate,
+    logUtcDebug,
+    localAvailabilityToUtc
 };

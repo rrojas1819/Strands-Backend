@@ -1,5 +1,5 @@
 const connection = require('../config/databaseConnection'); //db connection
-const { formatDateTime } = require('../utils/utilies');
+const { formatDateTime, localAvailabilityToUtc } = require('../utils/utilies');
 
 //validating time for SQL
 const TIME_RX = /^([01]\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?$/;
@@ -17,7 +17,19 @@ exports.createRecurringBlock = async (req, res) => {
     const db = connection.promise();
 
     //params
-    let { weekday, start_time, end_time, slot_interval_minutes = 30 } = req.body; //interval is 30 mins by default
+    let { weekday, start_time, end_time, slot_interval_minutes = 30, timezone_offset } = req.body;
+
+    if (!timezone_offset) {
+        return res.status(400).json({ 
+            message: 'timezone_offset is required for accurate conflict detection. Provide timezone offset (e.g., "-05:00" for EST, "Z" for UTC)' 
+        });
+    }
+
+    if (timezone_offset !== 'Z' && timezone_offset !== 'z' && !/^[+-]\d{2}:\d{2}$/.test(timezone_offset)) {
+        return res.status(400).json({ 
+            message: 'timezone_offset must be "Z" or in format "+/-HH:MM" (e.g., "-05:00" for EST)' 
+        });
+    }
 
     //validate weekday value
     weekday = parseInt(weekday, 10);
@@ -88,10 +100,15 @@ exports.createRecurringBlock = async (req, res) => {
 
             if (bookingWeekday !== weekday) continue;
 
-            const bookingStartNormalized = bookingStart.toISOString().slice(11, 16);
-            const bookingEndNormalized = bookingEnd.toISOString().slice(11, 16);
+            const bookingYear = bookingStart.getUTCFullYear();
+            const bookingMonth = String(bookingStart.getUTCMonth() + 1).padStart(2, '0');
+            const bookingDay = String(bookingStart.getUTCDate()).padStart(2, '0');
+            const bookingDateStr = `${bookingYear}-${bookingMonth}-${bookingDay}`;
 
-            if (bookingStartNormalized < end && bookingEndNormalized > start) {
+            const blockStartUtc = localAvailabilityToUtc(start, bookingDateStr, timezone_offset);
+            const blockEndUtc = localAvailabilityToUtc(end, bookingDateStr, timezone_offset);
+            
+            if (bookingStart < blockEndUtc && bookingEnd > blockStartUtc) {
                 conflictingAppointments.push({
                     booking_id: booking.booking_id,
                     scheduled_start: formatDateTime(booking.scheduled_start),

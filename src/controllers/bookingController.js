@@ -1,5 +1,5 @@
 const connection = require('../config/databaseConnection'); //db connection
-const { toMySQLUtc, formatDateTime } = require('../utils/utilies');
+const { toMySQLUtc, formatDateTime, logUtcDebug, localAvailabilityToUtc } = require('../utils/utilies');
 
 // Check if two dates are on the same day (ignoring time)
 const isSameDay = (date1, date2) => {
@@ -160,6 +160,8 @@ exports.getMyAppointments = async (req, res) => {
                     return unique;
                 }, []);
 
+            logUtcDebug('bookingController.getMyAppointments raw scheduled_start', booking.scheduled_start);
+            logUtcDebug('bookingController.getMyAppointments raw scheduled_end', booking.scheduled_end);
             return {
                 booking_id: booking.booking_id,
                 salon: {
@@ -217,19 +219,26 @@ exports.rescheduleBooking = async (req, res) => {
         if (!scheduled_start) return res.status(400).json({ message: 'scheduled_start is required' });
 
         let startDate;
+        let bookingOffset = 'Z';
         if (typeof scheduled_start === 'string') {
-            if (scheduled_start.includes('Z') || scheduled_start.match(/[+-]\d{2}:\d{2}$/)) {
-                startDate = new Date(scheduled_start);
-            } else {
-                startDate = new Date(scheduled_start + 'Z');
+            const hasTimezone = /([zZ]|[+-]\d{2}:\d{2})$/.test(scheduled_start);
+            if (!hasTimezone) {
+                return res.status(400).json({
+                    message: 'scheduled_start must include a timezone offset (e.g., 2025-11-12T09:00:00-05:00 or 2025-11-12T14:00:00Z)'
+                });
             }
+            const offsetMatch = scheduled_start.match(/([zZ]|[+-]\d{2}:\d{2})$/);
+            if (offsetMatch) {
+                bookingOffset = offsetMatch[1] === 'Z' || offsetMatch[1] === 'z' ? 'Z' : offsetMatch[1];
+            }
+            startDate = new Date(scheduled_start);
         } else {
             startDate = new Date(scheduled_start);
         }
 
         if (isNaN(startDate.getTime())) {
             return res.status(400).json({
-                message: 'Invalid date format. EX: "2025-10-28T13:00:00" or "2025-10-28T13:00:00Z"'
+                message: 'Invalid scheduled_start. Provide a valid ISO 8601 datetime with timezone.'
             });
         }
 
@@ -292,10 +301,10 @@ exports.rescheduleBooking = async (req, res) => {
             const dayAvailability = availRows.find(a => a.weekday === bookingDayOfWeek);
             if (!dayAvailability) return res.status(400).json({ message: 'Stylist is not available on this day' });
 
-            //checking working hours - availability times are stored as TIME, so we need to combine with UTC date
-            // Parse availability times as UTC on the booking date
-            const availStart = new Date(`${dayStr}T${dayAvailability.start_time}Z`);
-            const availEnd = new Date(`${dayStr}T${dayAvailability.end_time}Z`);
+            const availStart = localAvailabilityToUtc(dayAvailability.start_time, dayStr, bookingOffset);
+            const availEnd = localAvailabilityToUtc(dayAvailability.end_time, dayStr, bookingOffset);
+            logUtcDebug('bookingController.rescheduleBooking availStart (UTC)', availStart);
+            logUtcDebug('bookingController.rescheduleBooking availEnd (UTC)', availEnd);
             if (startDate < availStart || endDate > availEnd) return res.status(400).json({ message: `Booking time must be within stylist availability (${dayAvailability.start_time} - ${dayAvailability.end_time})` });
 
             //checking unavailability
@@ -303,8 +312,8 @@ exports.rescheduleBooking = async (req, res) => {
                 [empId, bookingDayOfWeek]
             );
             const hasConflict = unavailRows.some(block => {
-                const blockStart = new Date(`${dayStr}T${block.start_time}Z`);
-                const blockEnd = new Date(`${dayStr}T${block.end_time}Z`);
+                const blockStart = localAvailabilityToUtc(block.start_time, dayStr, bookingOffset);
+                const blockEnd = localAvailabilityToUtc(block.end_time, dayStr, bookingOffset);
                 return (startDate < blockEnd) && (blockStart < endDate);
             });
             if (hasConflict) return res.status(409).json({ message: 'Stylist is unavailable during this time slot' });
@@ -852,6 +861,8 @@ bookingParams = [customer_user_id, employee_id];
 
         // Merging booking and service information and showing it as a visit
         const visits = bookingRows.map(b => {
+            logUtcDebug('bookingController.getCustomerVisitHistory raw scheduled_start', b.scheduled_start);
+            logUtcDebug('bookingController.getCustomerVisitHistory raw scheduled_end', b.scheduled_end);
             const services = svcByBooking.get(b.booking_id) || [];
             const total_price = services.reduce((s, x) => s + Number(x.price || 0), 0);
 
