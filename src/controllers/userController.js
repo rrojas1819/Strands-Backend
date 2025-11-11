@@ -667,8 +667,8 @@ exports.viewStylistMetrics = async (req, res) => {
     JOIN bookings b ON b.booking_id = p.booking_id
     JOIN booking_services bs ON bs.booking_id = b.booking_id
     WHERE p.status = 'SUCCEEDED'
-      AND p.created_at >= CURDATE()
-      AND p.created_at < CURDATE() + INTERVAL 1 DAY
+      AND p.created_at >= UTC_DATE()
+      AND p.created_at < UTC_DATE() + INTERVAL 1 DAY
       AND bs.employee_id = (SELECT employee_id FROM employees WHERE user_id = ?)
   ) AS revenue_today,
   (SELECT COALESCE(SUM(p.amount), 0)
@@ -676,8 +676,8 @@ exports.viewStylistMetrics = async (req, res) => {
     JOIN bookings b ON b.booking_id = p.booking_id
     JOIN booking_services bs ON bs.booking_id = b.booking_id
     WHERE p.status = 'SUCCEEDED'
-      AND p.created_at >= CURDATE() - INTERVAL 7 DAY
-      AND p.created_at < CURDATE() + INTERVAL 1 DAY
+      AND p.created_at >= UTC_DATE() - INTERVAL 7 DAY
+      AND p.created_at < UTC_DATE() + INTERVAL 1 DAY
       AND bs.employee_id = (SELECT employee_id FROM employees WHERE user_id = ?)
   ) AS revenue_past_week;`;
 
