@@ -1,5 +1,5 @@
 const connection = require('../config/databaseConnection'); //db connection
-const { toMySQLUtc, formatDateTime, logUtcDebug, localAvailabilityToUtc } = require('../utils/utilies');
+const { toMySQLUtc, formatDateTime, logUtcDebug, localAvailabilityToUtc, utcToLocalDateString } = require('../utils/utilies');
 
 // Check if two dates are on the same day (ignoring time)
 const isSameDay = (date1, date2) => {
@@ -257,9 +257,17 @@ exports.rescheduleBooking = async (req, res) => {
         const salon_id = oldBooking.salon_id;
 
         // Check if booking is scheduled for the same day - cannot reschedule same day
-        const currentDate = new Date();
+        const [salonTimezoneResult] = await db.execute(
+            'SELECT timezone FROM salons WHERE salon_id = ?',
+            [salon_id]
+        );
+        const salonTimezone = salonTimezoneResult[0]?.timezone || 'America/New_York';
+        
         const oldBookingDate = new Date(oldBooking.scheduled_start);
-        if (isSameDay(currentDate, oldBookingDate)) {
+        const nowLocalDate = utcToLocalDateString(now, salonTimezone);
+        const bookingLocalDate = utcToLocalDateString(oldBookingDate, salonTimezone);
+        
+        if (nowLocalDate === bookingLocalDate) {
             return res.status(400).json({ 
                 message: 'Cannot reschedule a booking on the same day. Please reschedule at least one day in advance.' 
             });
@@ -301,8 +309,8 @@ exports.rescheduleBooking = async (req, res) => {
             const dayAvailability = availRows.find(a => a.weekday === bookingDayOfWeek);
             if (!dayAvailability) return res.status(400).json({ message: 'Stylist is not available on this day' });
 
-            const availStart = localAvailabilityToUtc(dayAvailability.start_time, dayStr, bookingOffset);
-            const availEnd = localAvailabilityToUtc(dayAvailability.end_time, dayStr, bookingOffset);
+            const availStart = localAvailabilityToUtc(dayAvailability.start_time, dayStr, salonTimezone);
+            const availEnd = localAvailabilityToUtc(dayAvailability.end_time, dayStr, salonTimezone);
             logUtcDebug('bookingController.rescheduleBooking availStart (UTC)', availStart);
             logUtcDebug('bookingController.rescheduleBooking availEnd (UTC)', availEnd);
             if (startDate < availStart || endDate > availEnd) return res.status(400).json({ message: `Booking time must be within stylist availability (${dayAvailability.start_time} - ${dayAvailability.end_time})` });
@@ -312,8 +320,8 @@ exports.rescheduleBooking = async (req, res) => {
                 [empId, bookingDayOfWeek]
             );
             const hasConflict = unavailRows.some(block => {
-                const blockStart = localAvailabilityToUtc(block.start_time, dayStr, bookingOffset);
-                const blockEnd = localAvailabilityToUtc(block.end_time, dayStr, bookingOffset);
+                const blockStart = localAvailabilityToUtc(block.start_time, dayStr, salonTimezone);
+                const blockEnd = localAvailabilityToUtc(block.end_time, dayStr, salonTimezone);
                 return (startDate < blockEnd) && (blockStart < endDate);
             });
             if (hasConflict) return res.status(409).json({ message: 'Stylist is unavailable during this time slot' });
@@ -419,9 +427,18 @@ exports.cancelBooking = async (req, res) => {
         const previousStatus = booking.status;
 
         // Check if booking is scheduled for the same day - cannot cancel same day
+        const [salonTimezoneResult] = await db.execute(
+            'SELECT s.timezone FROM salons s WHERE s.salon_id = (SELECT salon_id FROM bookings WHERE booking_id = ?)',
+            [bookingId]
+        );
+        const salonTimezone = salonTimezoneResult[0]?.timezone || 'America/New_York';
+        
         const now = new Date();
         const bookingDate = new Date(booking.scheduled_start);
-        if (isSameDay(now, bookingDate)) {
+        const nowLocalDate = utcToLocalDateString(now, salonTimezone);
+        const bookingLocalDate = utcToLocalDateString(bookingDate, salonTimezone);
+        
+        if (nowLocalDate === bookingLocalDate) {
             await db.rollback();
             return res.status(400).json({ 
                 message: 'Cannot cancel a booking on the same day. Please cancel at least one day in advance.' 

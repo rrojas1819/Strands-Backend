@@ -1129,8 +1129,7 @@ exports.getAvailableTimeSlotsRange = async (req, res) => {
           return res.status(400).json({ message: `Date range cannot exceed ${maxDays} days` });
       }
       
-      // Verify salon exists and is approved
-      const getSalonQuery = 'SELECT salon_id, name, status FROM salons WHERE salon_id = ?';
+      const getSalonQuery = 'SELECT salon_id, name, status, timezone FROM salons WHERE salon_id = ?';
       const [salonResult] = await db.execute(getSalonQuery, [salon_id]);
       
       if (salonResult.length === 0) {
@@ -1140,6 +1139,8 @@ exports.getAvailableTimeSlotsRange = async (req, res) => {
       if (salonResult[0].status !== 'APPROVED') {
           return res.status(403).json({ message: 'Salon is not available for booking' });
       }
+      
+      const salonTimezone = salonResult[0].timezone || 'America/New_York';
       
       // Verify stylist exists and is active
       const getEmployeeQuery = `
@@ -1233,16 +1234,15 @@ exports.getAvailableTimeSlotsRange = async (req, res) => {
               };
           } else {
               const availableSlots = [];
-              // Parse availability times as UTC
-              const availabilityStart = new Date(`${dateStr}T${availability.start_time}Z`);
-              const availabilityEnd = new Date(`${dateStr}T${availability.end_time}Z`);
+              const availabilityStart = localAvailabilityToUtc(availability.start_time, dateStr, salonTimezone);
+              const availabilityEnd = localAvailabilityToUtc(availability.end_time, dateStr, salonTimezone);
               
               const blockedTimes = [];
               
               unavailability.forEach(block => {
                   blockedTimes.push({
-                      start: new Date(`${dateStr}T${block.start_time}Z`),
-                      end: new Date(`${dateStr}T${block.end_time}Z`)
+                      start: localAvailabilityToUtc(block.start_time, dateStr, salonTimezone),
+                      end: localAvailabilityToUtc(block.end_time, dateStr, salonTimezone)
                   });
               });
               
@@ -1277,12 +1277,13 @@ exports.getAvailableTimeSlotsRange = async (req, res) => {
                       while (slotStart.getTime() + serviceDurationMinutes * 60000 <= blocked.start.getTime()) {
                           const slotEnd = new Date(slotStart.getTime() + serviceDurationMinutes * 60000);
                           
-                          const timeStr = slotStart.toISOString().slice(11, 16); // HH:mm format from UTC
-                          const endTimeStr = slotEnd.toISOString().slice(11, 16);
-                          
+                          // Return ISO UTC strings for frontend to use directly
                           availableSlots.push({
-                              start_time: timeStr,
-                              end_time: endTimeStr,
+                              start_time: slotStart.toISOString(),
+                              end_time: slotEnd.toISOString(),
+                              // Also include display times in salon local timezone for convenience
+                              display_start_time: formatDateTime(slotStart),
+                              display_end_time: formatDateTime(slotEnd),
                               available: true
                           });
                           
@@ -1299,12 +1300,13 @@ exports.getAvailableTimeSlotsRange = async (req, res) => {
                   while (slotStart.getTime() + serviceDurationMinutes * 60000 <= availabilityEnd.getTime()) {
                       const slotEnd = new Date(slotStart.getTime() + serviceDurationMinutes * 60000);
                       
-                      const timeStr = slotStart.toISOString().slice(11, 16); // HH:mm format from UTC
-                      const endTimeStr = slotEnd.toISOString().slice(11, 16);
-                      
+                      // Return ISO UTC strings for frontend to use directly
                       availableSlots.push({
-                          start_time: timeStr,
-                          end_time: endTimeStr,
+                          start_time: slotStart.toISOString(),
+                          end_time: slotEnd.toISOString(),
+                          // Also include display times in salon local timezone for convenience
+                          display_start_time: formatDateTime(slotStart),
+                          display_end_time: formatDateTime(slotEnd),
                           available: true
                       });
                       
@@ -1907,17 +1909,12 @@ exports.bookTimeSlot = async (req, res) => {
     }
 
     let startDate;
-    let bookingOffset = 'Z';
     if (typeof scheduled_start === 'string') {
       const hasTimezone = /([zZ]|[+-]\d{2}:\d{2})$/.test(scheduled_start);
       if (!hasTimezone) {
         return res.status(400).json({
           message: 'scheduled_start must include a timezone offset (e.g., 2025-11-12T09:00:00-05:00 or 2025-11-12T14:00:00Z)'
         });
-      }
-      const offsetMatch = scheduled_start.match(/([zZ]|[+-]\d{2}:\d{2})$/);
-      if (offsetMatch) {
-        bookingOffset = offsetMatch[1] === 'Z' || offsetMatch[1] === 'z' ? 'Z' : offsetMatch[1];
       }
       startDate = new Date(scheduled_start);
     } else {
@@ -1929,6 +1926,12 @@ exports.bookTimeSlot = async (req, res) => {
         message: 'Invalid scheduled_start. Provide a valid ISO 8601 datetime with timezone.'
       });
     }
+    
+    const [salonTimezoneResult] = await db.execute(
+      'SELECT timezone FROM salons WHERE salon_id = ?',
+      [salon_id]
+    );
+    const salonTimezone = salonTimezoneResult[0]?.timezone || 'America/New_York';
     
     const now = new Date();
     if (startDate < now) {
@@ -2010,15 +2013,15 @@ exports.bookTimeSlot = async (req, res) => {
     }
 
 
-    // Build UTC YYYY-MM-DD for the booking date
+    // Build UTC YYYY-MM-DD for the booking date (use UTC date from the booking)
     const y  = startDate.getUTCFullYear();
     const m  = String(startDate.getUTCMonth() + 1).padStart(2, '0');
     const d  = String(startDate.getUTCDate()).padStart(2, '0');
     const dayStr = `${y}-${m}-${d}`;
 
-
-    const availStart = localAvailabilityToUtc(dayAvailability.start_time, dayStr, bookingOffset);
-    const availEnd   = localAvailabilityToUtc(dayAvailability.end_time, dayStr, bookingOffset);
+    // Convert availability to UTC using salon timezone (not request offset)
+    const availStart = localAvailabilityToUtc(dayAvailability.start_time, dayStr, salonTimezone);
+    const availEnd   = localAvailabilityToUtc(dayAvailability.end_time, dayStr, salonTimezone);
     logUtcDebug('salonController.bookTimeSlot availStart (UTC)', availStart);
     logUtcDebug('salonController.bookTimeSlot availEnd (UTC)', availEnd);
     if (startDate < availStart || endDate > availEnd) {
@@ -2036,8 +2039,8 @@ exports.bookTimeSlot = async (req, res) => {
     );
 
     const hasUnavailabilityConflict = unavailabilityResult.some(block => {
-      const blockStart = localAvailabilityToUtc(block.start_time, dayStr, bookingOffset);
-      const blockEnd   = localAvailabilityToUtc(block.end_time, dayStr, bookingOffset);
+      const blockStart = localAvailabilityToUtc(block.start_time, dayStr, salonTimezone);
+      const blockEnd   = localAvailabilityToUtc(block.end_time, dayStr, salonTimezone);
       return (startDate < blockEnd) && (blockStart < endDate);
     });
 

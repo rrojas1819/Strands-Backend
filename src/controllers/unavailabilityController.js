@@ -17,19 +17,7 @@ exports.createRecurringBlock = async (req, res) => {
     const db = connection.promise();
 
     //params
-    let { weekday, start_time, end_time, slot_interval_minutes = 30, timezone_offset } = req.body;
-
-    if (!timezone_offset) {
-        return res.status(400).json({ 
-            message: 'timezone_offset is required for accurate conflict detection. Provide timezone offset (e.g., "-05:00" for EST, "Z" for UTC)' 
-        });
-    }
-
-    if (timezone_offset !== 'Z' && timezone_offset !== 'z' && !/^[+-]\d{2}:\d{2}$/.test(timezone_offset)) {
-        return res.status(400).json({ 
-            message: 'timezone_offset must be "Z" or in format "+/-HH:MM" (e.g., "-05:00" for EST)' 
-        });
-    }
+    let { weekday, start_time, end_time, slot_interval_minutes = 30 } = req.body;
 
     //validate weekday value
     weekday = parseInt(weekday, 10);
@@ -51,12 +39,18 @@ exports.createRecurringBlock = async (req, res) => {
     const authUserId = req.user?.user_id;
 
     try {
-        //looking up employee by user_id
-        const [empRows] = await db.execute(`SELECT e.employee_id, e.user_id FROM employees e 
+        const [empRows] = await db.execute(`SELECT e.employee_id, e.user_id, e.salon_id FROM employees e 
                                         WHERE e.user_id = ?`, [authUserId]
         ); if (!empRows.length) return res.status(404).json({ message: 'Employee not found' });
 
         const employeeId = empRows[0].employee_id;
+        const salonId = empRows[0].salon_id;
+        
+        const [salonTimezoneResult] = await db.execute(
+            'SELECT timezone FROM salons WHERE salon_id = ?',
+            [salonId]
+        );
+        const salonTimezone = salonTimezoneResult[0]?.timezone || 'America/New_York';
 
         //checking if employee has availability for this weekday
         const [availabilityRows] = await db.execute(`SELECT start_time, end_time FROM employee_availability
@@ -87,7 +81,7 @@ exports.createRecurringBlock = async (req, res) => {
              LEFT JOIN users u ON b.customer_user_id = u.user_id
              WHERE bs.employee_id = ?
                AND b.status = 'SCHEDULED'
-               AND b.scheduled_start >= NOW()
+               AND b.scheduled_start >= UTC_TIMESTAMP()
              ORDER BY b.scheduled_start ASC`,
             [employeeId]
         );
@@ -105,8 +99,8 @@ exports.createRecurringBlock = async (req, res) => {
             const bookingDay = String(bookingStart.getUTCDate()).padStart(2, '0');
             const bookingDateStr = `${bookingYear}-${bookingMonth}-${bookingDay}`;
 
-            const blockStartUtc = localAvailabilityToUtc(start, bookingDateStr, timezone_offset);
-            const blockEndUtc = localAvailabilityToUtc(end, bookingDateStr, timezone_offset);
+            const blockStartUtc = localAvailabilityToUtc(start, bookingDateStr, salonTimezone);
+            const blockEndUtc = localAvailabilityToUtc(end, bookingDateStr, salonTimezone);
             
             if (bookingStart < blockEndUtc && bookingEnd > blockStartUtc) {
                 conflictingAppointments.push({

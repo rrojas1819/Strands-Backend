@@ -16,18 +16,92 @@ function toMySQLUtc(date) {
     return date.toISOString().slice(0, 19).replace('T', ' ');
 }
 
-function localAvailabilityToUtc(availabilityTime, dateStr, offsetStr) {
-    if (offsetStr === 'Z' || offsetStr === 'z') {
-        return new Date(`${dateStr}T${availabilityTime}Z`);
+
+function localAvailabilityToUtc(availabilityTime, dateStr, timezone) {
+    if (!availabilityTime || !dateStr || !timezone) {
+        throw new Error('localAvailabilityToUtc requires availabilityTime, dateStr, and timezone');
+    }
+
+    const [year, month, day] = dateStr.split('-').map(Number);
+    const [hours, minutes] = availabilityTime.split(':').map(Number);
+
+    if (isNaN(year) || isNaN(month) || isNaN(day) || isNaN(hours) || isNaN(minutes)) {
+        throw new Error(`Invalid date or time format: ${dateStr} ${availabilityTime}`);
+    }
+
+    const formatter = new Intl.DateTimeFormat('en-US', {
+        timeZone: timezone,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false
+    });
+    
+    const targetDate = new Date(Date.UTC(year, month - 1, day, 0, 0, 0, 0));
+    const nextDay = new Date(Date.UTC(year, month - 1, day + 1, 0, 0, 0, 0));
+    const dayRangeMs = nextDay.getTime() - targetDate.getTime();
+    
+    let low = targetDate.getTime();
+    let high = nextDay.getTime();
+    const targetHour = String(hours).padStart(2, '0');
+    const targetMin = String(minutes).padStart(2, '0');
+    const targetYear = String(year).padStart(4, '0');
+    const targetMonth = String(month).padStart(2, '0');
+    const targetDay = String(day).padStart(2, '0');
+    
+    for (let iter = 0; iter < 50; iter++) {
+        const mid = Math.floor((low + high) / 2);
+        const testUtc = new Date(mid);
+        const parts = formatter.formatToParts(testUtc);
+        const fYear = parts.find(p => p.type === 'year').value;
+        const fMonth = parts.find(p => p.type === 'month').value;
+        const fDay = parts.find(p => p.type === 'day').value;
+        const fHour = parts.find(p => p.type === 'hour').value;
+        const fMinute = parts.find(p => p.type === 'minute').value;
+        
+        const dateMatch = fYear === targetYear && fMonth === targetMonth && fDay === targetDay;
+        const timeMatch = fHour === targetHour && fMinute === targetMin;
+        
+        if (dateMatch && timeMatch) {
+            return testUtc;
+        }
+        
+        if (!dateMatch || (dateMatch && (fHour < targetHour || (fHour === targetHour && fMinute < targetMin)))) {
+            low = mid + 1;
+        } else {
+            high = mid - 1;
+        }
+        
+        if (low >= high) break;
     }
     
-    const offsetMatch = offsetStr.match(/([+-])(\d{2}):(\d{2})/);
-    if (!offsetMatch) {
-        return new Date(`${dateStr}T${availabilityTime}Z`);
+    const startMs = targetDate.getTime();
+    const endMs = nextDay.getTime();
+    const stepMs = 60 * 1000;
+    
+    for (let ms = startMs; ms < endMs; ms += stepMs) {
+        const testUtc = new Date(ms);
+        const parts = formatter.formatToParts(testUtc);
+        const fYear = parts.find(p => p.type === 'year').value;
+        const fMonth = parts.find(p => p.type === 'month').value;
+        const fDay = parts.find(p => p.type === 'day').value;
+        const fHour = parts.find(p => p.type === 'hour').value;
+        const fMinute = parts.find(p => p.type === 'minute').value;
+        
+        if (fYear === targetYear && fMonth === targetMonth && fDay === targetDay &&
+            fHour === targetHour && fMinute === targetMin) {
+            return testUtc;
+        }
     }
     
-    const localDateTime = `${dateStr}T${availabilityTime}${offsetStr}`;
-    return new Date(localDateTime);
+    const midnightUtc = new Date(Date.UTC(year, month - 1, day, 0, 0, 0, 0));
+    const midnightParts = formatter.formatToParts(midnightUtc);
+    const midnightLocalHour = parseInt(midnightParts.find(p => p.type === 'hour').value);
+    const offsetHours = -midnightLocalHour;
+    
+    return new Date(Date.UTC(year, month - 1, day, hours + offsetHours, minutes, 0, 0));
 }
 
 const formatDateTime = (timeStr) => {
@@ -239,6 +313,22 @@ function startLoyaltySeenUpdate(connection) {
     }, 15 * 60 * 1000); // Every 15 minutes 
 }
 
+function utcToLocalDateString(utcDate, timezone) {
+    const formatter = new Intl.DateTimeFormat('en-US', {
+        timeZone: timezone,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+    });
+    
+    const parts = formatter.formatToParts(utcDate);
+    const year = parts.find(p => p.type === 'year').value;
+    const month = parts.find(p => p.type === 'month').value;
+    const day = parts.find(p => p.type === 'day').value;
+    
+    return `${year}-${month}-${day}`;
+}
+
 module.exports = {
     validateEmail,
     startTokenCleanup,
@@ -247,5 +337,6 @@ module.exports = {
     formatDateTime,
     startLoyaltySeenUpdate,
     logUtcDebug,
-    localAvailabilityToUtc
+    localAvailabilityToUtc,
+    utcToLocalDateString
 };

@@ -9,4 +9,24 @@ const connection = mysql.createConnection({
     timezone: 'Z'
 });
 
+const setUtcTimezone = () => {
+    connection.query("SET time_zone = '+00:00'", (err) => {
+        if (err) {
+            console.error('Failed to set timezone to UTC:', err);
+        }
+    });
+};
+
+connection.connect((err) => {
+    if (err) {
+        console.error('Database connection error:', err);
+        return;
+    }
+    setUtcTimezone();
+});
+
+if (connection.state === 'authenticated') {
+    setUtcTimezone();
+}
+
 module.exports = connection;
