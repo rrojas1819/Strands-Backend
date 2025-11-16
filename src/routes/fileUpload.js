@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const multer = require('multer');
-const { fileUpload } = require('../controllers/fileController');
+const { uploadBeforePhoto } = require('../controllers/fileController');
 const { authenticateToken, roleAuthorization } = require('../middleware/auth.middleware');
 
 
@@ -21,7 +21,7 @@ const upload = multer({
 });
 
 // UPH 1.6 File Upload
-router.post('/upload', authenticateToken, roleAuthorization(['CUSTOMER','OWNER','EMPLOYEE','ADMIN']), upload.single("file"), fileUpload);
+router.post('/upload', authenticateToken, roleAuthorization(['OWNER','EMPLOYEE']), upload.single("file"), uploadBeforePhoto);
 
 
 module.exports = router;
