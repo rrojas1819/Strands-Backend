@@ -2,6 +2,8 @@ require('dotenv').config();
 const connection = require('../config/databaseConnection');
 const crypto = require('crypto');
 const { S3Client, PutObjectCommand, HeadObjectCommand, DeleteObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
+const { DateTime } = require('luxon');
+const { toMySQLUtc } = require('./utilies');
 
 const s3 = new S3Client({
 	region: process.env.AWS_REGION,
@@ -42,7 +44,8 @@ async function uploadUniqueFile(fileBuffer, mimetype) {
 	}));
 
 	const db = connection.promise();
-	const [result] = await db.execute('INSERT INTO pictures (s3_key, created_at, updated_at) VALUES ( ?, NOW(), NOW())', [key]);
+	const nowUtc = toMySQLUtc(DateTime.utc());
+	const [result] = await db.execute('INSERT INTO pictures (s3_key, created_at, updated_at) VALUES ( ?, ?, ?)', [key, nowUtc, nowUtc]);
 
 	return {
 		message: 'File uploaded successfully',
