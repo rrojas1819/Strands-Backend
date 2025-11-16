@@ -1090,11 +1090,32 @@ exports.getAvailableTimeSlotsRange = async (req, res) => {
           return res.status(400).json({ message: 'Invalid service_duration. Must be a positive number (minutes)' });
       }
     
+      // Get salon timezone FIRST
+      const getSalonQuery = 'SELECT salon_id, name, status, timezone FROM salons WHERE salon_id = ?';
+      const [salonResult] = await db.execute(getSalonQuery, [salon_id]);
       
-      // Determine date range - use UTC
-      let startDate, endDate;
+      if (salonResult.length === 0) {
+          return res.status(404).json({ message: 'Salon not found' });
+      }
+      //This should never occur but just in case
+      if (salonResult[0].status !== 'APPROVED') {
+          return res.status(403).json({ message: 'Salon is not available for booking' });
+      }
+      
+      const salonTimezone = salonResult[0].timezone || 'America/New_York';
+      
+      // Get today's date string in salon timezone for comparison
       const today = new Date();
-      today.setUTCHours(0, 0, 0, 0);
+      const formatter = new Intl.DateTimeFormat('en-CA', { 
+          timeZone: salonTimezone,
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit'
+      });
+      const todayDateStr = formatter.format(today); // Returns YYYY-MM-DD format
+      
+      // Determine date range - use UTC for processing
+      let startDate, endDate;
       const dayInMs = 24 * 60 * 60 * 1000;
       
       if (start_date && end_date) {
@@ -1105,8 +1126,10 @@ exports.getAvailableTimeSlotsRange = async (req, res) => {
           endDate = new Date(startDate.getTime() + (parseInt(days) - 1) * dayInMs);
       } else {
           // Default to next 7 days from today (UTC)
-          startDate = new Date(today);
-          endDate = new Date(today.getTime() + (parseInt(days) - 1) * dayInMs);
+          const todayUTC = new Date();
+          todayUTC.setUTCHours(0, 0, 0, 0);
+          startDate = new Date(todayUTC);
+          endDate = new Date(todayUTC.getTime() + (parseInt(days) - 1) * dayInMs);
       }
       
       // Validate dates
@@ -1114,7 +1137,8 @@ exports.getAvailableTimeSlotsRange = async (req, res) => {
           return res.status(400).json({ message: 'Invalid date format. Use YYYY-MM-DD' });
       }
       
-      if (startDate < today) {
+      // Compare date strings (both normalized to salon timezone)
+      if (start_date && start_date < todayDateStr) {
           return res.status(400).json({ message: 'Start date cannot be in the past' });
       }
       
@@ -1128,19 +1152,6 @@ exports.getAvailableTimeSlotsRange = async (req, res) => {
       if (daysDiff > maxDays) {
           return res.status(400).json({ message: `Date range cannot exceed ${maxDays} days` });
       }
-      
-      const getSalonQuery = 'SELECT salon_id, name, status, timezone FROM salons WHERE salon_id = ?';
-      const [salonResult] = await db.execute(getSalonQuery, [salon_id]);
-      
-      if (salonResult.length === 0) {
-          return res.status(404).json({ message: 'Salon not found' });
-      }
-      //This should never occur but just in case
-      if (salonResult[0].status !== 'APPROVED') {
-          return res.status(403).json({ message: 'Salon is not available for booking' });
-      }
-      
-      const salonTimezone = salonResult[0].timezone || 'America/New_York';
       
       // Verify stylist exists and is active
       const getEmployeeQuery = `
