@@ -25,6 +25,7 @@ const paymentsRoutes = require('./routes/payments');
 const reviewRoutes = require('./routes/reviews');
 const staffReviewsRoutes = require('./routes/staffReviews');
 const appointmentNotesRoutes = require('./routes/appointmentNotes');
+const fileUploadRoutes = require('./routes/fileUpload');
 
 // Database Connection
 const db = require('./config/databaseConnection');
@@ -46,7 +47,7 @@ app.use(express.json());
 app.use('/api', healthRoutes);
 app.use('/api/user', userRoutes);
 app.use('/api/salons', salonsRoutes);
-
+app.use('/api/file', fileUploadRoutes);
 app.use('/api/admin/analytics', analyticsRoutes);
 app.use('/api/unavailability', unavailabilityRoutes);
 app.use('/api/bookings', bookingsRoutes);
