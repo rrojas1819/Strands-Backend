@@ -2287,21 +2287,42 @@ exports.getTopSalonMetrics = async (req, res) => {
     }
 
     const topSalonStylistQuery = 
-    `SELECT 
-      u.full_name AS stylist_name,
-      s.name AS salon_name,
-      SUM(p.amount) AS total_revenue,
-      COUNT(DISTINCT bs.booking_id) AS total_bookings
-    FROM booking_services bs
-    JOIN employees e ON bs.employee_id = e.employee_id
-    JOIN users u ON e.user_id = u.user_id
-    JOIN salons s ON e.salon_id = s.salon_id
-    JOIN bookings b ON bs.booking_id = b.booking_id
-    JOIN payments p ON p.booking_id = b.booking_id
-    WHERE p.status = 'SUCCEEDED' AND s.salon_id = (SELECT salon_id FROM salons WHERE owner_user_id = ?)
-    GROUP BY  e.employee_id, u.full_name, s.name
-    ORDER BY total_revenue DESC
-    LIMIT 1;`;
+          `WITH last_week AS (
+          SELECT
+              DATE_SUB(
+                  CURDATE(),
+                  INTERVAL ((WEEKDAY(CURDATE()) + 6) % 7 + 7) DAY
+              ) AS week_start
+      )
+      SELECT
+          u.full_name AS stylist_name,
+          s.name AS salon_name,
+
+          COALESCE(SUM(p.amount), 0) AS total_revenue,
+          COALESCE(COUNT(DISTINCT bs.booking_id), 0) AS total_bookings,
+
+          COALESCE(SUM(CASE WHEN DATE(b.scheduled_start) = lw.week_start + INTERVAL 0 DAY THEN p.amount END), 0) AS monday_revenue,
+          COALESCE(SUM(CASE WHEN DATE(b.scheduled_start) = lw.week_start + INTERVAL 1 DAY THEN p.amount END), 0) AS tuesday_revenue,
+          COALESCE(SUM(CASE WHEN DATE(b.scheduled_start) = lw.week_start + INTERVAL 2 DAY THEN p.amount END), 0) AS wednesday_revenue,
+          COALESCE(SUM(CASE WHEN DATE(b.scheduled_start) = lw.week_start + INTERVAL 3 DAY THEN p.amount END), 0) AS thursday_revenue,
+          COALESCE(SUM(CASE WHEN DATE(b.scheduled_start) = lw.week_start + INTERVAL 4 DAY THEN p.amount END), 0) AS friday_revenue,
+          COALESCE(SUM(CASE WHEN DATE(b.scheduled_start) = lw.week_start + INTERVAL 5 DAY THEN p.amount END), 0) AS saturday_revenue,
+          COALESCE(SUM(CASE WHEN DATE(b.scheduled_start) = lw.week_start + INTERVAL 6 DAY THEN p.amount END), 0) AS sunday_revenue
+
+      FROM employees e
+      JOIN users u ON e.user_id = u.user_id
+      JOIN salons s ON e.salon_id = s.salon_id
+      JOIN last_week lw
+
+      LEFT JOIN booking_services bs ON bs.employee_id = e.employee_id
+      LEFT JOIN bookings b ON bs.booking_id = b.booking_id
+      LEFT JOIN payments p 
+          ON p.booking_id = b.booking_id 
+          AND p.status = 'SUCCEEDED'
+
+      WHERE s.salon_id = (SELECT salon_id FROM salons WHERE owner_user_id = ?)
+      GROUP BY e.employee_id, u.full_name, s.name, lw.week_start
+      ORDER BY total_revenue DESC;`;
 
     const [topSalonStylistResults] = await db.execute(topSalonStylistQuery, [owner_user_id]);
 
@@ -2309,8 +2330,8 @@ exports.getTopSalonMetrics = async (req, res) => {
     `SELECT 
         sv.name AS service_name,
         s.name AS salon_name,
-        COUNT(DISTINCT bs.booking_id) AS times_booked,
-        SUM(p.amount) AS total_revenue
+        COALESCE(COUNT(DISTINCT bs.booking_id), 0) AS times_booked,
+        COALESCE(SUM(p.amount), 0) AS total_revenue
     FROM payments p
     JOIN bookings b ON p.booking_id = b.booking_id
     JOIN booking_services bs ON b.booking_id = bs.booking_id
@@ -2326,8 +2347,8 @@ exports.getTopSalonMetrics = async (req, res) => {
     `SELECT 
       pr.name AS product_name,
       pr.price AS listing_price,
-      SUM(oi.quantity) AS units_sold,
-      SUM(oi.quantity * oi.purchase_price) AS total_revenue
+      COALESCE(SUM(oi.quantity), 0) AS units_sold,
+      COALESCE(SUM(oi.quantity * oi.purchase_price), 0) AS total_revenue
     FROM order_items oi
     JOIN products pr ON oi.product_id = pr.product_id
     JOIN orders o ON oi.order_id = o.order_id
@@ -2359,7 +2380,7 @@ exports.getTopSalonMetrics = async (req, res) => {
     const [totalSalonRevenueResults] = await db.execute(totalSalonRevenueQuery, [owner_user_id]);
 
     return res.status(200).json({
-      topStylist: topSalonStylistResults[0],
+      stylists: topSalonStylistResults,
       totalProductRevenue: totalProductRevenueResults[0].total_product_revenue,
       totalSalonRevenue: totalSalonRevenueResults[0].total_revenue,
       services: salonServicesResults,
