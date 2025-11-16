@@ -1,8 +1,9 @@
+const { DateTime } = require('luxon');
+
 function logUtcDebug(label, value) {
     if (process.env.UTC_DEBUG === '1') {
-        const type = value instanceof Date ? 'Date' : typeof value;
-        const printable =
-            value instanceof Date ? value.toISOString() : value;
+        const type = value instanceof DateTime ? 'DateTime' : typeof value;
+        const printable = value instanceof DateTime ? value.toISO() : value;
         console.log(`[UTC DEBUG] ${label}:`, printable, `(type: ${type})`);
     }
 }
@@ -12,117 +13,82 @@ const validateEmail = (email) => {
     return emailRegex.test(email);
 };
 
-function toMySQLUtc(date) {
-    return date.toISOString().slice(0, 19).replace('T', ' ');
+function toMySQLUtc(dt) {
+    if (!(dt instanceof DateTime)) {
+        throw new Error('toMySQLUtc requires a DateTime object');
+    }
+    return dt.toUTC().toFormat('yyyy-MM-dd HH:mm:ss');
 }
-
 
 function localAvailabilityToUtc(availabilityTime, dateStr, timezone) {
     if (!availabilityTime || !dateStr || !timezone) {
         throw new Error('localAvailabilityToUtc requires availabilityTime, dateStr, and timezone');
     }
 
-    const [year, month, day] = dateStr.split('-').map(Number);
     const [hours, minutes] = availabilityTime.split(':').map(Number);
 
-    if (isNaN(year) || isNaN(month) || isNaN(day) || isNaN(hours) || isNaN(minutes)) {
-        throw new Error(`Invalid date or time format: ${dateStr} ${availabilityTime}`);
+    if (isNaN(hours) || isNaN(minutes)) {
+        throw new Error(`Invalid time format: ${availabilityTime}`);
     }
 
-    const formatter = new Intl.DateTimeFormat('en-US', {
-        timeZone: timezone,
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: false
-    });
-    
-    const targetDate = new Date(Date.UTC(year, month - 1, day, 0, 0, 0, 0));
-    const nextDay = new Date(Date.UTC(year, month - 1, day + 1, 0, 0, 0, 0));
-    const dayRangeMs = nextDay.getTime() - targetDate.getTime();
-    
-    let low = targetDate.getTime();
-    let high = nextDay.getTime();
-    const targetHour = String(hours).padStart(2, '0');
-    const targetMin = String(minutes).padStart(2, '0');
-    const targetYear = String(year).padStart(4, '0');
-    const targetMonth = String(month).padStart(2, '0');
-    const targetDay = String(day).padStart(2, '0');
-    
-    for (let iter = 0; iter < 50; iter++) {
-        const mid = Math.floor((low + high) / 2);
-        const testUtc = new Date(mid);
-        const parts = formatter.formatToParts(testUtc);
-        const fYear = parts.find(p => p.type === 'year').value;
-        const fMonth = parts.find(p => p.type === 'month').value;
-        const fDay = parts.find(p => p.type === 'day').value;
-        const fHour = parts.find(p => p.type === 'hour').value;
-        const fMinute = parts.find(p => p.type === 'minute').value;
-        
-        const dateMatch = fYear === targetYear && fMonth === targetMonth && fDay === targetDay;
-        const timeMatch = fHour === targetHour && fMinute === targetMin;
-        
-        if (dateMatch && timeMatch) {
-            return testUtc;
-        }
-        
-        if (!dateMatch || (dateMatch && (fHour < targetHour || (fHour === targetHour && fMinute < targetMin)))) {
-            low = mid + 1;
-        } else {
-            high = mid - 1;
-        }
-        
-        if (low >= high) break;
+    const localDt = DateTime.fromObject(
+        {
+            year: parseInt(dateStr.split('-')[0]),
+            month: parseInt(dateStr.split('-')[1]),
+            day: parseInt(dateStr.split('-')[2]),
+            hour: hours,
+            minute: minutes,
+            second: 0,
+            millisecond: 0
+        },
+        { zone: timezone }
+    );
+
+    if (!localDt.isValid) {
+        throw new Error(`Invalid date or time: ${dateStr} ${availabilityTime} - ${localDt.invalidReason}`);
     }
-    
-    const startMs = targetDate.getTime();
-    const endMs = nextDay.getTime();
-    const stepMs = 60 * 1000;
-    
-    for (let ms = startMs; ms < endMs; ms += stepMs) {
-        const testUtc = new Date(ms);
-        const parts = formatter.formatToParts(testUtc);
-        const fYear = parts.find(p => p.type === 'year').value;
-        const fMonth = parts.find(p => p.type === 'month').value;
-        const fDay = parts.find(p => p.type === 'day').value;
-        const fHour = parts.find(p => p.type === 'hour').value;
-        const fMinute = parts.find(p => p.type === 'minute').value;
-        
-        if (fYear === targetYear && fMonth === targetMonth && fDay === targetDay &&
-            fHour === targetHour && fMinute === targetMin) {
-            return testUtc;
-        }
-    }
-    
-    const midnightUtc = new Date(Date.UTC(year, month - 1, day, 0, 0, 0, 0));
-    const midnightParts = formatter.formatToParts(midnightUtc);
-    const midnightLocalHour = parseInt(midnightParts.find(p => p.type === 'hour').value);
-    const offsetHours = -midnightLocalHour;
-    
-    return new Date(Date.UTC(year, month - 1, day, hours + offsetHours, minutes, 0, 0));
+
+    return localDt.toUTC();
 }
 
-const formatDateTime = (timeStr) => {
-    if (!timeStr) return null;
-    if (timeStr instanceof Date) {
-        return timeStr.toISOString();
-    }
-    let parsedInput = timeStr;
-    if (typeof timeStr === 'string') {
-        const isNaiveMySQL = timeStr.includes(' ') && !timeStr.includes('T') && !/[zZ]|[+-]\d{2}:\d{2}$/.test(timeStr);
+const formatDateTime = (dt) => {
+    if (!dt) return null;
+    
+    let dateTime;
+    
+    if (dt instanceof DateTime) {
+        dateTime = dt;
+    } else if (typeof dt === 'string') {
+        const isNaiveMySQL = dt.includes(' ') && !dt.includes('T') && !/[zZ]|[+-]\d{2}:\d{2}$/.test(dt);
         if (isNaiveMySQL) {
-            // Convert 'YYYY-MM-DD HH:mm:ss' -> 'YYYY-MM-DDTHH:mm:ssZ' (treat as UTC)
-            parsedInput = `${timeStr.replace(' ', 'T')}Z`;
+            dateTime = DateTime.fromSQL(dt, { zone: 'utc' });
+        } else {
+            dateTime = DateTime.fromISO(dt);
         }
+    } else {
+        return String(dt);
     }
-    const date = new Date(parsedInput);
-    if (!isNaN(date.getTime())) {
-        return date.toISOString();
+    
+    if (!dateTime || !dateTime.isValid) {
+        return String(dt);
     }
-    return String(timeStr);
+    
+    return dateTime.toISO();
 };
+
+function utcToLocalDateString(dt, timezone) {
+    if (!(dt instanceof DateTime)) {
+        throw new Error('utcToLocalDateString requires a DateTime object');
+    }
+    return dt.setZone(timezone).toFormat('yyyy-MM-dd');
+}
+
+// Helper to convert Luxon weekday (1-7, Monday=1, Sunday=7) to database weekday (0-6, Sunday=0, Saturday=6)
+function luxonWeekdayToDb(luxonWeekday) {
+    // Luxon: 1=Monday, 2=Tuesday, ..., 6=Saturday, 7=Sunday
+    // DB: 0=Sunday, 1=Monday, 2=Tuesday, ..., 6=Saturday
+    return luxonWeekday === 7 ? 0 : luxonWeekday;
+}
 
 // Cleanup job for expired tokens every 15 minutes for more responsive cleanup
 const startTokenCleanup = (connection) => {
@@ -176,8 +142,7 @@ function startBookingsAutoComplete(connection) {
         try {
             const db = connection.promise();
             //Small grace period
-            const GRACE_MS = 2 * 60 * 1000; // 2 minutes
-            const nowMinusGrace = new Date(Date.now() - GRACE_MS);
+            const nowMinusGrace = DateTime.utc().minus({ minutes: 2 });
             const currentUtc = toMySQLUtc(nowMinusGrace);
 
             const updateQuery = `
@@ -198,7 +163,7 @@ function startLoyaltySeenUpdate(connection) {
     setInterval(async () => {
         try {
             const db = connection.promise();
-            const currentUtc = toMySQLUtc(new Date());
+            const currentUtc = toMySQLUtc(DateTime.utc());
 
             const getCompletedBookingsQuery = `
                 SELECT booking_id, customer_user_id, salon_id
@@ -259,7 +224,7 @@ function startLoyaltySeenUpdate(connection) {
                             if (current_visits >= target_visits) {
                                 const new_visits_count = current_visits - target_visits;
 
-                                const currentUtc = toMySQLUtc(new Date());
+                                const currentUtc = toMySQLUtc(DateTime.utc());
                                 const insertRewardQuery = `
                                     INSERT INTO available_rewards 
                                     (user_id, salon_id, active, discount_percentage, note, redeemed_at, creationDate, created_at, updated_at)
@@ -313,21 +278,6 @@ function startLoyaltySeenUpdate(connection) {
     }, 15 * 60 * 1000); // Every 15 minutes 
 }
 
-function utcToLocalDateString(utcDate, timezone) {
-    const formatter = new Intl.DateTimeFormat('en-US', {
-        timeZone: timezone,
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit'
-    });
-    
-    const parts = formatter.formatToParts(utcDate);
-    const year = parts.find(p => p.type === 'year').value;
-    const month = parts.find(p => p.type === 'month').value;
-    const day = parts.find(p => p.type === 'day').value;
-    
-    return `${year}-${month}-${day}`;
-}
 
 module.exports = {
     validateEmail,
@@ -338,5 +288,6 @@ module.exports = {
     startLoyaltySeenUpdate,
     logUtcDebug,
     localAvailabilityToUtc,
-    utcToLocalDateString
+    utcToLocalDateString,
+    luxonWeekdayToDb
 };

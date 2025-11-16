@@ -2,7 +2,8 @@ require('dotenv').config();
 const bcrypt = require('bcrypt');
 const connection = require('../config/databaseConnection');
 const { generateToken } = require('../middleware/auth.middleware');
-const { validateEmail, toMySQLUtc, formatDateTime, logUtcDebug } = require('../utils/utilies');
+const { validateEmail, toMySQLUtc, formatDateTime, logUtcDebug, luxonWeekdayToDb } = require('../utils/utilies');
+const { DateTime } = require('luxon');
 
 // Global constants
 const DAYS_OF_WEEK = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'];
@@ -147,7 +148,7 @@ exports.login = async (req, res) => {
         const token = generateToken(tokenPayload);
         
         // Store token expiration time (2 hours from now)
-        const tokenExpiry = new Date(Date.now() + 2 * 60 * 60 * 1000);
+        const tokenExpiry = DateTime.utc().plus({ hours: 2 });
         const updateTokenQuery = 'UPDATE auth_credentials SET token_expires_at = ? WHERE user_id = ?';
         await db.execute(updateTokenQuery, [toMySQLUtc(tokenExpiry), existingUsers[0].user_id]);
 
@@ -286,34 +287,33 @@ exports.getStylistWeeklySchedule = async (req, res) => {
       return res.status(400).json({ message: 'start_date and end_date are required (MM-DD-YYYY)' });
     }
 
-    // Parse dates (expecting MM-DD-YYYY per example), create UTC dates
+    // Parse dates (expecting MM-DD-YYYY per example), create UTC dates using Luxon
     const parseMmDdYyyy = (s) => {
       const parts = String(s).split('-');
       if (parts.length === 3) {
         const [mm, dd, yyyy] = parts.map((p) => Number(p));
         if (!Number.isNaN(mm) && !Number.isNaN(dd) && !Number.isNaN(yyyy)) {
-          // Create UTC date
-          return new Date(Date.UTC(yyyy, mm - 1, dd));
+          // Create UTC DateTime
+          return DateTime.utc(yyyy, mm, dd);
         }
       }
-      const d = new Date(s);
-      return Number.isNaN(d.getTime()) ? null : d;
+      // Try parsing as ISO or other format
+      const dt = DateTime.fromISO(s);
+      return dt.isValid ? dt.toUTC() : null;
     };
 
     const rangeStart = parseMmDdYyyy(start_date);
     const rangeEnd = parseMmDdYyyy(end_date);
 
-    if (!rangeStart || !rangeEnd) {
+    if (!rangeStart || !rangeStart.isValid || !rangeEnd || !rangeEnd.isValid) {
       return res.status(400).json({ message: 'Invalid start_date or end_date format' });
     }
 
     // Normalize to start/end of day (UTC)
-    const startOfDay = new Date(rangeStart);
-    startOfDay.setUTCHours(0, 0, 0, 0);
-    const endOfDay = new Date(rangeEnd);
-    endOfDay.setUTCHours(23, 59, 59, 999);
+    const startOfDay = rangeStart.startOf('day');
+    const endOfDay = rangeEnd.endOf('day');
 
-    if (startOfDay.getTime() > endOfDay.getTime()) {
+    if (startOfDay > endOfDay) {
       return res.status(400).json({ message: 'start_date must be before or equal to end_date' });
     }
 
@@ -363,20 +363,33 @@ exports.getStylistWeeklySchedule = async (req, res) => {
       }
     });
 
+    // Get bookings that OVERLAP with the date range (not just start in range)
+    // Use DATE_FORMAT to return SQL format (YYYY-MM-DD HH:mm:ss) for Luxon parsing
     const getBookingsQuery = `
-      SELECT DISTINCT b.booking_id, b.salon_id, b.customer_user_id, b.scheduled_start, b.scheduled_end, b.status, b.notes, b.created_at, b.updated_at,
-             u.full_name AS customer_name, u.email AS customer_email, u.phone AS customer_phone
+      SELECT DISTINCT 
+        b.booking_id, 
+        b.salon_id, 
+        b.customer_user_id, 
+        DATE_FORMAT(b.scheduled_start, '%Y-%m-%d %H:%i:%s') AS scheduled_start,
+        DATE_FORMAT(b.scheduled_end, '%Y-%m-%d %H:%i:%s') AS scheduled_end,
+        b.status, 
+        b.notes, 
+        b.created_at, 
+        b.updated_at,
+        u.full_name AS customer_name, 
+        u.email AS customer_email, 
+        u.phone AS customer_phone
       FROM bookings b
       JOIN booking_services bs ON b.booking_id = bs.booking_id
       JOIN users u ON b.customer_user_id = u.user_id
       WHERE bs.employee_id = ?
-        AND b.scheduled_start >= ?
-        AND b.scheduled_start <= ?
-      ORDER BY b.scheduled_start ASC
+        AND b.scheduled_start < ?
+        AND b.scheduled_end > ?
+      ORDER BY scheduled_start ASC
     `;
     const requestStartStr = toMySQLUtc(startOfDay);
     const requestEndStr = toMySQLUtc(endOfDay);
-    const [bookingsResult] = await db.execute(getBookingsQuery, [employee_id, requestStartStr, requestEndStr]);
+    const [bookingsResult] = await db.execute(getBookingsQuery, [employee_id, requestEndStr, requestStartStr]);
 
     // Index availability by weekday for O(1) lookup
     const availabilityByWeekday = {};
@@ -402,27 +415,27 @@ exports.getStylistWeeklySchedule = async (req, res) => {
 
     const schedule = {};
 
-    const formatMmDdYyyy = (d) => {
-      const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
-      const dd = String(d.getUTCDate()).padStart(2, '0');
-      const yyyy = d.getUTCFullYear();
-      return `${mm}-${dd}-${yyyy}`;
+    const formatMmDdYyyy = (dt) => {
+      // dt is a DateTime object
+      return dt.toFormat('MM-dd-yyyy');
     };
 
-    const ymd = (d) => {
-      const year = d.getUTCFullYear();
-      const month = String(d.getUTCMonth() + 1).padStart(2, '0');
-      const day = String(d.getUTCDate()).padStart(2, '0');
-      return `${year}-${month}-${day}`;
+    const ymd = (dt) => {
+      // dt is a DateTime object
+      return dt.toFormat('yyyy-MM-dd');
     };
+    
     const bookingsByDate = {};
     const bookingIds = [];
     for (const booking of bookingsResult) {
-      const d = new Date(booking.scheduled_start);
-      const key = ymd(d);
-      if (!bookingsByDate[key]) bookingsByDate[key] = [];
-      bookingsByDate[key].push(booking);
-      bookingIds.push(booking.booking_id);
+      // Parse SQL format datetime as UTC
+      const bookingDt = DateTime.fromSQL(booking.scheduled_start, { zone: 'utc' });
+      if (bookingDt.isValid) {
+        const key = ymd(bookingDt);
+        if (!bookingsByDate[key]) bookingsByDate[key] = [];
+        bookingsByDate[key].push(booking);
+        bookingIds.push(booking.booking_id);
+      }
     }
 
     const servicesByBookingId = {};
@@ -491,8 +504,11 @@ exports.getStylistWeeklySchedule = async (req, res) => {
       rewardsById[r.reward_id] = r;
     });
 
-    for (let d = new Date(startOfDay); d.getTime() <= endOfDay.getTime(); d.setUTCDate(d.getUTCDate() + 1)) {
-      const dayIndex = d.getUTCDay(); // 0..6 (Sun..Sat) - use UTC to match the UTC date calculation
+    // Iterate through each day in the range using Luxon
+    let currentDate = startOfDay;
+    while (currentDate <= endOfDay) {
+      // Convert Luxon weekday to database weekday (0-6, Sunday=0)
+      const dayIndex = luxonWeekdayToDb(currentDate.weekday);
       const dayName = weekdayMap[dayIndex];
 
       const dayAvailability = availabilityByWeekday[dayName] || null;
@@ -522,14 +538,17 @@ exports.getStylistWeeklySchedule = async (req, res) => {
         }
       }
 
-      const dateKey = ymd(d);
+      const dateKey = ymd(currentDate);
       const bookingsForDate = bookingsByDate[dateKey] || [];
       const dayBookings = bookingsForDate.map(booking => {
-        logUtcDebug('userController.getStylistWeeklySchedule raw scheduled_start', booking.scheduled_start);
-        logUtcDebug('userController.getStylistWeeklySchedule raw scheduled_end', booking.scheduled_end);
+        // Parse SQL format datetime strings as UTC
+        const bookingStart = DateTime.fromSQL(booking.scheduled_start, { zone: 'utc' });
+        const bookingEnd = DateTime.fromSQL(booking.scheduled_end, { zone: 'utc' });
+        logUtcDebug('userController.getStylistWeeklySchedule parsed scheduled_start', bookingStart);
+        logUtcDebug('userController.getStylistWeeklySchedule parsed scheduled_end', bookingEnd);
         // Return full ISO datetime strings so frontend can properly convert to local timezone
-        const startTime = formatDateTime(booking.scheduled_start);
-        const endTime = formatDateTime(booking.scheduled_end);
+        const startTime = formatDateTime(bookingStart);
+        const endTime = formatDateTime(bookingEnd);
 
         const servicesResult = servicesByBookingId[booking.booking_id] || [];
         const totalDuration = servicesResult.reduce((sum, s) => sum + Number(s.duration_minutes), 0);
@@ -580,13 +599,16 @@ exports.getStylistWeeklySchedule = async (req, res) => {
         };
       });
 
-      const displayDate = formatMmDdYyyy(d);
+      const displayDate = formatMmDdYyyy(currentDate);
       schedule[displayDate] = {
         weekday: dayName,
         availability: dayAvailability,
         unavailability: dayUnavailability,
         bookings: dayBookings
       };
+      
+      // Move to next day
+      currentDate = currentDate.plus({ days: 1 });
     }
 
     return res.status(200).json({ 
