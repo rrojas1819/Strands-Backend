@@ -1,14 +1,6 @@
 const connection = require('../config/databaseConnection'); //db connection
-const { toMySQLUtc, formatDateTime, logUtcDebug, localAvailabilityToUtc, utcToLocalDateString } = require('../utils/utilies');
-
-// Check if two dates are on the same day (ignoring time)
-const isSameDay = (date1, date2) => {
-    const d1 = new Date(date1);
-    const d2 = new Date(date2);
-    return d1.getUTCFullYear() === d2.getUTCFullYear() &&
-           d1.getUTCMonth() === d2.getUTCMonth() &&
-           d1.getUTCDate() === d2.getUTCDate();
-};
+const { toMySQLUtc, formatDateTime, logUtcDebug, localAvailabilityToUtc, utcToLocalDateString, luxonWeekdayToDb } = require('../utils/utilies');
+const { DateTime } = require('luxon');
 
 // Customer views their appointments
 exports.getMyAppointments = async (req, res) => {
@@ -219,7 +211,6 @@ exports.rescheduleBooking = async (req, res) => {
         if (!scheduled_start) return res.status(400).json({ message: 'scheduled_start is required' });
 
         let startDate;
-        let bookingOffset = 'Z';
         if (typeof scheduled_start === 'string') {
             const hasTimezone = /([zZ]|[+-]\d{2}:\d{2})$/.test(scheduled_start);
             if (!hasTimezone) {
@@ -227,26 +218,31 @@ exports.rescheduleBooking = async (req, res) => {
                     message: 'scheduled_start must include a timezone offset (e.g., 2025-11-12T09:00:00-05:00 or 2025-11-12T14:00:00Z)'
                 });
             }
-            const offsetMatch = scheduled_start.match(/([zZ]|[+-]\d{2}:\d{2})$/);
-            if (offsetMatch) {
-                bookingOffset = offsetMatch[1] === 'Z' || offsetMatch[1] === 'z' ? 'Z' : offsetMatch[1];
-            }
-            startDate = new Date(scheduled_start);
+            startDate = DateTime.fromISO(scheduled_start);
         } else {
-            startDate = new Date(scheduled_start);
-        }
-
-        if (isNaN(startDate.getTime())) {
             return res.status(400).json({
-                message: 'Invalid scheduled_start. Provide a valid ISO 8601 datetime with timezone.'
+                message: 'scheduled_start must be a string in ISO 8601 format with timezone'
             });
         }
 
-        const now = new Date();
+        if (!startDate.isValid) {
+            return res.status(400).json({
+                message: `Invalid scheduled_start: ${startDate.invalidReason || 'Invalid format'}. Provide a valid ISO 8601 datetime with timezone.`
+            });
+        }
+
+        // Convert to UTC for consistent processing
+        startDate = startDate.toUTC();
+
+        const now = DateTime.utc();
         if (startDate < now) return res.status(400).json({ message: 'Cannot reschedule to a past time' });
 
         //get the current booking (must be SCHEDULED)
-        const [bkRows] = await db.execute(`SELECT booking_id, salon_id, customer_user_id, scheduled_start, scheduled_end, status
+        // Use DATE_FORMAT to return SQL format (YYYY-MM-DD HH:mm:ss) for Luxon parsing
+        const [bkRows] = await db.execute(`SELECT booking_id, salon_id, customer_user_id, 
+                                      DATE_FORMAT(scheduled_start, '%Y-%m-%d %H:%i:%s') AS scheduled_start, 
+                                      DATE_FORMAT(scheduled_end, '%Y-%m-%d %H:%i:%s') AS scheduled_end, 
+                                      status
                                       FROM bookings WHERE booking_id = ? AND customer_user_id = ? AND status = 'SCHEDULED'`,
             [Number(booking_id), authUserId]
         );
@@ -263,7 +259,11 @@ exports.rescheduleBooking = async (req, res) => {
         );
         const salonTimezone = salonTimezoneResult[0]?.timezone || 'America/New_York';
         
-        const oldBookingDate = new Date(oldBooking.scheduled_start);
+        // Parse SQL format datetime from database as UTC
+        const oldBookingDate = DateTime.fromSQL(oldBooking.scheduled_start, { zone: 'utc' });
+        if (!oldBookingDate.isValid) {
+            return res.status(500).json({ message: 'Invalid booking date format in database' });
+        }
         const nowLocalDate = utcToLocalDateString(now, salonTimezone);
         const bookingLocalDate = utcToLocalDateString(oldBookingDate, salonTimezone);
         
@@ -281,17 +281,15 @@ exports.rescheduleBooking = async (req, res) => {
 
         //getting service duration and endtime of booking
         const totalDurationMinutes = servicesRows.reduce((sum, s) => sum + s.duration_minutes, 0);
-        const endDate = new Date(startDate.getTime() + totalDurationMinutes * 60 * 1000);
+        const endDate = startDate.plus({ minutes: totalDurationMinutes });
 
         //getting all employees involved with the original booking along with the day
         const employeeIds = [...new Set(servicesRows.map(r => r.employee_id))];
-        const bookingDayOfWeek = startDate.getUTCDay();
+        // Convert Luxon weekday to database weekday (0-6, Sunday=0)
+        const bookingDayOfWeek = luxonWeekdayToDb(startDate.weekday);
 
         // Build UTC YYYY-MM-DD for the booking date
-        const y = startDate.getUTCFullYear();
-        const m = String(startDate.getUTCMonth() + 1).padStart(2, '0');
-        const d = String(startDate.getUTCDate()).padStart(2, '0');
-        const dayStr = `${y}-${m}-${d}`;
+        const dayStr = startDate.toFormat('yyyy-MM-dd');
 
         // Format as UTC for database storage
         const requestStartStr = toMySQLUtc(startDate);
@@ -377,7 +375,7 @@ exports.rescheduleBooking = async (req, res) => {
                     appointment: {
                         scheduled_start: formatDateTime(startDate),
                         scheduled_end: formatDateTime(endDate),
-                        duration_minutes: Math.round((endDate - startDate) / (1000 * 60)),
+                        duration_minutes: Math.round(endDate.diff(startDate, 'minutes').minutes),
                         status: 'SCHEDULED'
                     },
                     total_services: servicesRows.length
@@ -413,7 +411,10 @@ exports.cancelBooking = async (req, res) => {
         await db.beginTransaction();
 
         //finding the booking (appointment) to cancel and locking it (must be SCHEDULED)
-        const [rows] = await db.execute(`SELECT booking_id, customer_user_id, scheduled_start, status
+        // Use DATE_FORMAT to return SQL format (YYYY-MM-DD HH:mm:ss) for Luxon parsing
+        const [rows] = await db.execute(`SELECT booking_id, customer_user_id, 
+                                    DATE_FORMAT(scheduled_start, '%Y-%m-%d %H:%i:%s') AS scheduled_start, 
+                                    status
                                     FROM bookings WHERE booking_id = ? AND customer_user_id = ? AND status = 'SCHEDULED'
                                     FOR UPDATE`, [bookingId, authUserId]
         );
@@ -433,8 +434,13 @@ exports.cancelBooking = async (req, res) => {
         );
         const salonTimezone = salonTimezoneResult[0]?.timezone || 'America/New_York';
         
-        const now = new Date();
-        const bookingDate = new Date(booking.scheduled_start);
+        const now = DateTime.utc();
+        // Parse SQL format datetime from database as UTC
+        const bookingDate = DateTime.fromSQL(booking.scheduled_start, { zone: 'utc' });
+        if (!bookingDate.isValid) {
+            await db.rollback();
+            return res.status(500).json({ message: 'Invalid booking date format in database' });
+        }
         const nowLocalDate = utcToLocalDateString(now, salonTimezone);
         const bookingLocalDate = utcToLocalDateString(bookingDate, salonTimezone);
         
@@ -465,7 +471,7 @@ exports.cancelBooking = async (req, res) => {
                 booking_id: booking.booking_id,
                 previous_status: previousStatus,
                 new_status: 'CANCELED',
-                canceled_at: new Date().toISOString()
+                canceled_at: DateTime.utc().toISO()
             }
         });
     } catch (err) {
@@ -532,7 +538,7 @@ exports.cancelBookingAsStylist = async (req, res) => {
                 booking_id: booking.booking_id,
                 previous_status: previousStatus,
                 new_status: 'CANCELED',
-                canceled_at: new Date().toISOString()
+                canceled_at: DateTime.utc().toISO()
             }
         });
     } catch (err) {
@@ -564,7 +570,7 @@ exports.deletePendingBooking = async (req, res) => {
         try {
             // Verify booking exists, belongs to user, and is PENDING
             const [rows] = await db.execute(
-                `SELECT booking_id, customer_user_id, scheduled_start, status
+                `SELECT booking_id, customer_user_id, status
                  FROM bookings 
                  WHERE booking_id = ? AND customer_user_id = ? AND status = 'PENDING'
                  FOR UPDATE`,
@@ -590,7 +596,7 @@ exports.deletePendingBooking = async (req, res) => {
                 message: 'Pending booking deleted successfully',
                 data: {
                     booking_id: booking.booking_id,
-                    deleted_at: new Date().toISOString()
+                    deleted_at: DateTime.utc().toISO()
                 }
             });
         } catch (txErr) {
