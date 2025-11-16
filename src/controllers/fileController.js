@@ -6,9 +6,9 @@ exports.uploadAfterPhoto = async (req, res) => {
 	const db = connection.promise();
 
 	try {
-		const { booking_photo_id } = req.body;
+		const { booking_id } = req.body;
 
-		if (!booking_photo_id) {
+		if (!booking_id) {
 			return res.status(400).json({ 
 				error: "Booking ID is required." 
 			});
@@ -33,14 +33,14 @@ exports.uploadAfterPhoto = async (req, res) => {
 		const addPhotoToBookingServiceQuery = `
 			INSERT INTO booking_photos (booking_id, picture_id, picture_type, created_at, updated_at) VALUES (?, ?, 'AFTER', NOW(), NOW())
 		`;
-		const [addPhotoToBookingServiceResults] = await db.execute(addPhotoToBookingServiceQuery, [booking_photo_id, result.picture_id]);
+		const [addPhotoToBookingServiceResults] = await db.execute(addPhotoToBookingServiceQuery, [booking_id, result.picture_id]);
 
 		if (addPhotoToBookingServiceResults.affectedRows === 0) {
 			return res.status(500).json({ 
 				error: "Failed to add photo to booking service." 
 			});
 		}
-
+				
 		res.status(200).json({
 			message: "File uploaded successfully.",
 			booking_photo_id: addPhotoToBookingServiceResults.insertId
@@ -59,9 +59,9 @@ exports.uploadBeforePhoto = async (req, res) => {
 	const db = connection.promise();
 
 	try {
-		const { booking_photo_id } = req.body;
+		const { booking_id } = req.body;
 
-		if (!booking_photo_id) {
+		if (!booking_id) {
 			return res.status(400).json({ 
 				error: "Booking ID is required." 
 			});
@@ -86,7 +86,7 @@ exports.uploadBeforePhoto = async (req, res) => {
 		const addPhotoToBookingServiceQuery = `
 			INSERT INTO booking_photos (booking_id, picture_id, picture_type, created_at, updated_at) VALUES (?, ?, 'BEFORE', NOW(), NOW())
 		`;
-		const [addPhotoToBookingServiceResults] = await db.execute(addPhotoToBookingServiceQuery, [booking_photo_id, result.picture_id]);
+		const [addPhotoToBookingServiceResults] = await db.execute(addPhotoToBookingServiceQuery, [booking_id, result.picture_id]);
 
 		if (addPhotoToBookingServiceResults.affectedRows === 0) {
 			return res.status(500).json({ 
@@ -112,19 +112,27 @@ exports.deletePhoto = async (req, res) => {
 	const db = connection.promise();
 
 	try {
-		const { booking_photo_id } = req.body;
+		const { booking_id, type } = req.body;
 
-		if (!booking_photo_id) {
+		if (!booking_id || !type) {
 			return res.status(400).json({ 
 				error: "Booking Photo ID is required." 
 			});
 		}
 
+		if (type !== 'BEFORE' && type !== 'AFTER') {
+			return res.status(400).json({ 
+				error: "Invalid type." 
+			});
+		}
+
 		const getPictureIdQuery = `
-			SELECT picture_id, s3_key FROM pictures WHERE picture_id = (SELECT picture_id FROM booking_photos WHERE booking_photo_id = ?);
+			SELECT picture_id, s3_key FROM pictures WHERE  picture_id = (SELECT picture_id FROM booking_photos WHERE booking_id = ? AND picture_type = ?);
 		`;
 
-		const [bookingPhotoRows] = await db.execute(getPictureIdQuery, [booking_photo_id]);
+		const [bookingPhotoRows] = await db.execute(getPictureIdQuery, [booking_id, type]);
+
+		console.log(bookingPhotoRows);
 
 		if (bookingPhotoRows.length === 0) {
 			return res.status(404).json({ message: 'Booking photo not found' });
@@ -133,9 +141,9 @@ exports.deletePhoto = async (req, res) => {
 		await db.query('START TRANSACTION');
 
 		const deleteBookingPhotoQuery = `
-			DELETE FROM booking_photos WHERE booking_photo_id = ?;
+			DELETE FROM booking_photos WHERE booking_id = ? AND picture_type = ?;
 		`;
-		const [deleteBookingPhotoResults] = await db.execute(deleteBookingPhotoQuery, [booking_photo_id]);
+		const [deleteBookingPhotoResults] = await db.execute(deleteBookingPhotoQuery, [booking_id, type]);
 
 		console.log(deleteBookingPhotoResults);
 
@@ -192,12 +200,12 @@ exports.deletePhoto = async (req, res) => {
 exports.getPhoto = async (req, res) => {
 	const db = connection.promise();
 	try {
-		const { booking_photo_id } = req.body;
+		const { booking_id, type } = req.body;
 
 		const getPictureKeyQuery = 
-		`SELECT s3_key FROM pictures WHERE picture_id = (SELECT picture_id FROM booking_photos WHERE booking_photo_id = ?);`;
+		`SELECT s3_key FROM pictures WHERE picture_id = (SELECT picture_id FROM booking_photos WHERE booking_id = ? AND picture_type = ?);`;
 
-		const [getPictureKeyResults] = await db.execute(getPictureKeyQuery, [booking_photo_id]);
+		const [getPictureKeyResults] = await db.execute(getPictureKeyQuery, [booking_id, type]);
 
 		if (getPictureKeyResults.length === 0) {
 			return res.status(404).json({ message: 'Picture key not found' });

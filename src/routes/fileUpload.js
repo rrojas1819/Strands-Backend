@@ -28,6 +28,6 @@ router.post('/upload-after-photo', authenticateToken, roleAuthorization(['OWNER'
 router.delete('/delete-photo', authenticateToken, roleAuthorization(['OWNER','EMPLOYEE']), deletePhoto);
 
 // UPH 1.6 Get Photo
-router.get('/get-photo', authenticateToken, roleAuthorization(['OWNER','EMPLOYEE']), getPhoto);
+router.get('/get-photo', authenticateToken, roleAuthorization(['CUSTOMER','EMPLOYEE','OWNER']), getPhoto);
 
 module.exports = router;
