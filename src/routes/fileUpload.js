@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const multer = require('multer');
-const { uploadBeforePhoto, uploadAfterPhoto, deletePhoto } = require('../controllers/fileController');
+const { uploadBeforePhoto, uploadAfterPhoto, deletePhoto, getPhoto } = require('../controllers/fileController');
 const { authenticateToken, roleAuthorization } = require('../middleware/auth.middleware');
 
 
@@ -26,5 +26,8 @@ router.post('/upload-after-photo', authenticateToken, roleAuthorization(['OWNER'
 
 // UPH 1.6 Delete File
 router.delete('/delete-photo', authenticateToken, roleAuthorization(['OWNER','EMPLOYEE']), deletePhoto);
+
+// UPH 1.6 Get Photo
+router.get('/get-photo', authenticateToken, roleAuthorization(['OWNER','EMPLOYEE']), getPhoto);
 
 module.exports = router;

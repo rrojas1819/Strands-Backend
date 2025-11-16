@@ -1,7 +1,7 @@
 require('dotenv').config();
 const connection = require('../config/databaseConnection');
 const crypto = require('crypto');
-const { S3Client, PutObjectCommand, HeadObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
+const { S3Client, PutObjectCommand, HeadObjectCommand, DeleteObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
 
 const s3 = new S3Client({
 	region: process.env.AWS_REGION,
@@ -64,9 +64,49 @@ async function deleteFile(key) {
 	return { message: 'File deleted successfully' };
 }
 
+async function streamToBuffer(stream) {
+	return await new Promise((resolve, reject) => {
+		const chunks = [];
+		stream.on('data', (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+		stream.on('error', reject);
+		stream.on('end', () => resolve(Buffer.concat(chunks)));
+	});
+}
+
+
+async function getFileStream(key) {
+	const bucket = (process.env.AWS_S3_BUCKET || '').trim();
+
+	if (!bucket || !key)
+		return { error: 'Missing key' };
+
+	// Abort the request if it takes too long
+	const ac = new AbortController();
+	const timeoutMs = Number(process.env.S3_GET_TIMEOUT_MS || 15000);
+	const timer = setTimeout(() => ac.abort(), timeoutMs);
+
+	try {
+		const resp = await s3.send(new GetObjectCommand({
+			Bucket: bucket,
+			Key: key
+		}), { abortSignal: ac.signal });
+		clearTimeout(timer);
+
+		return {
+			stream: resp.Body,
+			contentType: resp.ContentType,
+			contentLength: resp.ContentLength
+		};
+	} catch (err) {
+		clearTimeout(timer);
+		throw err;
+	}
+}
+
 module.exports = {
 	s3,
 	uploadUniqueFile,
-	deleteFile
+	deleteFile,
+	getFileStream
 };
 
