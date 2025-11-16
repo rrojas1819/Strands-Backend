@@ -361,8 +361,9 @@ exports.rescheduleBooking = async (req, res) => {
             }
 
             //update payments to point to the new booking_id
-            await db.execute(`UPDATE payments SET booking_id = ?, updated_at = NOW() WHERE booking_id = ?`,
-                [newBookingId, Number(booking_id)]
+            const nowUtc = toMySQLUtc(DateTime.utc());
+            await db.execute(`UPDATE payments SET booking_id = ?, updated_at = ? WHERE booking_id = ?`,
+                [newBookingId, nowUtc, Number(booking_id)]
             );
 
             await db.commit(); //commiting db changes
@@ -455,11 +456,12 @@ exports.cancelBooking = async (req, res) => {
         await db.execute(`UPDATE bookings SET status = 'CANCELED' WHERE booking_id = ?`, [bookingId]);
 
         //mark any related payments as REFUNDED
+        const nowUtc = toMySQLUtc(DateTime.utc());
         await db.execute(
             `UPDATE payments 
-             SET status = 'REFUNDED', updated_at = NOW()
+             SET status = 'REFUNDED', updated_at = ?
              WHERE booking_id = ? AND status <> 'REFUNDED'`,
-            [bookingId]
+            [nowUtc, bookingId]
         );
 
         //commit all db changes only if this point is reached, if a rollback is triggered then all changes do not take affect to keep synergy in db
@@ -523,11 +525,12 @@ exports.cancelBookingAsStylist = async (req, res) => {
 
         await db.execute(`UPDATE bookings SET status = 'CANCELED' WHERE booking_id = ?`, [bookingId]);
 
+        const nowUtc = toMySQLUtc(DateTime.utc());
         await db.execute(
             `UPDATE payments 
-             SET status = 'REFUNDED', updated_at = NOW()
+             SET status = 'REFUNDED', updated_at = ?
              WHERE booking_id = ? AND status <> 'REFUNDED'`,
-            [bookingId]
+            [nowUtc, bookingId]
         );
 
         await db.commit();

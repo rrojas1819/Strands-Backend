@@ -95,14 +95,15 @@ const startTokenCleanup = (connection) => {
     setInterval(async () => {
         try {
             const db = connection.promise();
+            const currentUtc = toMySQLUtc(DateTime.utc());
             
             const getExpiredUsersQuery = `
                 SELECT user_id 
                 FROM auth_credentials 
                 WHERE token_expires_at IS NOT NULL 
-                AND token_expires_at < NOW()
+                AND token_expires_at < ?
             `;
-            const [expiredUsers] = await db.execute(getExpiredUsersQuery);
+            const [expiredUsers] = await db.execute(getExpiredUsersQuery, [currentUtc]);
             
             if (expiredUsers.length > 0) {
                 const expiredUserIds = expiredUsers.map(user => user.user_id);
@@ -188,19 +189,21 @@ function startLoyaltySeenUpdate(connection) {
                     const [membership] = await db.execute(checkMembershipQuery, [booking.customer_user_id, booking.salon_id]);
 
                     if (membership.length === 0) {
+                        const nowUtc = toMySQLUtc(DateTime.utc());
                         const insertMembershipQuery = `
                             INSERT INTO loyalty_memberships (user_id, salon_id, visits_count, created_at, updated_at)
-                            VALUES (?, ?, 0, NOW(), NOW())
+                            VALUES (?, ?, 0, ?, ?)
                         `;
-                        await db.execute(insertMembershipQuery, [booking.customer_user_id, booking.salon_id]);
+                        await db.execute(insertMembershipQuery, [booking.customer_user_id, booking.salon_id, nowUtc, nowUtc]);
                     }
 
+                    const nowUtc = toMySQLUtc(DateTime.utc());
                     const incrementVisitsQuery = `
                         UPDATE loyalty_memberships
-                        SET visits_count = visits_count + 1, updated_at = NOW()
+                        SET visits_count = visits_count + 1, updated_at = ?
                         WHERE user_id = ? AND salon_id = ?
                     `;
-                    await db.execute(incrementVisitsQuery, [booking.customer_user_id, booking.salon_id]);
+                    await db.execute(incrementVisitsQuery, [nowUtc, booking.customer_user_id, booking.salon_id]);
 
                     const getLoyaltyProgramQuery = `
                         SELECT target_visits, discount_percentage, note
@@ -228,23 +231,26 @@ function startLoyaltySeenUpdate(connection) {
                                 const insertRewardQuery = `
                                     INSERT INTO available_rewards 
                                     (user_id, salon_id, active, discount_percentage, note, redeemed_at, creationDate, created_at, updated_at)
-                                    VALUES (?, ?, 1, ?, ?, NULL, ?, NOW(), NOW())
+                                    VALUES (?, ?, 1, ?, ?, NULL, ?, ?, ?)
                                 `;
                                 await db.execute(insertRewardQuery, [
                                     booking.customer_user_id,
                                     booking.salon_id,
                                     program.discount_percentage,
                                     program.note,
+                                    currentUtc,
+                                    currentUtc,
                                     currentUtc
                                 ]);
 
                                 const resetVisitsQuery = `
                                     UPDATE loyalty_memberships
-                                    SET visits_count = ?, updated_at = NOW()
+                                    SET visits_count = ?, updated_at = ?
                                     WHERE user_id = ? AND salon_id = ?
                                 `;
                                 await db.execute(resetVisitsQuery, [
                                     new_visits_count,
+                                    currentUtc,
                                     booking.customer_user_id,
                                     booking.salon_id
                                 ]);

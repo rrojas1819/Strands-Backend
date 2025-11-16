@@ -2,6 +2,7 @@ require('dotenv').config();
 const connection = require('../config/databaseConnection');
 const paymentSecurity = require('../utils/paymentSecurity');
 const { toMySQLUtc, formatDateTime } = require('../utils/utilies');
+const { DateTime } = require('luxon');
 
 // PLR 1.5 Get available rewards for a salon
 exports.getAvailableRewards = async (req, res) => {
@@ -45,15 +46,16 @@ exports.getAvailableRewards = async (req, res) => {
         const programData = loyaltyProgram[0];
 
         const formattedRewards = availableRewards.map(reward => {
+            // Parse creationDate from database (could be SQL format or ISO format)
             let createdAt;
-            if (reward.creationDate instanceof Date) {
-                createdAt = reward.creationDate;
-            } else {
-                const timestampStr = String(reward.creationDate);
-                if (timestampStr.includes('Z') || timestampStr.includes('+') || (timestampStr.includes('-') && timestampStr.match(/-/g)?.length === 3)) {
-                    createdAt = new Date(timestampStr);
+            if (reward.creationDate) {
+                const dateStr = String(reward.creationDate);
+                // Check if it's SQL format (YYYY-MM-DD HH:mm:ss) or ISO format
+                const isNaiveMySQL = dateStr.includes(' ') && !dateStr.includes('T') && !/[zZ]|[+-]\d{2}:\d{2}$/.test(dateStr);
+                if (isNaiveMySQL) {
+                    createdAt = DateTime.fromSQL(dateStr, { zone: 'utc' });
                 } else {
-                    createdAt = new Date(timestampStr.replace(' ', 'T'));
+                    createdAt = DateTime.fromISO(dateStr);
                 }
             }
             return {
@@ -209,10 +211,11 @@ exports.processPayment = async (req, res) => {
         await db.query('START TRANSACTION');
         try {
             // Create payment record
+            const nowUtc = toMySQLUtc(DateTime.utc());
             const insertPaymentQuery = `
                 INSERT INTO payments 
                 (credit_card_id, billing_address_id, amount, booking_id, order_id, reward_id, status, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, 'SUCCEEDED', NOW(), NOW())
+                VALUES (?, ?, ?, ?, ?, ?, 'SUCCEEDED', ?, ?)
             `;
 
             const [paymentResults] = await db.execute(insertPaymentQuery, [
@@ -221,7 +224,9 @@ exports.processPayment = async (req, res) => {
                 finalAmount,//rounded amount is now final amount
                 booking_id || null,
                 order_id || null,
-                (use_loyalty_discount && loyaltyEligible && rewardId) ? rewardId : null
+                (use_loyalty_discount && loyaltyEligible && rewardId) ? rewardId : null,
+                nowUtc,
+                nowUtc
             ]);
 
             if (paymentResults.affectedRows === 0) {
@@ -239,12 +244,12 @@ exports.processPayment = async (req, res) => {
             }
 
             if (booking_id && use_loyalty_discount && loyaltyEligible && rewardId) {
-                const redeemedAt = toMySQLUtc(new Date());
+                const redeemedAt = toMySQLUtc(DateTime.utc());
                 const [updateRewardResult] = await db.execute(
                     `UPDATE available_rewards
-                     SET redeemed_at = ?, active = 0, updated_at = NOW()
+                     SET redeemed_at = ?, active = 0, updated_at = ?
                      WHERE reward_id = ? AND user_id = ? AND salon_id = ? AND active = 1 AND redeemed_at IS NULL`,
-                    [redeemedAt, rewardId, user_id, salon_id]
+                    [redeemedAt, nowUtc, rewardId, user_id, salon_id]
                 );
 
                 if (updateRewardResult.affectedRows !== 1) {
@@ -268,9 +273,9 @@ exports.processPayment = async (req, res) => {
             if (booking_id) {
                 const [updateBookingResult] = await db.execute(
                     `UPDATE bookings 
-                     SET status = 'SCHEDULED', updated_at = NOW()
+                     SET status = 'SCHEDULED', updated_at = ?
                      WHERE booking_id = ? AND status = 'PENDING'`,
-                    [booking_id]
+                    [nowUtc, booking_id]
                 );
 
                 if (updateBookingResult.affectedRows === 0) {
@@ -389,9 +394,10 @@ exports.saveCreditCard = async (req, res) => {
         if (existingCard.length > 0) {
             // If it's a temporary card, convert it to permanent
             if (existingCard[0].is_temporary) {
+                const nowUtc = toMySQLUtc(DateTime.utc());
                 await db.execute(
-                    'UPDATE credit_cards SET is_temporary = FALSE, updated_at = NOW() WHERE credit_card_id = ?',
-                    [existingCard[0].credit_card_id]
+                    'UPDATE credit_cards SET is_temporary = FALSE, updated_at = ? WHERE credit_card_id = ?',
+                    [nowUtc, existingCard[0].credit_card_id]
                 );
                 
                 // Return the existing card (now converted to permanent)
@@ -426,8 +432,14 @@ exports.saveCreditCard = async (req, res) => {
         if (expMonth < 1 || expMonth > 12) {
             return res.status(400).json({ message: 'Invalid expiration month' });
         }
-        if (expYear < new Date().getFullYear()) {
-            return res.status(400).json({ message: 'Invalid expiration year' });
+        
+        // Check if card is expired (expiration date is in the past)
+        // Credit cards expire at the end of the expiration month
+        const expirationDate = DateTime.utc(expYear, expMonth).endOf('month');
+        const now = DateTime.utc();
+        
+        if (expirationDate < now) {
+            return res.status(400).json({ message: 'Credit card has expired' });
         }
 
         // Generate encrypted card data
@@ -435,10 +447,11 @@ exports.saveCreditCard = async (req, res) => {
         const cvc_hmac = paymentSecurity.createCVCHMAC(cvc);
 
         // Insert credit card as permanent (is_temporary = FALSE)
+        const nowUtc = toMySQLUtc(DateTime.utc());
         const insertCardQuery = `
             INSERT INTO credit_cards 
             (user_id, brand, last4, exp_month, exp_year, encrypted_pan, pan_length, cvc_hmac, card_hash, is_temporary, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE, NOW(), NOW())
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE, ?, ?)
         `;
 
         const [results] = await db.execute(insertCardQuery, [
@@ -450,7 +463,9 @@ exports.saveCreditCard = async (req, res) => {
             encrypted_pan,
             pan_length,
             cvc_hmac,
-            card_hash
+            card_hash,
+            nowUtc,
+            nowUtc
         ]);
 
         if (results.affectedRows === 0) {
@@ -554,8 +569,14 @@ exports.saveTempCreditCard = async (req, res) => {
         if (expMonth < 1 || expMonth > 12) {
             return res.status(400).json({ message: 'Invalid expiration month' });
         }
-        if (expYear < new Date().getFullYear()) {
-            return res.status(400).json({ message: 'Invalid expiration year' });
+        
+        // Check if card is expired (expiration date is in the past)
+        // Credit cards expire at the end of the expiration month
+        const expirationDate = DateTime.utc(expYear, expMonth).endOf('month');
+        const now = DateTime.utc();
+        
+        if (expirationDate < now) {
+            return res.status(400).json({ message: 'Credit card has expired' });
         }
 
         // Generate encrypted card data
@@ -563,10 +584,11 @@ exports.saveTempCreditCard = async (req, res) => {
         const cvc_hmac = paymentSecurity.createCVCHMAC(cvc);
 
         // Insert credit card as temporary (is_temporary = TRUE)
+        const nowUtc = toMySQLUtc(DateTime.utc());
         const insertCardQuery = `
             INSERT INTO credit_cards 
             (user_id, brand, last4, exp_month, exp_year, encrypted_pan, pan_length, cvc_hmac, card_hash, is_temporary, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE, NOW(), NOW())
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE, ?, ?)
         `;
 
         const [results] = await db.execute(insertCardQuery, [
@@ -578,7 +600,9 @@ exports.saveTempCreditCard = async (req, res) => {
             encrypted_pan,
             pan_length,
             cvc_hmac,
-            card_hash
+            card_hash,
+            nowUtc,
+            nowUtc
         ]);
 
         if (results.affectedRows === 0) {
@@ -848,7 +872,9 @@ exports.updateBillingAddress = async (req, res) => {
             return res.status(400).json({ message: 'At least one field must be provided to update' });
         }
 
-        updateFields.push('updated_at = NOW()');
+        const nowUtc = toMySQLUtc(DateTime.utc());
+        updateFields.push('updated_at = ?');
+        updateValues.push(nowUtc);
         updateValues.push(user_id);
 
         const updateAddressQuery = `

@@ -1,5 +1,7 @@
 require('dotenv').config();
 const connection = require('../config/databaseConnection');
+const { DateTime } = require('luxon');
+const { toMySQLUtc } = require('../utils/utilies');
 
 // SF 1.1 Add Product
 exports.addProduct = async (req, res) => {
@@ -14,11 +16,12 @@ exports.addProduct = async (req, res) => {
             return res.status(400).json({ message: "Missing required fields" });
         }
 
+        const nowUtc = toMySQLUtc(DateTime.utc());
         const checkUserQuery = 
         `INSERT INTO products (salon_id, name, description, sku, price, category, stock_qty, created_at, updated_at)
-        VALUES ((SELECT salon_id FROM salons WHERE owner_user_id = ?), ?, ?, ?, ?, ?, ?, NOW(), NOW());`;
+        VALUES ((SELECT salon_id FROM salons WHERE owner_user_id = ?), ?, ?, ?, ?, ?, ?, ?, ?);`;
 
-        const [results] = await db.execute(checkUserQuery, [owner_user_id, name, description, sku, price, category, stock_qty]);
+        const [results] = await db.execute(checkUserQuery, [owner_user_id, name, description, sku, price, category, stock_qty, nowUtc, nowUtc]);
 
         if (results.affectedRows === 0) {
             return res.status(404).json({ message: 'Failed to add product' });
@@ -166,8 +169,9 @@ exports.addToCart = async (req, res) => {
 
         if (results.length === 0) {
 
-            const createCartQuery = `INSERT INTO carts (user_id, salon_id, status, created_at, updated_at) VALUES (?, ?, ?, NOW(), NOW())`;
-            const [createResults] = await db.execute(createCartQuery, [user_id, salon_id, 'ACTIVE']);
+            const nowUtc = toMySQLUtc(DateTime.utc());
+            const createCartQuery = `INSERT INTO carts (user_id, salon_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`;
+            const [createResults] = await db.execute(createCartQuery, [user_id, salon_id, 'ACTIVE', nowUtc, nowUtc]);
             
             if (createResults.affectedRows === 0) {
                 return res.status(404).json({ message: 'Failed to create cart' });
@@ -200,8 +204,9 @@ exports.addToCart = async (req, res) => {
         }
 
         // Add Cart Item
-        const addToCartQuery = `INSERT INTO cart_items (cart_id, product_id, quantity, created_at, updated_at) VALUES (?, ?, ?, NOW(), NOW()) ON DUPLICATE KEY UPDATE quantity = quantity + VALUES(quantity);`;
-        const [addToResults] = await db.execute(addToCartQuery, [cart_id, product_id, quantity]);
+        const nowUtc = toMySQLUtc(DateTime.utc());
+        const addToCartQuery = `INSERT INTO cart_items (cart_id, product_id, quantity, created_at, updated_at) VALUES (?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE quantity = quantity + VALUES(quantity);`;
+        const [addToResults] = await db.execute(addToCartQuery, [cart_id, product_id, quantity, nowUtc, nowUtc]);
         
         if (addToResults.affectedRows === 0) {
             return res.status(404).json({ message: 'Failed to add to cart' });
@@ -413,13 +418,14 @@ exports.checkout = async (req, res) => {
             }
 
             // Create payment record
+            const nowUtc = toMySQLUtc(DateTime.utc());
             const insertPaymentQuery = `
                 INSERT INTO payments 
                 (credit_card_id, billing_address_id, amount, booking_id, order_id, status, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, 'SUCCEEDED', NOW(), NOW())
+                VALUES (?, ?, ?, ?, ?, 'SUCCEEDED', ?, ?)
             `;
 
-            const [paymentResults] = await db.execute(insertPaymentQuery, [credit_card_id, billing_address_id, cartRows[0].amount_due, null, copyResults.insertId]);
+            const [paymentResults] = await db.execute(insertPaymentQuery, [credit_card_id, billing_address_id, cartRows[0].amount_due, null, copyResults.insertId, nowUtc, nowUtc]);
 
 
 

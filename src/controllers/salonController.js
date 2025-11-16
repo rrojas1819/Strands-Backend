@@ -97,14 +97,15 @@ exports.createSalon = async (req, res) => {
     }
 
     //inserting salon into db
+    const nowUtc = toMySQLUtc(DateTime.utc());
     const insertSql = `INSERT INTO salons
                       (owner_user_id, name, description, category, phone, email,
                       address, city, state, postal_code, country, status, created_at, updated_at)
-                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', NOW(), NOW())`;
+                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?)`;
 
     const params = [
       owner_user_id, name, description, category, phone, email,
-      address, city, state, postal_code, country
+      address, city, state, postal_code, country, nowUtc, nowUtc
     ];
 
     //insert
@@ -140,13 +141,14 @@ exports.approveSalon = async (req, res) => {
       return res.status(400).json({ message: 'Invalid status.' });
     }
 
+    const nowUtc = toMySQLUtc(DateTime.utc());
     const updateSalonQuery = 
       `UPDATE salons 
         SET status = ?,
-        approval_date = IF(? = 'APPROVED', NOW(), approval_date)
+        approval_date = IF(? = 'APPROVED', ?, approval_date)
       WHERE salon_id = ?;`;
 
-    const [result] = await db.execute(updateSalonQuery, [status, status, salon_id]);
+    const [result] = await db.execute(updateSalonQuery, [status, status, nowUtc, salon_id]);
 
     if (result.affectedRows === 0) {
       return res.status(404).json({ message: 'Salon not found' });
@@ -307,11 +309,12 @@ exports.addEmployee = async (req, res) => {
       return res.status(409).json({ message: 'Employee does not exist.' });
     }
 
+    const nowUtc = toMySQLUtc(DateTime.utc());
     const assignEmployeeQuery = 
     `INSERT INTO employees (salon_id, user_id, title, active, created_at, updated_at)
-    VALUES((SELECT salon_id FROM salons WHERE owner_user_id = ?), (SELECT user_id FROM users WHERE email = ?), ?, 1, NOW(), NOW());`;
+    VALUES((SELECT salon_id FROM salons WHERE owner_user_id = ?), (SELECT user_id FROM users WHERE email = ?), ?, 1, ?, ?);`;
 
-    const [result] = await db.execute(assignEmployeeQuery, [owner_user_id, email, title]);
+    const [result] = await db.execute(assignEmployeeQuery, [owner_user_id, email, title, nowUtc, nowUtc]);
 
     if (result.affectedRows === 0) {
       return res.status(404).json({ message: 'Salon not found' });
@@ -439,16 +442,19 @@ exports.configureLoyaltyProgram = async (req, res) => {
     const { target_visits, discount_percentage, note, active } = req.body;
     const owner_user_id = req.user?.user_id;
 
-    console.log(owner_user_id);
+    if (process.env.UTC_DEBUG === '1') {
+        console.log(owner_user_id);
+    }
 
     if (!target_visits || !discount_percentage) { 
       return res.status(400).json({ message: 'Missing required fields' });
     }
 
+    const nowUtc = toMySQLUtc(DateTime.utc());
     const insertLoyaltyProgramQuery = 
-    `INSERT INTO loyalty_programs (salon_id, target_visits, discount_percentage, note, created_at, updated_at, active) VALUES ((SELECT salon_id FROM salons WHERE owner_user_id = ?), ?, ?, ?, NOW(), NOW(), ?);`;
+    `INSERT INTO loyalty_programs (salon_id, target_visits, discount_percentage, note, created_at, updated_at, active) VALUES ((SELECT salon_id FROM salons WHERE owner_user_id = ?), ?, ?, ?, ?, ?, ?);`;
 
-    const [result] = await db.execute(insertLoyaltyProgramQuery, [owner_user_id, target_visits, discount_percentage, note, active]);
+    const [result] = await db.execute(insertLoyaltyProgramQuery, [owner_user_id, target_visits, discount_percentage, note, nowUtc, nowUtc, active]);
 
     if (result.affectedRows === 0) {
       return res.status(404).json({ message: 'Salon not found' });
@@ -660,12 +666,13 @@ exports.setSalonHours = async (req, res) => {
               
                //if the day already exists, update it
               if (existingResult.length > 0) {
+                  const nowUtc = toMySQLUtc(DateTime.utc());
                   const updateQuery = `
                       UPDATE salon_availability 
-                      SET start_time = ?, end_time = ?, updated_at = NOW()
+                      SET start_time = ?, end_time = ?, updated_at = ?
                       WHERE salon_availability_id = ?
                   `;
-                  await db.execute(updateQuery, [normalizedStartTime, normalizedEndTime, existingResult[0].salon_availability_id]);
+                  await db.execute(updateQuery, [normalizedStartTime, normalizedEndTime, nowUtc, existingResult[0].salon_availability_id]);
                   results.push({ 
                       weekday: weekday.toUpperCase(), 
                       action: 'updated',
@@ -675,11 +682,12 @@ exports.setSalonHours = async (req, res) => {
                } 
                //if the day doesn't exist, create it
                else {
+                   const nowUtc = toMySQLUtc(DateTime.utc());
                    const insertQuery = `
                        INSERT INTO salon_availability (salon_id, weekday, start_time, end_time, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, NOW(), NOW())
+                       VALUES (?, ?, ?, ?, ?, ?)
                    `;
-                   await db.execute(insertQuery, [salon_id, weekdayNumber, normalizedStartTime, normalizedEndTime]);
+                   await db.execute(insertQuery, [salon_id, weekdayNumber, normalizedStartTime, normalizedEndTime, nowUtc, nowUtc]);
                    results.push({ 
                        weekday: weekday.toUpperCase(), 
                        action: 'created',
@@ -829,15 +837,17 @@ exports.setEmployeeAvailability = async (req, res) => {
               
               // If the day already exists, update it
               if (existingResult.length > 0) {
+                  const nowUtc = toMySQLUtc(DateTime.utc());
                   const updateQuery = `
                       UPDATE employee_availability 
-                      SET start_time = ?, end_time = ?, slot_interval_minutes = ?, updated_at = NOW()
+                      SET start_time = ?, end_time = ?, slot_interval_minutes = ?, updated_at = ?
                       WHERE availability_id = ?
                   `;
                   await db.execute(updateQuery, [
                       normalizedStartTime, 
                       normalizedEndTime, 
                       availability.slot_interval_minutes || 30,
+                      nowUtc,
                       existingResult[0].availability_id
                   ]);
                   
@@ -851,9 +861,10 @@ exports.setEmployeeAvailability = async (req, res) => {
               } 
               // If the day doesn't exist, create it
               else {
+                  const nowUtc = toMySQLUtc(DateTime.utc());
                   const insertQuery = `
                       INSERT INTO employee_availability (employee_id, weekday, start_time, end_time, slot_interval_minutes, created_at, updated_at)
-                      VALUES (?, ?, ?, ?, ?, NOW(), NOW())
+                      VALUES (?, ?, ?, ?, ?, ?, ?)
                   `;
                   await db.execute(insertQuery, [
                       employeeId, 
@@ -1194,9 +1205,13 @@ exports.getAvailableTimeSlotsRange = async (req, res) => {
       `;
       const startDateUtc = toMySQLUtc(startDate);
       const endDateUtc = toMySQLUtc(endDate.endOf('day')); // End of day
-      console.log(`[DEBUG] Querying bookings for employee ${employee_id} between ${startDateUtc} and ${endDateUtc}`);
+      if (process.env.UTC_DEBUG === '1') {
+          console.log(`[DEBUG] Querying bookings for employee ${employee_id} between ${startDateUtc} and ${endDateUtc}`);
+      }
       const [bookingsResult] = await db.execute(getBookingsQuery, [employee_id, endDateUtc, startDateUtc]);
-      console.log(`[DEBUG] Raw bookings from DB:`, JSON.stringify(bookingsResult, null, 2));
+      if (process.env.UTC_DEBUG === '1') {
+          console.log(`[DEBUG] Raw bookings from DB:`, JSON.stringify(bookingsResult, null, 2));
+      }
       
       // Create availability map by weekday
       const availabilityMap = {};
@@ -1215,22 +1230,30 @@ exports.getAvailableTimeSlotsRange = async (req, res) => {
       
       // Parse all bookings once - we'll check ALL bookings against ALL slots
       const allBookings = [];
-      console.log(`[DEBUG] Total bookings from DB: ${bookingsResult.length}`);
+      if (process.env.UTC_DEBUG === '1') {
+          console.log(`[DEBUG] Total bookings from DB: ${bookingsResult.length}`);
+      }
       bookingsResult.forEach(booking => {
           const bookingStart = DateTime.fromSQL(booking.scheduled_start, { zone: 'utc' });
           const bookingEnd = DateTime.fromSQL(booking.scheduled_end, { zone: 'utc' });
           if (bookingStart.isValid && bookingEnd.isValid) {
-              console.log(`[DEBUG] Parsed booking: ${bookingStart.toISO()} to ${bookingEnd.toISO()}`);
+              if (process.env.UTC_DEBUG === '1') {
+                  console.log(`[DEBUG] Parsed booking: ${bookingStart.toISO()} to ${bookingEnd.toISO()}`);
+              }
               allBookings.push({
                   start: bookingStart,
                   end: bookingEnd,
                   status: booking.status
               });
           } else {
-              console.log(`[DEBUG] Invalid booking parse:`, booking, bookingStart.invalidReason, bookingEnd.invalidReason);
+              if (process.env.UTC_DEBUG === '1') {
+                  console.log(`[DEBUG] Invalid booking parse:`, booking, bookingStart.invalidReason, bookingEnd.invalidReason);
+              }
           }
       });
-      console.log(`[DEBUG] Total valid bookings: ${allBookings.length}`);
+      if (process.env.UTC_DEBUG === '1') {
+          console.log(`[DEBUG] Total valid bookings: ${allBookings.length}`);
+      }
       
       // Generate time slots for each day
       const dailySlots = {};
@@ -1275,16 +1298,22 @@ exports.getAvailableTimeSlotsRange = async (req, res) => {
               
               // Track bookings - check ALL bookings, not just ones for this date
               // A booking can overlap with slots on any day in the range
-              console.log(`[DEBUG] ${dateStr}: Adding ${allBookings.length} bookings to blockedTimes`);
+              if (process.env.UTC_DEBUG === '1') {
+                  console.log(`[DEBUG] ${dateStr}: Adding ${allBookings.length} bookings to blockedTimes`);
+              }
               allBookings.forEach(booking => {
-                  console.log(`[DEBUG] ${dateStr}: Adding booking to blockedTimes: ${booking.start.toISO()} to ${booking.end.toISO()}`);
+                  if (process.env.UTC_DEBUG === '1') {
+                      console.log(`[DEBUG] ${dateStr}: Adding booking to blockedTimes: ${booking.start.toISO()} to ${booking.end.toISO()}`);
+                  }
                   blockedTimes.push({
                       start: booking.start,
                       end: booking.end,
                       type: 'booked' // existing booking
                   });
               });
-              console.log(`[DEBUG] ${dateStr}: Total blockedTimes after adding bookings: ${blockedTimes.length}`);
+              if (process.env.UTC_DEBUG === '1') {
+                  console.log(`[DEBUG] ${dateStr}: Total blockedTimes after adding bookings: ${blockedTimes.length}`);
+              }
               
               const getSlotBlockReason = (slotStart, slotEnd) => {
                   const slotStartUtc = slotStart.toUTC();
@@ -1297,7 +1326,9 @@ exports.getAvailableTimeSlotsRange = async (req, res) => {
                       const overlaps = (slotStartUtc < blockedEndUtc) && (blockedStartUtc < slotEndUtc);
                       
                       if (overlaps) {
-                          console.log(`[DEBUG] SLOT BLOCKED: Slot ${slotStartUtc.toISO()} to ${slotEndUtc.toISO()} overlaps with ${blocked.type} ${blockedStartUtc.toISO()} to ${blockedEndUtc.toISO()}`);
+                          if (process.env.UTC_DEBUG === '1') {
+                              console.log(`[DEBUG] SLOT BLOCKED: Slot ${slotStartUtc.toISO()} to ${slotEndUtc.toISO()} overlaps with ${blocked.type} ${blockedStartUtc.toISO()} to ${blockedEndUtc.toISO()}`);
+                          }
                           logUtcDebug(`getAvailableTimeSlotsRange ${dateStr} slot blocked`, {
                               slotStart: slotStartUtc.toISO(),
                               slotEnd: slotEndUtc.toISO(),
@@ -1346,7 +1377,7 @@ exports.getAvailableTimeSlotsRange = async (req, res) => {
                   const slotEndLocal = slotEnd.setZone(salonTimezone);
                   
                   // Debug logging for 6:30-7pm slot specifically
-                  if (slotStartLocal.hour === 18 && slotStartLocal.minute === 30) {
+                  if (slotStartLocal.hour === 18 && slotStartLocal.minute === 30 && process.env.UTC_DEBUG === '1') {
                       console.log(`[DEBUG] 6:30PM SLOT CHECK:`, {
                           slotStartUTC: slotStart.toISO(),
                           slotEndUTC: slotEnd.toISO(),
@@ -1485,25 +1516,28 @@ exports.createAndAddServiceToStylist = async (req, res) => {
     await db.query('START TRANSACTION');
     
     try {
+      const nowUtc = toMySQLUtc(DateTime.utc());
       const createServiceQuery = `
         INSERT INTO services (salon_id, name, description, duration_minutes, price, active, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, 1, NOW(), NOW())
+        VALUES (?, ?, ?, ?, ?, 1, ?, ?)
       `;
       const [serviceResult] = await db.execute(createServiceQuery, [
         salon_id, 
         name, 
         description, 
         duration_minutes, 
-        price
+        price,
+        nowUtc,
+        nowUtc
       ]);
       
       const service_id = serviceResult.insertId;
       
       const linkServiceQuery = `
         INSERT INTO employee_services (employee_id, service_id, created_at, updated_at)
-        VALUES (?, ?, NOW(), NOW())
+        VALUES (?, ?, ?, ?)
       `;
-      await db.execute(linkServiceQuery, [employee_id, service_id]);
+      await db.execute(linkServiceQuery, [employee_id, service_id, nowUtc, nowUtc]);
       
       await db.query('COMMIT');
       
@@ -1742,7 +1776,9 @@ exports.updateServiceFromStylist = async (req, res) => {
       updateValues.push(price);
     }
     
-    updateFields.push('updated_at = NOW()');
+    const nowUtc = toMySQLUtc(DateTime.utc());
+    updateFields.push('updated_at = ?');
+    updateValues.push(nowUtc);
     updateValues.push(service_id);
     
     const updateQuery = `
@@ -2156,12 +2192,13 @@ exports.bookTimeSlot = async (req, res) => {
       logUtcDebug('salonController.bookTimeSlot inserting booking scheduled_start', requestStartStr);
       logUtcDebug('salonController.bookTimeSlot inserting booking scheduled_end', requestEndStr);
 
+      const nowUtc = toMySQLUtc(DateTime.utc());
       const [bookingResult] = await db.execute(
         `INSERT INTO bookings
            (salon_id, customer_user_id, scheduled_start, scheduled_end, status, notes, created_at, updated_at)
          VALUES
-           (?, ?, ?, ?, 'PENDING', ?, NOW(), NOW())`,
-        [salon_id, customer_user_id, requestStartStr, requestEndStr, notes]
+           (?, ?, ?, ?, 'PENDING', ?, ?, ?)`,
+        [salon_id, customer_user_id, requestStartStr, requestEndStr, notes, nowUtc, nowUtc]
       );
 
       const booking_id = bookingResult.insertId;
@@ -2172,8 +2209,8 @@ exports.bookTimeSlot = async (req, res) => {
         await db.execute(
           `INSERT INTO booking_services
              (booking_id, employee_id, service_id, price, duration_minutes, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, NOW(), NOW())`,
-          [booking_id, employee_id, s.service_id, sd.price, sd.duration_minutes]
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [booking_id, employee_id, s.service_id, sd.price, sd.duration_minutes, nowUtc, nowUtc]
         );
       }
 
@@ -2342,33 +2379,37 @@ exports.getTopSalonMetrics = async (req, res) => {
       return res.status(401).json({ message: 'Invalid fields.' });
     }
 
+    // Calculate week start using Luxon (Monday of current week)
+    const now = DateTime.utc();
+    const weekStart = now.startOf('week'); // Monday
+    // Calculate each day of the week
+    const mondayStr = weekStart.plus({ days: 0 }).toFormat('yyyy-MM-dd');
+    const tuesdayStr = weekStart.plus({ days: 1 }).toFormat('yyyy-MM-dd');
+    const wednesdayStr = weekStart.plus({ days: 2 }).toFormat('yyyy-MM-dd');
+    const thursdayStr = weekStart.plus({ days: 3 }).toFormat('yyyy-MM-dd');
+    const fridayStr = weekStart.plus({ days: 4 }).toFormat('yyyy-MM-dd');
+    const saturdayStr = weekStart.plus({ days: 5 }).toFormat('yyyy-MM-dd');
+    const sundayStr = weekStart.plus({ days: 6 }).toFormat('yyyy-MM-dd');
+
     const topSalonStylistQuery = 
-          `WITH last_week AS (
-          SELECT
-              DATE_SUB(
-                  CURDATE(),
-                  INTERVAL ((WEEKDAY(CURDATE()) + 6) % 7 + 7) DAY
-              ) AS week_start
-      )
-      SELECT
+          `SELECT
           u.full_name AS stylist_name,
           s.name AS salon_name,
 
           COALESCE(SUM(p.amount), 0) AS total_revenue,
           COALESCE(COUNT(DISTINCT bs.booking_id), 0) AS total_bookings,
 
-          COALESCE(SUM(CASE WHEN DATE(b.scheduled_start) = lw.week_start + INTERVAL 0 DAY THEN p.amount END), 0) AS monday_revenue,
-          COALESCE(SUM(CASE WHEN DATE(b.scheduled_start) = lw.week_start + INTERVAL 1 DAY THEN p.amount END), 0) AS tuesday_revenue,
-          COALESCE(SUM(CASE WHEN DATE(b.scheduled_start) = lw.week_start + INTERVAL 2 DAY THEN p.amount END), 0) AS wednesday_revenue,
-          COALESCE(SUM(CASE WHEN DATE(b.scheduled_start) = lw.week_start + INTERVAL 3 DAY THEN p.amount END), 0) AS thursday_revenue,
-          COALESCE(SUM(CASE WHEN DATE(b.scheduled_start) = lw.week_start + INTERVAL 4 DAY THEN p.amount END), 0) AS friday_revenue,
-          COALESCE(SUM(CASE WHEN DATE(b.scheduled_start) = lw.week_start + INTERVAL 5 DAY THEN p.amount END), 0) AS saturday_revenue,
-          COALESCE(SUM(CASE WHEN DATE(b.scheduled_start) = lw.week_start + INTERVAL 6 DAY THEN p.amount END), 0) AS sunday_revenue
+          COALESCE(SUM(CASE WHEN DATE(b.scheduled_start) = ? THEN p.amount END), 0) AS monday_revenue,
+          COALESCE(SUM(CASE WHEN DATE(b.scheduled_start) = ? THEN p.amount END), 0) AS tuesday_revenue,
+          COALESCE(SUM(CASE WHEN DATE(b.scheduled_start) = ? THEN p.amount END), 0) AS wednesday_revenue,
+          COALESCE(SUM(CASE WHEN DATE(b.scheduled_start) = ? THEN p.amount END), 0) AS thursday_revenue,
+          COALESCE(SUM(CASE WHEN DATE(b.scheduled_start) = ? THEN p.amount END), 0) AS friday_revenue,
+          COALESCE(SUM(CASE WHEN DATE(b.scheduled_start) = ? THEN p.amount END), 0) AS saturday_revenue,
+          COALESCE(SUM(CASE WHEN DATE(b.scheduled_start) = ? THEN p.amount END), 0) AS sunday_revenue
 
       FROM employees e
       JOIN users u ON e.user_id = u.user_id
       JOIN salons s ON e.salon_id = s.salon_id
-      JOIN last_week lw
 
       LEFT JOIN booking_services bs ON bs.employee_id = e.employee_id
       LEFT JOIN bookings b ON bs.booking_id = b.booking_id
@@ -2377,10 +2418,13 @@ exports.getTopSalonMetrics = async (req, res) => {
           AND p.status = 'SUCCEEDED'
 
       WHERE s.salon_id = (SELECT salon_id FROM salons WHERE owner_user_id = ?)
-      GROUP BY e.employee_id, u.full_name, s.name, lw.week_start
+      GROUP BY e.employee_id, u.full_name, s.name
       ORDER BY total_revenue DESC;`;
 
-    const [topSalonStylistResults] = await db.execute(topSalonStylistQuery, [owner_user_id]);
+    const [topSalonStylistResults] = await db.execute(topSalonStylistQuery, [
+      mondayStr, tuesdayStr, wednesdayStr, thursdayStr, fridayStr, saturdayStr, sundayStr,
+      owner_user_id
+    ]);
 
     const salonServicesQuery = 
     `SELECT 
