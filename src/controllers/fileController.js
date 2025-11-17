@@ -241,16 +241,12 @@ exports.getPhoto = async (req, res) => {
 			});
 		}
 	  	const getPictureKeyQuery = `
-		SELECT p.s3_key
+		SELECT
+			MAX(CASE WHEN UPPER(bp.picture_type) = 'BEFORE' THEN p.s3_key END) AS before_key,
+			MAX(CASE WHEN UPPER(bp.picture_type) = 'AFTER' THEN p.s3_key END) AS after_key
 		FROM booking_photos bp
 		JOIN pictures p ON p.picture_id = bp.picture_id
-		WHERE bp.booking_id = ?
-		ORDER BY 
-			CASE 
-				WHEN UPPER(bp.picture_type) = 'BEFORE' THEN 1
-				WHEN UPPER(bp.picture_type) = 'AFTER' THEN 2
-				ELSE 3
-			END;
+		WHERE bp.booking_id = ?;
 		`;
 
 		const [rows] = await db.execute(getPictureKeyQuery, [booking_id]);
@@ -262,16 +258,18 @@ exports.getPhoto = async (req, res) => {
 		let before = "";
 		let after = "";
 
-		if (rows[0]) {
-			const { url, error } = await getFilePresigned(rows[0].s3_key);
+		const beforeKey = rows[0]?.before_key;
+		if (beforeKey) {
+			const { url, error } = await getFilePresigned(beforeKey);
 			if (error) {
 				return res.status(500).json({ error: "Failed to generate S3 pre-signed URL." });
 			}
 			before = url;
 		}
 
-		if (rows[1]) {
-			const { url, error } = await getFilePresigned(rows[1].s3_key);
+		const afterKey = rows[0]?.after_key;
+		if (afterKey) {
+			const { url, error } = await getFilePresigned(afterKey);
 			if (error) {
 				return res.status(500).json({ error: "Failed to generate S3 pre-signed URL." });
 			}
