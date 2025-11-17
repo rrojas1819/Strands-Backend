@@ -21,11 +21,21 @@ exports.uploadAfterPhoto = async (req, res) => {
 			});
 		}
 
+		const checkPhotoAttachedQuery = `SELECT * FROM booking_photos WHERE booking_id = ? AND picture_type = 'AFTER'`;
+
+		const [checkPhotoAttachedResults] = await db.execute(checkPhotoAttachedQuery, [booking_id]);
+
+		if (checkPhotoAttachedResults.length > 0) {
+			return res.status(400).json({ 
+				error: "Photo already attached." 
+			});
+		}
+
 		const { buffer, mimetype } = req.file;
 
 		const result = await uploadUniqueFile(buffer, mimetype);
 		if (result.message === 'File already exists') {
-			return res.status(400).json({ 
+			return res.status(409).json({ 
 				error: "File already exists." 
 			});
 		}
@@ -74,11 +84,21 @@ exports.uploadBeforePhoto = async (req, res) => {
 			});
 		}
 
+		const checkPhotoAttachedQuery = `SELECT * FROM booking_photos WHERE booking_id = ? AND picture_type = 'BEFORE'`;
+
+		const [checkPhotoAttachedResults] = await db.execute(checkPhotoAttachedQuery, [booking_id]);
+
+		if (checkPhotoAttachedResults.length > 0) {
+			return res.status(400).json({ 
+				error: "Photo already attached." 
+			});
+		}
+
 		const { buffer, mimetype } = req.file;
 
 		const result = await uploadUniqueFile(buffer, mimetype);
 		if (result.message === 'File already exists') {
-			return res.status(400).json({ 
+			return res.status(409).json({ 
 				error: "File already exists." 
 			});
 		}
@@ -116,7 +136,7 @@ exports.deletePhoto = async (req, res) => {
 
 		if (!booking_id || !type) {
 			return res.status(400).json({ 
-				error: "Booking Photo ID is required." 
+				error: "Booking ID abd Type is required." 
 			});
 		}
 
@@ -149,7 +169,7 @@ exports.deletePhoto = async (req, res) => {
 
 		if (deleteBookingPhotoResults.affectedRows === 0) {
 			await db.query('ROLLBACK');
-			return res.status(500).json({ 
+			return res.status(404).json({ 
 				error: "Failed to delete booking photo." 
 			});
 		}
@@ -161,7 +181,7 @@ exports.deletePhoto = async (req, res) => {
 
 		if (deletePhotoResults.affectedRows === 0) {
 			await db.query('ROLLBACK');
-			return res.status(500).json({ 
+			return res.status(404).json({ 
 				error: "Failed to delete photo." 
 			});
 		}
@@ -200,7 +220,13 @@ exports.deletePhoto = async (req, res) => {
 exports.getPhoto = async (req, res) => {
 	const db = connection.promise();
 	try {
-		const { booking_id, type } = req.body;
+		const { booking_id, type } = req.query;
+
+		if (!booking_id || !type) {
+			return res.status(400).json({ 
+				error: "Booking ID and type are required." 
+			});
+		}
 
 		const getPictureKeyQuery = 
 		`SELECT s3_key FROM pictures WHERE picture_id = (SELECT picture_id FROM booking_photos WHERE booking_id = ? AND picture_type = ?);`;
@@ -219,7 +245,8 @@ exports.getPhoto = async (req, res) => {
 		}
 
 		res.setHeader('Content-Type', file.contentType || 'application/octet-stream');
-		if (file.contentLength) res.setHeader('Content-Length', String(file.contentLength));
+		if (file.contentLength) 
+			res.setHeader('Content-Length', String(file.contentLength));
 
 		file.stream.on('error', (err) => {
 			console.error('S3 stream error', err);
