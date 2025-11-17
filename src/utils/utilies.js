@@ -156,7 +156,7 @@ function startBookingsAutoComplete(connection) {
             await db.execute(updateQuery, [currentUtc]);
         } catch (error) {
         }
-    }, 60 * 60 * 1000); 
+    }, 1 * 60 * 1000); 
 }
 
 // Job to update loyalty_seen for completed bookings with past end times every 15 minutes
@@ -281,7 +281,7 @@ function startLoyaltySeenUpdate(connection) {
         } catch (error) {
             //console.error('Loyalty seen update job failed:', error);
         }
-    }, 15 * 60 * 1000); // Every 15 minutes 
+    }, 2 * 60 * 1000); // Every 1 minute 
 }
 
 
@@ -320,30 +320,28 @@ function startAppointmentReminders(connection) {
                 const scheduledEnd = DateTime.fromSQL(booking.scheduled_end, { zone: 'utc' });
                 if (!scheduledStart.isValid) continue;
 
-                const reminder24hWindowStart = now.plus({ hours: 23, minutes: 55 });
-                const reminder24hWindowEnd = now.plus({ hours: 24, minutes: 5 });
-                
-                const reminder1hWindowStart = now.plus({ minutes: 55 });
-                const reminder1hWindowEnd = now.plus({ minutes: 65 });
-                
-                const reminder15minWindowStart = now.plus({ minutes: 10 });
-                const reminder15minWindowEnd = now.plus({ minutes: 20 });
+                // Calculate time difference between appointment and now (in minutes)
+                const diffMinutes = scheduledStart.diff(now, 'minutes').minutes;
 
                 let reminderType = null;
                 let timeUntil = '';
                 let shouldSend = false;
+                const windowSize = 3; // 3-minute window
 
-                if (scheduledStart >= reminder24hWindowStart && scheduledStart <= reminder24hWindowEnd) {
+                // Check if appointment is approximately 24 hours away (1437-1440 minutes, 3-minute window)
+                if (diffMinutes >= (1440 - windowSize) && diffMinutes <= 1440) {
                     reminderType = 'APPOINTMENT_REMINDER_24H';
                     timeUntil = '24 hours';
                     shouldSend = true;
                 }
-                else if (scheduledStart >= reminder1hWindowStart && scheduledStart <= reminder1hWindowEnd) {
+                // Check if appointment is approximately 1 hour away (57-60 minutes, 3-minute window)
+                else if (diffMinutes >= (60 - windowSize) && diffMinutes <= 60) {
                     reminderType = 'APPOINTMENT_REMINDER_1H';
                     timeUntil = '1 hour';
                     shouldSend = true;
                 }
-                else if (scheduledStart >= reminder15minWindowStart && scheduledStart <= reminder15minWindowEnd) {
+                // Check if appointment is approximately 15 minutes away (12-15 minutes, 3-minute window)
+                else if (diffMinutes >= (15 - windowSize) && diffMinutes <= 15) {
                     reminderType = 'APPOINTMENT_REMINDER_15MIN';
                     timeUntil = '15 minutes';
                     shouldSend = true;
@@ -371,6 +369,18 @@ function startAppointmentReminders(connection) {
                             [booking.booking_id]
                         );
 
+                        // Get stylist name from the booking
+                        const [stylistResult] = await db.execute(
+                            `SELECT DISTINCT u.full_name AS stylist_name
+                             FROM booking_services bs
+                             JOIN employees e ON bs.employee_id = e.employee_id
+                             JOIN users u ON e.user_id = u.user_id
+                             WHERE bs.booking_id = ?
+                             LIMIT 1`,
+                            [booking.booking_id]
+                        );
+                        const stylistName = stylistResult.length > 0 ? stylistResult[0].stylist_name : null;
+
                         const salonTimezone = booking.salon_timezone || 'America/New_York';
                         
                         const bookingStartLocal = scheduledStart.setZone(salonTimezone);
@@ -380,7 +390,7 @@ function startAppointmentReminders(connection) {
                         const appointmentTime = bookingStartLocal.toFormat('h:mm a');
                         const appointmentEndTime = bookingEndLocal.toFormat('h:mm a');
                         
-                        let message = `Reminder: You have an appointment at ${booking.salon_name} in ${timeUntil}.\n\n`;
+                        let message = `Reminder: You have an appointment at ${booking.salon_name}${stylistName ? ` with ${stylistName}` : ''} in ${timeUntil}.\n\n`;
                         message += `Date: ${appointmentDate}\n`;
                         message += `Time: ${appointmentTime} - ${appointmentEndTime}\n`;
                         
