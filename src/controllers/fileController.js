@@ -1,5 +1,7 @@
 const { uploadUniqueFile, deleteFile, getFilePresigned } = require('../utils/s3.js');
 const connection = require('../config/databaseConnection');
+const { DateTime } = require('luxon');
+const { toMySQLUtc } = require('../utils/utilies');
 
 // UPH 1.6 Upload After Photo
 exports.uploadAfterPhoto = async (req, res) => {
@@ -15,7 +17,9 @@ exports.uploadAfterPhoto = async (req, res) => {
 		}
 
 		if (!req.file) {
-			console.log("No file attched.");
+			if (process.env.UTC_DEBUG === '1') {
+				console.log("No file attched.");
+			}
 			return res.status(400).json({ 
 				error: "No file uploaded." 
 			});
@@ -40,10 +44,11 @@ exports.uploadAfterPhoto = async (req, res) => {
 			});
 		}
 
+		const nowUtc = toMySQLUtc(DateTime.utc());
 		const addPhotoToBookingServiceQuery = `
-			INSERT INTO booking_photos (booking_id, picture_id, picture_type, created_at, updated_at) VALUES (?, ?, 'AFTER', NOW(), NOW())
+			INSERT INTO booking_photos (booking_id, picture_id, picture_type, created_at, updated_at) VALUES (?, ?, 'AFTER', ?, ?)
 		`;
-		const [addPhotoToBookingServiceResults] = await db.execute(addPhotoToBookingServiceQuery, [booking_id, result.picture_id]);
+		const [addPhotoToBookingServiceResults] = await db.execute(addPhotoToBookingServiceQuery, [booking_id, result.picture_id, nowUtc, nowUtc]);
 
 		if (addPhotoToBookingServiceResults.affectedRows === 0) {
 			return res.status(500).json({ 
@@ -78,7 +83,9 @@ exports.uploadBeforePhoto = async (req, res) => {
 		}
 
 		if (!req.file) {
-			console.log("No file attched.");
+			if (process.env.UTC_DEBUG === '1') {
+				console.log("No file attched.");
+			}
 			return res.status(400).json({ 
 				error: "No file uploaded." 
 			});
@@ -103,10 +110,11 @@ exports.uploadBeforePhoto = async (req, res) => {
 			});
 		}
 
+		const nowUtc = toMySQLUtc(DateTime.utc());
 		const addPhotoToBookingServiceQuery = `
-			INSERT INTO booking_photos (booking_id, picture_id, picture_type, created_at, updated_at) VALUES (?, ?, 'BEFORE', NOW(), NOW())
+			INSERT INTO booking_photos (booking_id, picture_id, picture_type, created_at, updated_at) VALUES (?, ?, 'BEFORE', ?, ?)
 		`;
-		const [addPhotoToBookingServiceResults] = await db.execute(addPhotoToBookingServiceQuery, [booking_id, result.picture_id]);
+		const [addPhotoToBookingServiceResults] = await db.execute(addPhotoToBookingServiceQuery, [booking_id, result.picture_id, nowUtc, nowUtc]);
 
 		if (addPhotoToBookingServiceResults.affectedRows === 0) {
 			return res.status(500).json({ 
@@ -152,7 +160,9 @@ exports.deletePhoto = async (req, res) => {
 
 		const [bookingPhotoRows] = await db.execute(getPictureIdQuery, [booking_id, type]);
 
-		console.log(bookingPhotoRows);
+		if (process.env.UTC_DEBUG === '1') {
+			console.log(bookingPhotoRows);
+		}
 
 		if (bookingPhotoRows.length === 0) {
 			return res.status(404).json({ message: 'Booking photo not found' });
@@ -165,7 +175,9 @@ exports.deletePhoto = async (req, res) => {
 		`;
 		const [deleteBookingPhotoResults] = await db.execute(deleteBookingPhotoQuery, [booking_id, type]);
 
-		console.log(deleteBookingPhotoResults);
+		if (process.env.UTC_DEBUG === '1') {
+			console.log(deleteBookingPhotoResults);
+		}
 
 		if (deleteBookingPhotoResults.affectedRows === 0) {
 			await db.query('ROLLBACK');

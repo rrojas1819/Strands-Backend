@@ -1,5 +1,6 @@
 const connection = require('../config/databaseConnection'); //db connection
-const { validateEmail, toMySQLUtc, formatDateTime, logUtcDebug, localAvailabilityToUtc } = require('../utils/utilies');
+const { validateEmail, toMySQLUtc, formatDateTime, logUtcDebug, localAvailabilityToUtc, luxonWeekdayToDb } = require('../utils/utilies');
+const { DateTime } = require('luxon');
 
 //allowed salon categories
 const ALLOWED_CATEGORIES = new Set([
@@ -96,14 +97,15 @@ exports.createSalon = async (req, res) => {
     }
 
     //inserting salon into db
+    const nowUtc = toMySQLUtc(DateTime.utc());
     const insertSql = `INSERT INTO salons
                       (owner_user_id, name, description, category, phone, email,
                       address, city, state, postal_code, country, status, created_at, updated_at)
-                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', NOW(), NOW())`;
+                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?)`;
 
     const params = [
       owner_user_id, name, description, category, phone, email,
-      address, city, state, postal_code, country
+      address, city, state, postal_code, country, nowUtc, nowUtc
     ];
 
     //insert
@@ -139,13 +141,14 @@ exports.approveSalon = async (req, res) => {
       return res.status(400).json({ message: 'Invalid status.' });
     }
 
+    const nowUtc = toMySQLUtc(DateTime.utc());
     const updateSalonQuery = 
       `UPDATE salons 
         SET status = ?,
-        approval_date = IF(? = 'APPROVED', NOW(), approval_date)
+        approval_date = IF(? = 'APPROVED', ?, approval_date)
       WHERE salon_id = ?;`;
 
-    const [result] = await db.execute(updateSalonQuery, [status, status, salon_id]);
+    const [result] = await db.execute(updateSalonQuery, [status, status, nowUtc, salon_id]);
 
     if (result.affectedRows === 0) {
       return res.status(404).json({ message: 'Salon not found' });
@@ -306,11 +309,12 @@ exports.addEmployee = async (req, res) => {
       return res.status(409).json({ message: 'Employee does not exist.' });
     }
 
+    const nowUtc = toMySQLUtc(DateTime.utc());
     const assignEmployeeQuery = 
     `INSERT INTO employees (salon_id, user_id, title, active, created_at, updated_at)
-    VALUES((SELECT salon_id FROM salons WHERE owner_user_id = ?), (SELECT user_id FROM users WHERE email = ?), ?, 1, NOW(), NOW());`;
+    VALUES((SELECT salon_id FROM salons WHERE owner_user_id = ?), (SELECT user_id FROM users WHERE email = ?), ?, 1, ?, ?);`;
 
-    const [result] = await db.execute(assignEmployeeQuery, [owner_user_id, email, title]);
+    const [result] = await db.execute(assignEmployeeQuery, [owner_user_id, email, title, nowUtc, nowUtc]);
 
     if (result.affectedRows === 0) {
       return res.status(404).json({ message: 'Salon not found' });
@@ -438,16 +442,15 @@ exports.configureLoyaltyProgram = async (req, res) => {
     const { target_visits, discount_percentage, note, active } = req.body;
     const owner_user_id = req.user?.user_id;
 
-    console.log(owner_user_id);
-
     if (!target_visits || !discount_percentage) { 
       return res.status(400).json({ message: 'Missing required fields' });
     }
 
+    const nowUtc = toMySQLUtc(DateTime.utc());
     const insertLoyaltyProgramQuery = 
-    `INSERT INTO loyalty_programs (salon_id, target_visits, discount_percentage, note, created_at, updated_at, active) VALUES ((SELECT salon_id FROM salons WHERE owner_user_id = ?), ?, ?, ?, NOW(), NOW(), ?);`;
+    `INSERT INTO loyalty_programs (salon_id, target_visits, discount_percentage, note, created_at, updated_at, active) VALUES ((SELECT salon_id FROM salons WHERE owner_user_id = ?), ?, ?, ?, ?, ?, ?);`;
 
-    const [result] = await db.execute(insertLoyaltyProgramQuery, [owner_user_id, target_visits, discount_percentage, note, active]);
+    const [result] = await db.execute(insertLoyaltyProgramQuery, [owner_user_id, target_visits, discount_percentage, note, nowUtc, nowUtc, active]);
 
     if (result.affectedRows === 0) {
       return res.status(404).json({ message: 'Salon not found' });
@@ -631,24 +634,24 @@ exports.setSalonHours = async (req, res) => {
                   continue;
               }
               
-              // Validate times using Date
-              const today = new Date().toISOString().split('T')[0]; 
-              const startDate = new Date(`${today}T${hours.start_time}`);
-              const endDate = new Date(`${today}T${hours.end_time}`);
+              // Validate times using Luxon
+              const today = DateTime.now().toFormat('yyyy-MM-dd');
+              const startDt = DateTime.fromISO(`${today}T${hours.start_time}`);
+              const endDt = DateTime.fromISO(`${today}T${hours.end_time}`);
               
-              if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+              if (!startDt.isValid || !endDt.isValid) {
                   errors.push(`${weekday}: Invalid time format`);
                   continue;
               }
               
-              if (startDate >= endDate) {
+              if (startDt >= endDt) {
                   errors.push(`${weekday}: start_time must be before end_time`);
                   continue;
               }
               
               // Format times for SQL (HH:MM:SS)
-              const normalizedStartTime = startDate.toTimeString().split(' ')[0];
-              const normalizedEndTime = endDate.toTimeString().split(' ')[0];
+              const normalizedStartTime = startDt.toFormat('HH:mm:ss');
+              const normalizedEndTime = endDt.toFormat('HH:mm:ss');
               
                const weekdayNumber = WEEKDAY_TO_NUMBER[weekday.toUpperCase()];
                const checkExistingQuery = `
@@ -659,12 +662,13 @@ exports.setSalonHours = async (req, res) => {
               
                //if the day already exists, update it
               if (existingResult.length > 0) {
+                  const nowUtc = toMySQLUtc(DateTime.utc());
                   const updateQuery = `
                       UPDATE salon_availability 
-                      SET start_time = ?, end_time = ?, updated_at = NOW()
+                      SET start_time = ?, end_time = ?, updated_at = ?
                       WHERE salon_availability_id = ?
                   `;
-                  await db.execute(updateQuery, [normalizedStartTime, normalizedEndTime, existingResult[0].salon_availability_id]);
+                  await db.execute(updateQuery, [normalizedStartTime, normalizedEndTime, nowUtc, existingResult[0].salon_availability_id]);
                   results.push({ 
                       weekday: weekday.toUpperCase(), 
                       action: 'updated',
@@ -674,11 +678,12 @@ exports.setSalonHours = async (req, res) => {
                } 
                //if the day doesn't exist, create it
                else {
+                   const nowUtc = toMySQLUtc(DateTime.utc());
                    const insertQuery = `
                        INSERT INTO salon_availability (salon_id, weekday, start_time, end_time, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, NOW(), NOW())
+                       VALUES (?, ?, ?, ?, ?, ?)
                    `;
-                   await db.execute(insertQuery, [salon_id, weekdayNumber, normalizedStartTime, normalizedEndTime]);
+                   await db.execute(insertQuery, [salon_id, weekdayNumber, normalizedStartTime, normalizedEndTime, nowUtc, nowUtc]);
                    results.push({ 
                        weekday: weekday.toUpperCase(), 
                        action: 'created',
@@ -784,17 +789,17 @@ exports.setEmployeeAvailability = async (req, res) => {
                   continue;
               }
               
-              // Validate times using Date
-              const today = new Date().toISOString().split('T')[0]; 
-              const startDate = new Date(`${today}T${availability.start_time}`);
-              const endDate = new Date(`${today}T${availability.end_time}`);
+              // Validate times using Luxon
+              const today = DateTime.now().toFormat('yyyy-MM-dd');
+              const startDt = DateTime.fromISO(`${today}T${availability.start_time}`);
+              const endDt = DateTime.fromISO(`${today}T${availability.end_time}`);
               
-              if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+              if (!startDt.isValid || !endDt.isValid) {
                   errors.push(`${weekday}: Invalid time format`);
                   continue;
               }
               
-              if (startDate >= endDate) {
+              if (startDt >= endDt) {
                   errors.push(`${weekday}: start_time must be before end_time`);
                   continue;
               }
@@ -807,17 +812,17 @@ exports.setEmployeeAvailability = async (req, res) => {
               }
               
               // Validate employee availability is within salon hours
-              const salonStart = new Date(`${today}T${salonHours[dayName].start_time}`);
-              const salonEnd = new Date(`${today}T${salonHours[dayName].end_time}`);
+              const salonStart = DateTime.fromISO(`${today}T${salonHours[dayName].start_time}`);
+              const salonEnd = DateTime.fromISO(`${today}T${salonHours[dayName].end_time}`);
               
-              if (startDate < salonStart || endDate > salonEnd) {
+              if (startDt < salonStart || endDt > salonEnd) {
                   errors.push(`${weekday}: Employee availability must be within salon operating hours (${salonHours[dayName].start_time} - ${salonHours[dayName].end_time})`);
                   continue;
               }
               
               // Format times for SQL (HH:MM:SS)
-              const normalizedStartTime = startDate.toTimeString().split(' ')[0];
-              const normalizedEndTime = endDate.toTimeString().split(' ')[0];
+              const normalizedStartTime = startDt.toFormat('HH:mm:ss');
+              const normalizedEndTime = endDt.toFormat('HH:mm:ss');
               
               const weekdayNumber = WEEKDAY_TO_NUMBER[weekday.toUpperCase()];
               const checkExistingQuery = `
@@ -828,15 +833,17 @@ exports.setEmployeeAvailability = async (req, res) => {
               
               // If the day already exists, update it
               if (existingResult.length > 0) {
+                  const nowUtc = toMySQLUtc(DateTime.utc());
                   const updateQuery = `
                       UPDATE employee_availability 
-                      SET start_time = ?, end_time = ?, slot_interval_minutes = ?, updated_at = NOW()
+                      SET start_time = ?, end_time = ?, slot_interval_minutes = ?, updated_at = ?
                       WHERE availability_id = ?
                   `;
                   await db.execute(updateQuery, [
                       normalizedStartTime, 
                       normalizedEndTime, 
                       availability.slot_interval_minutes || 30,
+                      nowUtc,
                       existingResult[0].availability_id
                   ]);
                   
@@ -850,9 +857,10 @@ exports.setEmployeeAvailability = async (req, res) => {
               } 
               // If the day doesn't exist, create it
               else {
+                  const nowUtc = toMySQLUtc(DateTime.utc());
                   const insertQuery = `
                       INSERT INTO employee_availability (employee_id, weekday, start_time, end_time, slot_interval_minutes, created_at, updated_at)
-                      VALUES (?, ?, ?, ?, ?, NOW(), NOW())
+                      VALUES (?, ?, ?, ?, ?, ?, ?)
                   `;
                   await db.execute(insertQuery, [
                       employeeId, 
@@ -1090,45 +1098,7 @@ exports.getAvailableTimeSlotsRange = async (req, res) => {
           return res.status(400).json({ message: 'Invalid service_duration. Must be a positive number (minutes)' });
       }
     
-      
-      // Determine date range - use UTC
-      let startDate, endDate;
-      const today = new Date();
-      today.setUTCHours(0, 0, 0, 0);
-      const dayInMs = 24 * 60 * 60 * 1000;
-      
-      if (start_date && end_date) {
-          startDate = new Date(start_date + 'T00:00:00Z');
-          endDate = new Date(end_date + 'T00:00:00Z');
-      } else if (start_date) {
-          startDate = new Date(start_date + 'T00:00:00Z');
-          endDate = new Date(startDate.getTime() + (parseInt(days) - 1) * dayInMs);
-      } else {
-          // Default to next 7 days from today (UTC)
-          startDate = new Date(today);
-          endDate = new Date(today.getTime() + (parseInt(days) - 1) * dayInMs);
-      }
-      
-      // Validate dates
-      if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
-          return res.status(400).json({ message: 'Invalid date format. Use YYYY-MM-DD' });
-      }
-      
-      if (startDate < today) {
-          return res.status(400).json({ message: 'Start date cannot be in the past' });
-      }
-      
-      if (endDate < startDate) {
-          return res.status(400).json({ message: 'End date must be on or after start date' });
-      }
-      
-      // Limit to max range (30 days)
-      const maxDays = 30;
-      const daysDiff = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24)) + 1;
-      if (daysDiff > maxDays) {
-          return res.status(400).json({ message: `Date range cannot exceed ${maxDays} days` });
-      }
-      
+      // Get salon timezone FIRST
       const getSalonQuery = 'SELECT salon_id, name, status, timezone FROM salons WHERE salon_id = ?';
       const [salonResult] = await db.execute(getSalonQuery, [salon_id]);
       
@@ -1141,6 +1111,47 @@ exports.getAvailableTimeSlotsRange = async (req, res) => {
       }
       
       const salonTimezone = salonResult[0].timezone || 'America/New_York';
+      
+      // Get today's date string in salon timezone for comparison
+      const todayInSalonTz = DateTime.now().setZone(salonTimezone);
+      const todayDateStr = todayInSalonTz.toFormat('yyyy-MM-dd');
+      
+      // Determine date range - use UTC for processing
+      let startDate, endDate;
+      
+      if (start_date && end_date) {
+          startDate = DateTime.fromISO(start_date + 'T00:00:00Z', { zone: 'utc' });
+          endDate = DateTime.fromISO(end_date + 'T00:00:00Z', { zone: 'utc' });
+      } else if (start_date) {
+          startDate = DateTime.fromISO(start_date + 'T00:00:00Z', { zone: 'utc' });
+          endDate = startDate.plus({ days: parseInt(days) - 1 });
+      } else {
+          // Default to next 7 days from today (UTC)
+          const todayUTC = DateTime.utc().startOf('day');
+          startDate = todayUTC;
+          endDate = todayUTC.plus({ days: parseInt(days) - 1 });
+      }
+      
+      // Validate dates
+      if (!startDate.isValid || !endDate.isValid) {
+          return res.status(400).json({ message: 'Invalid date format. Use YYYY-MM-DD' });
+      }
+      
+      // Compare date strings (both normalized to salon timezone)
+      if (start_date && start_date < todayDateStr) {
+          return res.status(400).json({ message: 'Start date cannot be in the past' });
+      }
+      
+      if (endDate < startDate) {
+          return res.status(400).json({ message: 'End date must be on or after start date' });
+      }
+      
+      // Limit to max range (30 days)
+      const maxDays = 30;
+      const daysDiff = endDate.diff(startDate, 'days').days + 1;
+      if (daysDiff > maxDays) {
+          return res.status(400).json({ message: `Date range cannot exceed ${maxDays} days` });
+      }
       
       // Verify stylist exists and is active
       const getEmployeeQuery = `
@@ -1174,19 +1185,23 @@ exports.getAvailableTimeSlotsRange = async (req, res) => {
       const [unavailabilityResult] = await db.execute(getUnavailabilityQuery, [employee_id]);
       
       // Get existing bookings for the date range
+      // Use DATE_FORMAT to return SQL format (YYYY-MM-DD HH:mm:ss) instead of ISO
       const getBookingsQuery = `
-          SELECT DISTINCT b.scheduled_start, b.scheduled_end, b.status
+          SELECT DISTINCT 
+              DATE_FORMAT(b.scheduled_start, '%Y-%m-%d %H:%i:%s') AS scheduled_start,
+              DATE_FORMAT(b.scheduled_end, '%Y-%m-%d %H:%i:%s') AS scheduled_end,
+              b.status
           FROM bookings b
           JOIN booking_services bs ON b.booking_id = bs.booking_id
           WHERE bs.employee_id = ? 
-          AND b.scheduled_start >= ? 
-          AND b.scheduled_start <= ?
+          AND b.scheduled_start < ? 
+          AND b.scheduled_end > ?
           AND b.status NOT IN ('CANCELED', 'NO_SHOW')
-          ORDER BY b.scheduled_start
+          ORDER BY scheduled_start
       `;
       const startDateUtc = toMySQLUtc(startDate);
-      const endDateUtc = toMySQLUtc(new Date(endDate.getTime() + dayInMs - 1)); // End of day
-      const [bookingsResult] = await db.execute(getBookingsQuery, [employee_id, startDateUtc, endDateUtc]);
+      const endDateUtc = toMySQLUtc(endDate.endOf('day')); // End of day
+      const [bookingsResult] = await db.execute(getBookingsQuery, [employee_id, endDateUtc, startDateUtc]);
       
       // Create availability map by weekday
       const availabilityMap = {};
@@ -1203,27 +1218,32 @@ exports.getAvailableTimeSlotsRange = async (req, res) => {
           unavailabilityMap[unavail.weekday].push(unavail);
       });
       
-      // Create bookings map by date
-      const bookingsMap = {};
+      // Parse all bookings once - we'll check ALL bookings against ALL slots
+      const allBookings = [];
       bookingsResult.forEach(booking => {
-          // Extract date without timezone conversion to avoid date shifting
-          const bookingDateObj = new Date(booking.scheduled_start);
-          const bookingDate = bookingDateObj.toISOString().split('T')[0];
-          (bookingsMap[bookingDate] ||= []).push(booking);
+          const bookingStart = DateTime.fromSQL(booking.scheduled_start, { zone: 'utc' });
+          const bookingEnd = DateTime.fromSQL(booking.scheduled_end, { zone: 'utc' });
+          if (bookingStart.isValid && bookingEnd.isValid) {
+              allBookings.push({
+                  start: bookingStart,
+                  end: bookingEnd,
+                  status: booking.status
+              });
+          }
       });
       
       // Generate time slots for each day
       const dailySlots = {};
-      const currentDate = new Date(startDate);
+      let currentDate = startDate;
       
       while (currentDate <= endDate) {
-          const dateStr = currentDate.toISOString().split('T')[0];
-          const dayOfWeek = currentDate.getUTCDay();
+          const dateStr = currentDate.toFormat('yyyy-MM-dd');
+          // Convert Luxon weekday to database weekday
+          const dayOfWeek = luxonWeekdayToDb(currentDate.weekday);
           const dayName = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][dayOfWeek];
           
           const availability = availabilityMap[dayOfWeek];
           const unavailability = unavailabilityMap[dayOfWeek] || [];
-          const bookings = bookingsMap[dateStr] || [];
           
           if (!availability) {
               dailySlots[dateStr] = {
@@ -1233,85 +1253,115 @@ exports.getAvailableTimeSlotsRange = async (req, res) => {
                   message: 'No availability set for this day'
               };
           } else {
-              const availableSlots = [];
+              const allSlots = [];
               const availabilityStart = localAvailabilityToUtc(availability.start_time, dateStr, salonTimezone);
               const availabilityEnd = localAvailabilityToUtc(availability.end_time, dateStr, salonTimezone);
+              const slotIntervalMinutes = availability.slot_interval_minutes || 30;
               
+              logUtcDebug(`getAvailableTimeSlotsRange ${dateStr} availabilityStart`, availabilityStart);
+              logUtcDebug(`getAvailableTimeSlotsRange ${dateStr} availabilityEnd`, availabilityEnd);
+              
+              // Collect all blocked time ranges with their types
               const blockedTimes = [];
               
+              // Track unavailability blocks
               unavailability.forEach(block => {
                   blockedTimes.push({
                       start: localAvailabilityToUtc(block.start_time, dateStr, salonTimezone),
-                      end: localAvailabilityToUtc(block.end_time, dateStr, salonTimezone)
+                      end: localAvailabilityToUtc(block.end_time, dateStr, salonTimezone),
+                      type: 'blocked' // unavailability block
                   });
               });
               
-              bookings.forEach(booking => {
+              // Track bookings - check ALL bookings, not just ones for this date
+              // A booking can overlap with slots on any day in the range
+              allBookings.forEach(booking => {
                   blockedTimes.push({
-                      start: new Date(booking.scheduled_start),
-                      end: new Date(booking.scheduled_end)
+                      start: booking.start,
+                      end: booking.end,
+                      type: 'booked' // existing booking
                   });
               });
               
-              blockedTimes.sort((a, b) => a.start - b.start);
-              
-              const now = new Date();
-              const todayStr = now.toISOString().split('T')[0];
-              const isCurrentDay = dateStr === todayStr;
-              
-              let currentSlotStart = availabilityStart;
-              
-              if (isCurrentDay && currentSlotStart < now) {
-                  // Round up to next slot interval
-                  const slotIntervalMs = (availability.slot_interval_minutes || 30) * 60 * 1000;
-                  const roundedNow = new Date(Math.ceil(now.getTime() / slotIntervalMs) * slotIntervalMs);
-                  currentSlotStart = roundedNow > availabilityStart ? roundedNow : availabilityStart;
-              }
-              
-              for (const blocked of blockedTimes) {
-                  const gap = blocked.start.getTime() - currentSlotStart.getTime();
+              const getSlotBlockReason = (slotStart, slotEnd) => {
+                  const slotStartUtc = slotStart.toUTC();
+                  const slotEndUtc = slotEnd.toUTC();
                   
-                  if (gap >= serviceDurationMinutes * 60000) {
-                      let slotStart = new Date(currentSlotStart);
+                  for (const blocked of blockedTimes) {
+                      const blockedStartUtc = blocked.start.toUTC();
+                      const blockedEndUtc = blocked.end.toUTC();
                       
-                      while (slotStart.getTime() + serviceDurationMinutes * 60000 <= blocked.start.getTime()) {
-                          const slotEnd = new Date(slotStart.getTime() + serviceDurationMinutes * 60000);
-                          
-                          // Return ISO UTC strings for frontend to use directly
-                          availableSlots.push({
-                              start_time: slotStart.toISOString(),
-                              end_time: slotEnd.toISOString(),
-                              // Also include display times in salon local timezone for convenience
-                              display_start_time: formatDateTime(slotStart),
-                              display_end_time: formatDateTime(slotEnd),
-                              available: true
+                      const overlaps = (slotStartUtc < blockedEndUtc) && (blockedStartUtc < slotEndUtc);
+                      
+                      if (overlaps) {
+                          logUtcDebug(`getAvailableTimeSlotsRange ${dateStr} slot blocked`, {
+                              slotStart: slotStartUtc.toISO(),
+                              slotEnd: slotEndUtc.toISO(),
+                              blockedStart: blockedStartUtc.toISO(),
+                              blockedEnd: blockedEndUtc.toISO(),
+                              type: blocked.type
                           });
-                          
-                          slotStart = new Date(slotStart.getTime() + serviceDurationMinutes * 60000);
+                          return blocked.type; // Return 'booked' or 'blocked'
                       }
                   }
-                  
-                  currentSlotStart = new Date(Math.max(currentSlotStart.getTime(), blocked.end.getTime()));
+                  return null; // Slot is available
+              };
+              
+              const now = DateTime.utc();
+              const todayStr = now.toFormat('yyyy-MM-dd');
+              const isCurrentDay = dateStr === todayStr;
+              
+              // Generate all possible slots within availability window
+              let slotStart = availabilityStart;
+              
+              // If current day, skip past slots
+              if (isCurrentDay && slotStart < now) {
+                  // Round up to next slot interval
+                  const minutesSinceStartOfHour = now.minute + (now.second / 60);
+                  const roundedMinutes = Math.ceil(minutesSinceStartOfHour / slotIntervalMinutes) * slotIntervalMinutes;
+                  const roundedNow = now.startOf('hour').plus({ minutes: roundedMinutes });
+                  slotStart = roundedNow > slotStart ? roundedNow : slotStart;
               }
               
-              if (currentSlotStart.getTime() + serviceDurationMinutes * 60000 <= availabilityEnd.getTime()) {
-                  let slotStart = new Date(currentSlotStart);
+              // Generate all slots from start to end
+              // Slots are spaced by serviceDurationMinutes (non-overlapping)
+              while (slotStart < availabilityEnd) {
+                  const slotEnd = slotStart.plus({ minutes: serviceDurationMinutes });
                   
-                  while (slotStart.getTime() + serviceDurationMinutes * 60000 <= availabilityEnd.getTime()) {
-                      const slotEnd = new Date(slotStart.getTime() + serviceDurationMinutes * 60000);
-                      
-                      // Return ISO UTC strings for frontend to use directly
-                      availableSlots.push({
-                          start_time: slotStart.toISOString(),
-                          end_time: slotEnd.toISOString(),
-                          // Also include display times in salon local timezone for convenience
-                          display_start_time: formatDateTime(slotStart),
-                          display_end_time: formatDateTime(slotEnd),
-                          available: true
-                      });
-                      
-                      slotStart = new Date(slotStart.getTime() + serviceDurationMinutes * 60000);
+                  // Skip this slot if it extends past the availability end time
+                  if (slotEnd > availabilityEnd) {
+                      break;
                   }
+                  
+                  // Check if this slot is blocked and get the reason
+                  const blockReason = getSlotBlockReason(slotStart, slotEnd);
+                  const isBlocked = blockReason !== null;
+                  
+                  // Convert to salon local timezone for display
+                  const slotStartLocal = slotStart.setZone(salonTimezone);
+                  const slotEndLocal = slotEnd.setZone(salonTimezone);
+                  
+                  // Build slot object
+                  const slot = {
+                      start_time: slotStart.toISO(),
+                      end_time: slotEnd.toISO(),
+                      display_start_time: slotStartLocal.toISO(),
+                      display_end_time: slotEndLocal.toISO(),
+                      available: !isBlocked
+                  };
+                  
+                  // Add unavailable_reason if slot is not available
+                  if (!isBlocked) {
+                      // Slot is available, no reason needed
+                  } else {
+                      // Slot is unavailable, add reason
+                      slot.unavailable_reason = blockReason || 'unavailable';
+                  }
+                  
+                  allSlots.push(slot);
+                  
+                  // Move to next slot - use serviceDurationMinutes for spacing
+                  slotStart = slotStart.plus({ minutes: serviceDurationMinutes });
               }
               
               dailySlots[dateStr] = {
@@ -1321,12 +1371,12 @@ exports.getAvailableTimeSlotsRange = async (req, res) => {
                       start_time: availability.start_time,
                       end_time: availability.end_time
                   },
-                  available_slots: availableSlots,
-                  total_slots: availableSlots.length
+                  available_slots: allSlots,
+                  total_slots: allSlots.length
               };
           }
           
-          currentDate.setUTCDate(currentDate.getUTCDate() + 1);
+          currentDate = currentDate.plus({ days: 1 });
       }
       
       return res.status(200).json({
@@ -1337,8 +1387,8 @@ exports.getAvailableTimeSlotsRange = async (req, res) => {
                   title: employeeResult[0].title
               },
               date_range: {
-                  start_date: startDate.toISOString().split('T')[0],
-                  end_date: endDate.toISOString().split('T')[0],
+                  start_date: startDate.toFormat('yyyy-MM-dd'),
+                  end_date: endDate.toFormat('yyyy-MM-dd'),
                   total_days: daysDiff
               },
               daily_slots: dailySlots
@@ -1419,25 +1469,28 @@ exports.createAndAddServiceToStylist = async (req, res) => {
     await db.query('START TRANSACTION');
     
     try {
+      const nowUtc = toMySQLUtc(DateTime.utc());
       const createServiceQuery = `
         INSERT INTO services (salon_id, name, description, duration_minutes, price, active, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, 1, NOW(), NOW())
+        VALUES (?, ?, ?, ?, ?, 1, ?, ?)
       `;
       const [serviceResult] = await db.execute(createServiceQuery, [
         salon_id, 
         name, 
         description, 
         duration_minutes, 
-        price
+        price,
+        nowUtc,
+        nowUtc
       ]);
       
       const service_id = serviceResult.insertId;
       
       const linkServiceQuery = `
         INSERT INTO employee_services (employee_id, service_id, created_at, updated_at)
-        VALUES (?, ?, NOW(), NOW())
+        VALUES (?, ?, ?, ?)
       `;
-      await db.execute(linkServiceQuery, [employee_id, service_id]);
+      await db.execute(linkServiceQuery, [employee_id, service_id, nowUtc, nowUtc]);
       
       await db.query('COMMIT');
       
@@ -1676,7 +1729,9 @@ exports.updateServiceFromStylist = async (req, res) => {
       updateValues.push(price);
     }
     
-    updateFields.push('updated_at = NOW()');
+    const nowUtc = toMySQLUtc(DateTime.utc());
+    updateFields.push('updated_at = ?');
+    updateValues.push(nowUtc);
     updateValues.push(service_id);
     
     const updateQuery = `
@@ -1916,16 +1971,21 @@ exports.bookTimeSlot = async (req, res) => {
           message: 'scheduled_start must include a timezone offset (e.g., 2025-11-12T09:00:00-05:00 or 2025-11-12T14:00:00Z)'
         });
       }
-      startDate = new Date(scheduled_start);
+      startDate = DateTime.fromISO(scheduled_start);
     } else {
-      startDate = new Date(scheduled_start);
-    }
-
-    if (isNaN(startDate.getTime())) {
       return res.status(400).json({
-        message: 'Invalid scheduled_start. Provide a valid ISO 8601 datetime with timezone.'
+        message: 'scheduled_start must be a string in ISO 8601 format with timezone'
       });
     }
+
+    if (!startDate.isValid) {
+      return res.status(400).json({
+        message: `Invalid scheduled_start: ${startDate.invalidReason || 'Invalid format'}. Provide a valid ISO 8601 datetime with timezone.`
+      });
+    }
+    
+    // Convert to UTC for consistent processing
+    startDate = startDate.toUTC();
     
     const [salonTimezoneResult] = await db.execute(
       'SELECT timezone FROM salons WHERE salon_id = ?',
@@ -1933,7 +1993,7 @@ exports.bookTimeSlot = async (req, res) => {
     );
     const salonTimezone = salonTimezoneResult[0]?.timezone || 'America/New_York';
     
-    const now = new Date();
+    const now = DateTime.utc();
     if (startDate < now) {
       return res.status(400).json({ message: 'Cannot book appointments in the past' });
     }
@@ -1958,7 +2018,7 @@ exports.bookTimeSlot = async (req, res) => {
     }
 
     const totalDurationMinutes = serviceDetails.reduce((sum, s) => sum + s.duration_minutes, 0);
-    const endDate = new Date(startDate.getTime() + totalDurationMinutes * 60 * 1000);
+    const endDate = startDate.plus({ minutes: totalDurationMinutes });
 
     // Create detailsById mapping for later use
     const detailsById = {};
@@ -2004,26 +2064,25 @@ exports.bookTimeSlot = async (req, res) => {
       return res.status(400).json({ message: 'Stylist has no availability set' });
     }
 
-
-    //Get the day of the week for the booking (UTC)
-    const bookingDayOfWeek = startDate.getUTCDay();
+    //Get the day of the week for the booking in SALON timezone (not UTC!)
+    const startDateInSalonTz = startDate.setZone(salonTimezone);
+    const bookingDayOfWeek = luxonWeekdayToDb(startDateInSalonTz.weekday);
+    
     const dayAvailability = availabilityResult.find(a => a.weekday === bookingDayOfWeek);
     if (!dayAvailability) {
       return res.status(400).json({ message: 'Stylist is not available on this day' });
     }
 
-
-    // Build UTC YYYY-MM-DD for the booking date (use UTC date from the booking)
-    const y  = startDate.getUTCFullYear();
-    const m  = String(startDate.getUTCMonth() + 1).padStart(2, '0');
-    const d  = String(startDate.getUTCDate()).padStart(2, '0');
-    const dayStr = `${y}-${m}-${d}`;
+    // Build YYYY-MM-DD for the booking date in SALON timezone (not UTC!)
+    const dayStr = startDateInSalonTz.toFormat('yyyy-MM-dd');
 
     // Convert availability to UTC using salon timezone (not request offset)
     const availStart = localAvailabilityToUtc(dayAvailability.start_time, dayStr, salonTimezone);
     const availEnd   = localAvailabilityToUtc(dayAvailability.end_time, dayStr, salonTimezone);
+    
     logUtcDebug('salonController.bookTimeSlot availStart (UTC)', availStart);
     logUtcDebug('salonController.bookTimeSlot availEnd (UTC)', availEnd);
+    
     if (startDate < availStart || endDate > availEnd) {
       return res.status(400).json({
         message: `Booking time must be within stylist's availability (${dayAvailability.start_time} - ${dayAvailability.end_time})`
@@ -2070,9 +2129,8 @@ exports.bookTimeSlot = async (req, res) => {
     );
 
     if (conflictsResult.length > 0) {
-      logUtcDebug('salonController.bookTimeSlot raw scheduled_start', conflictsResult[0].scheduled_start);
-      // Format database datetime as UTC for response
-      console.log(conflictsResult);
+      const conflictStart = DateTime.fromSQL(conflictsResult[0].scheduled_start, { zone: 'utc' });
+      logUtcDebug('salonController.bookTimeSlot raw scheduled_start', conflictStart);
       return res.status(409).json({
         message: 'Time slot is no longer available. Please select a different time.',
         conflicting_booking: {
@@ -2089,12 +2147,13 @@ exports.bookTimeSlot = async (req, res) => {
       logUtcDebug('salonController.bookTimeSlot inserting booking scheduled_start', requestStartStr);
       logUtcDebug('salonController.bookTimeSlot inserting booking scheduled_end', requestEndStr);
 
+      const nowUtc = toMySQLUtc(DateTime.utc());
       const [bookingResult] = await db.execute(
         `INSERT INTO bookings
            (salon_id, customer_user_id, scheduled_start, scheduled_end, status, notes, created_at, updated_at)
          VALUES
-           (?, ?, ?, ?, 'PENDING', ?, NOW(), NOW())`,
-        [salon_id, customer_user_id, requestStartStr, requestEndStr, notes]
+           (?, ?, ?, ?, 'PENDING', ?, ?, ?)`,
+        [salon_id, customer_user_id, requestStartStr, requestEndStr, notes, nowUtc, nowUtc]
       );
 
       const booking_id = bookingResult.insertId;
@@ -2105,8 +2164,8 @@ exports.bookTimeSlot = async (req, res) => {
         await db.execute(
           `INSERT INTO booking_services
              (booking_id, employee_id, service_id, price, duration_minutes, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, NOW(), NOW())`,
-          [booking_id, employee_id, s.service_id, sd.price, sd.duration_minutes]
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [booking_id, employee_id, s.service_id, sd.price, sd.duration_minutes, nowUtc, nowUtc]
         );
       }
 
@@ -2129,7 +2188,7 @@ exports.bookTimeSlot = async (req, res) => {
           appointment: {
             scheduled_start: formatDateTime(startDate),
             scheduled_end: formatDateTime(endDate),
-            duration_minutes: Math.round((endDate - startDate) / (1000 * 60)),
+            duration_minutes: Math.round(endDate.diff(startDate, 'minutes').minutes),
             status: 'PENDING'
           },
           services: services.map(s => ({
@@ -2140,7 +2199,7 @@ exports.bookTimeSlot = async (req, res) => {
           })),
           total_price: totalPrice,
           notes,
-          created_at: new Date().toISOString()
+          created_at: DateTime.utc().toISO()
         }
       });
 
@@ -2275,31 +2334,59 @@ exports.getTopSalonMetrics = async (req, res) => {
       return res.status(401).json({ message: 'Invalid fields.' });
     }
 
-    const topSalonStylistQuery = 
-    `SELECT 
-      u.full_name AS stylist_name,
-      s.name AS salon_name,
-      SUM(p.amount) AS total_revenue,
-      COUNT(DISTINCT bs.booking_id) AS total_bookings
-    FROM booking_services bs
-    JOIN employees e ON bs.employee_id = e.employee_id
-    JOIN users u ON e.user_id = u.user_id
-    JOIN salons s ON e.salon_id = s.salon_id
-    JOIN bookings b ON bs.booking_id = b.booking_id
-    JOIN payments p ON p.booking_id = b.booking_id
-    WHERE p.status = 'SUCCEEDED' AND s.salon_id = (SELECT salon_id FROM salons WHERE owner_user_id = ?)
-    GROUP BY  e.employee_id, u.full_name, s.name
-    ORDER BY total_revenue DESC
-    LIMIT 1;`;
+    // Calculate week start using Luxon (Monday of current week)
+    const now = DateTime.utc();
+    const weekStart = now.startOf('week'); // Monday
+    // Calculate each day of the week
+    const mondayStr = weekStart.plus({ days: 0 }).toFormat('yyyy-MM-dd');
+    const tuesdayStr = weekStart.plus({ days: 1 }).toFormat('yyyy-MM-dd');
+    const wednesdayStr = weekStart.plus({ days: 2 }).toFormat('yyyy-MM-dd');
+    const thursdayStr = weekStart.plus({ days: 3 }).toFormat('yyyy-MM-dd');
+    const fridayStr = weekStart.plus({ days: 4 }).toFormat('yyyy-MM-dd');
+    const saturdayStr = weekStart.plus({ days: 5 }).toFormat('yyyy-MM-dd');
+    const sundayStr = weekStart.plus({ days: 6 }).toFormat('yyyy-MM-dd');
 
-    const [topSalonStylistResults] = await db.execute(topSalonStylistQuery, [owner_user_id]);
+    const topSalonStylistQuery = 
+          `SELECT
+          u.full_name AS stylist_name,
+          s.name AS salon_name,
+
+          COALESCE(SUM(p.amount), 0) AS total_revenue,
+          COALESCE(COUNT(DISTINCT bs.booking_id), 0) AS total_bookings,
+
+          COALESCE(SUM(CASE WHEN DATE(b.scheduled_start) = ? THEN p.amount END), 0) AS monday_revenue,
+          COALESCE(SUM(CASE WHEN DATE(b.scheduled_start) = ? THEN p.amount END), 0) AS tuesday_revenue,
+          COALESCE(SUM(CASE WHEN DATE(b.scheduled_start) = ? THEN p.amount END), 0) AS wednesday_revenue,
+          COALESCE(SUM(CASE WHEN DATE(b.scheduled_start) = ? THEN p.amount END), 0) AS thursday_revenue,
+          COALESCE(SUM(CASE WHEN DATE(b.scheduled_start) = ? THEN p.amount END), 0) AS friday_revenue,
+          COALESCE(SUM(CASE WHEN DATE(b.scheduled_start) = ? THEN p.amount END), 0) AS saturday_revenue,
+          COALESCE(SUM(CASE WHEN DATE(b.scheduled_start) = ? THEN p.amount END), 0) AS sunday_revenue
+
+      FROM employees e
+      JOIN users u ON e.user_id = u.user_id
+      JOIN salons s ON e.salon_id = s.salon_id
+
+      LEFT JOIN booking_services bs ON bs.employee_id = e.employee_id
+      LEFT JOIN bookings b ON bs.booking_id = b.booking_id
+      LEFT JOIN payments p 
+          ON p.booking_id = b.booking_id 
+          AND p.status = 'SUCCEEDED'
+
+      WHERE s.salon_id = (SELECT salon_id FROM salons WHERE owner_user_id = ?)
+      GROUP BY e.employee_id, u.full_name, s.name
+      ORDER BY total_revenue DESC;`;
+
+    const [topSalonStylistResults] = await db.execute(topSalonStylistQuery, [
+      mondayStr, tuesdayStr, wednesdayStr, thursdayStr, fridayStr, saturdayStr, sundayStr,
+      owner_user_id
+    ]);
 
     const salonServicesQuery = 
     `SELECT 
         sv.name AS service_name,
         s.name AS salon_name,
-        COUNT(DISTINCT bs.booking_id) AS times_booked,
-        SUM(p.amount) AS total_revenue
+        COALESCE(COUNT(DISTINCT bs.booking_id), 0) AS times_booked,
+        COALESCE(SUM(p.amount), 0) AS total_revenue
     FROM payments p
     JOIN bookings b ON p.booking_id = b.booking_id
     JOIN booking_services bs ON b.booking_id = bs.booking_id
@@ -2315,8 +2402,8 @@ exports.getTopSalonMetrics = async (req, res) => {
     `SELECT 
       pr.name AS product_name,
       pr.price AS listing_price,
-      SUM(oi.quantity) AS units_sold,
-      SUM(oi.quantity * oi.purchase_price) AS total_revenue
+      COALESCE(SUM(oi.quantity), 0) AS units_sold,
+      COALESCE(SUM(oi.quantity * oi.purchase_price), 0) AS total_revenue
     FROM order_items oi
     JOIN products pr ON oi.product_id = pr.product_id
     JOIN orders o ON oi.order_id = o.order_id
@@ -2348,7 +2435,7 @@ exports.getTopSalonMetrics = async (req, res) => {
     const [totalSalonRevenueResults] = await db.execute(totalSalonRevenueQuery, [owner_user_id]);
 
     return res.status(200).json({
-      topStylist: topSalonStylistResults[0],
+      stylists: topSalonStylistResults,
       totalProductRevenue: totalProductRevenueResults[0].total_product_revenue,
       totalSalonRevenue: totalSalonRevenueResults[0].total_revenue,
       services: salonServicesResults,

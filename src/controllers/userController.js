@@ -2,7 +2,8 @@ require('dotenv').config();
 const bcrypt = require('bcrypt');
 const connection = require('../config/databaseConnection');
 const { generateToken } = require('../middleware/auth.middleware');
-const { validateEmail, toMySQLUtc, formatDateTime, logUtcDebug } = require('../utils/utilies');
+const { validateEmail, toMySQLUtc, formatDateTime, logUtcDebug, luxonWeekdayToDb } = require('../utils/utilies');
+const { DateTime } = require('luxon');
 
 // Global constants
 const DAYS_OF_WEEK = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'];
@@ -60,19 +61,20 @@ exports.signUp = async (req, res) => {
         // Database Operations
         await db.beginTransaction();
         
+        const nowUtc = toMySQLUtc(DateTime.utc());
         const insertUserQuery = `
             INSERT INTO users (full_name, email, phone, profile_picture_url, role, last_login_at, active, created_at, updated_at)
-            VALUES (?, ?, NULL, NULL, ?, NOW(), 1, NOW(), NOW())
+            VALUES (?, ?, NULL, NULL, ?, ?, 1, ?, ?)
         `;
+        const [userRes] = await db.execute(insertUserQuery, [full_name, email, role, nowUtc, nowUtc, nowUtc]);
 
-        const [userRes] = await db.execute(insertUserQuery, [full_name, email, role]);
         const userId = userRes.insertId;
 
         const insertAuthQuery = `
             INSERT INTO auth_credentials (user_id, password_hash, created_at, updated_at)
-            VALUES (?, ?, NOW(), NOW())
+            VALUES (?, ?, ?, ?)
         `;
-        await db.execute(insertAuthQuery, [userId, hashedPassword]);
+        await db.execute(insertAuthQuery, [userId, hashedPassword, nowUtc, nowUtc]);
   
         await db.commit();
 
@@ -135,8 +137,9 @@ exports.login = async (req, res) => {
         await db.execute(activateUserQuery, [existingUsers[0].user_id]);
 
         // Update last login time
-        const updateLoginQuery = 'UPDATE users SET last_login_at = NOW() WHERE user_id = ?';
-        await db.execute(updateLoginQuery, [existingUsers[0].user_id]);
+        const nowUtc = toMySQLUtc(DateTime.utc());
+        const updateLoginQuery = 'UPDATE users SET last_login_at = ? WHERE user_id = ?';
+        await db.execute(updateLoginQuery, [nowUtc, existingUsers[0].user_id]);
 
         const tokenPayload = {
             user_id: existingUsers[0].user_id,
@@ -147,14 +150,14 @@ exports.login = async (req, res) => {
         const token = generateToken(tokenPayload);
         
         // Store token expiration time (2 hours from now)
-        const tokenExpiry = new Date(Date.now() + 2 * 60 * 60 * 1000);
+        const tokenExpiry = DateTime.utc().plus({ hours: 2 });
         const updateTokenQuery = 'UPDATE auth_credentials SET token_expires_at = ? WHERE user_id = ?';
         await db.execute(updateTokenQuery, [toMySQLUtc(tokenExpiry), existingUsers[0].user_id]);
 
 
         // Track login
-        const trackLoginQuery = 'INSERT INTO logins (user_id, login_date) VALUES (?, NOW())';
-        await db.execute(trackLoginQuery, [existingUsers[0].user_id]);
+        const trackLoginQuery = 'INSERT INTO logins (user_id, login_date) VALUES (?, ?)';
+        await db.execute(trackLoginQuery, [existingUsers[0].user_id, nowUtc]);
 
         res.status(200).json({
             message: "Login successful",
@@ -286,34 +289,33 @@ exports.getStylistWeeklySchedule = async (req, res) => {
       return res.status(400).json({ message: 'start_date and end_date are required (MM-DD-YYYY)' });
     }
 
-    // Parse dates (expecting MM-DD-YYYY per example), create UTC dates
+    // Parse dates (expecting MM-DD-YYYY per example), create UTC dates using Luxon
     const parseMmDdYyyy = (s) => {
       const parts = String(s).split('-');
       if (parts.length === 3) {
         const [mm, dd, yyyy] = parts.map((p) => Number(p));
         if (!Number.isNaN(mm) && !Number.isNaN(dd) && !Number.isNaN(yyyy)) {
-          // Create UTC date
-          return new Date(Date.UTC(yyyy, mm - 1, dd));
+          // Create UTC DateTime
+          return DateTime.utc(yyyy, mm, dd);
         }
       }
-      const d = new Date(s);
-      return Number.isNaN(d.getTime()) ? null : d;
+      // Try parsing as ISO or other format
+      const dt = DateTime.fromISO(s);
+      return dt.isValid ? dt.toUTC() : null;
     };
 
     const rangeStart = parseMmDdYyyy(start_date);
     const rangeEnd = parseMmDdYyyy(end_date);
 
-    if (!rangeStart || !rangeEnd) {
+    if (!rangeStart || !rangeStart.isValid || !rangeEnd || !rangeEnd.isValid) {
       return res.status(400).json({ message: 'Invalid start_date or end_date format' });
     }
 
     // Normalize to start/end of day (UTC)
-    const startOfDay = new Date(rangeStart);
-    startOfDay.setUTCHours(0, 0, 0, 0);
-    const endOfDay = new Date(rangeEnd);
-    endOfDay.setUTCHours(23, 59, 59, 999);
+    const startOfDay = rangeStart.startOf('day');
+    const endOfDay = rangeEnd.endOf('day');
 
-    if (startOfDay.getTime() > endOfDay.getTime()) {
+    if (startOfDay > endOfDay) {
       return res.status(400).json({ message: 'start_date must be before or equal to end_date' });
     }
 
@@ -325,6 +327,11 @@ exports.getStylistWeeklySchedule = async (req, res) => {
 
     const employee_id = employeeResult[0].employee_id;
     const salon_id = employeeResult[0].salon_id;
+
+    // Get salon timezone - critical for grouping bookings by correct date
+    const getSalonTimezoneQuery = 'SELECT timezone FROM salons WHERE salon_id = ?';
+    const [salonTimezoneResult] = await db.execute(getSalonTimezoneQuery, [salon_id]);
+    const salonTimezone = salonTimezoneResult[0]?.timezone || 'America/New_York';
 
     const getAvailabilityQuery = `
       SELECT availability_id, employee_id, weekday, start_time, end_time, created_at, updated_at 
@@ -363,20 +370,33 @@ exports.getStylistWeeklySchedule = async (req, res) => {
       }
     });
 
+    // Get bookings that OVERLAP with the date range (not just start in range)
+    // Use DATE_FORMAT to return SQL format (YYYY-MM-DD HH:mm:ss) for Luxon parsing
     const getBookingsQuery = `
-      SELECT DISTINCT b.booking_id, b.salon_id, b.customer_user_id, b.scheduled_start, b.scheduled_end, b.status, b.notes, b.created_at, b.updated_at,
-             u.full_name AS customer_name, u.email AS customer_email, u.phone AS customer_phone
+      SELECT DISTINCT 
+        b.booking_id, 
+        b.salon_id, 
+        b.customer_user_id, 
+        DATE_FORMAT(b.scheduled_start, '%Y-%m-%d %H:%i:%s') AS scheduled_start,
+        DATE_FORMAT(b.scheduled_end, '%Y-%m-%d %H:%i:%s') AS scheduled_end,
+        b.status, 
+        b.notes, 
+        b.created_at, 
+        b.updated_at,
+        u.full_name AS customer_name, 
+        u.email AS customer_email, 
+        u.phone AS customer_phone
       FROM bookings b
       JOIN booking_services bs ON b.booking_id = bs.booking_id
       JOIN users u ON b.customer_user_id = u.user_id
       WHERE bs.employee_id = ?
-        AND b.scheduled_start >= ?
-        AND b.scheduled_start <= ?
-      ORDER BY b.scheduled_start ASC
+        AND b.scheduled_start < ?
+        AND b.scheduled_end > ?
+      ORDER BY scheduled_start ASC
     `;
     const requestStartStr = toMySQLUtc(startOfDay);
     const requestEndStr = toMySQLUtc(endOfDay);
-    const [bookingsResult] = await db.execute(getBookingsQuery, [employee_id, requestStartStr, requestEndStr]);
+    const [bookingsResult] = await db.execute(getBookingsQuery, [employee_id, requestEndStr, requestStartStr]);
 
     // Index availability by weekday for O(1) lookup
     const availabilityByWeekday = {};
@@ -402,27 +422,29 @@ exports.getStylistWeeklySchedule = async (req, res) => {
 
     const schedule = {};
 
-    const formatMmDdYyyy = (d) => {
-      const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
-      const dd = String(d.getUTCDate()).padStart(2, '0');
-      const yyyy = d.getUTCFullYear();
-      return `${mm}-${dd}-${yyyy}`;
+    const formatMmDdYyyy = (dt) => {
+      // dt is a DateTime object
+      return dt.toFormat('MM-dd-yyyy');
     };
 
-    const ymd = (d) => {
-      const year = d.getUTCFullYear();
-      const month = String(d.getUTCMonth() + 1).padStart(2, '0');
-      const day = String(d.getUTCDate()).padStart(2, '0');
-      return `${year}-${month}-${day}`;
+    const ymd = (dt) => {
+      // dt is a DateTime object
+      return dt.toFormat('yyyy-MM-dd');
     };
+    
     const bookingsByDate = {};
     const bookingIds = [];
     for (const booking of bookingsResult) {
-      const d = new Date(booking.scheduled_start);
-      const key = ymd(d);
-      if (!bookingsByDate[key]) bookingsByDate[key] = [];
-      bookingsByDate[key].push(booking);
-      bookingIds.push(booking.booking_id);
+      // Parse SQL format datetime as UTC
+      const bookingDt = DateTime.fromSQL(booking.scheduled_start, { zone: 'utc' });
+      if (bookingDt.isValid) {
+        // Convert to salon timezone to get the correct local date
+        const bookingDtInSalonTz = bookingDt.setZone(salonTimezone);
+        const key = ymd(bookingDtInSalonTz);  // Use salon timezone date!
+        if (!bookingsByDate[key]) bookingsByDate[key] = [];
+        bookingsByDate[key].push(booking);
+        bookingIds.push(booking.booking_id);
+      }
     }
 
     const servicesByBookingId = {};
@@ -491,8 +513,15 @@ exports.getStylistWeeklySchedule = async (req, res) => {
       rewardsById[r.reward_id] = r;
     });
 
-    for (let d = new Date(startOfDay); d.getTime() <= endOfDay.getTime(); d.setUTCDate(d.getUTCDate() + 1)) {
-      const dayIndex = d.getUTCDay(); // 0..6 (Sun..Sat) - use UTC to match the UTC date calculation
+    // Iterate through each day in the range using Luxon
+    // Convert date range to salon timezone for correct day grouping
+    const startOfDayInSalonTz = startOfDay.setZone(salonTimezone).startOf('day');
+    const endOfDayInSalonTz = endOfDay.setZone(salonTimezone).endOf('day');
+    
+    let currentDate = startOfDayInSalonTz;
+    while (currentDate <= endOfDayInSalonTz) {
+      // Convert Luxon weekday to database weekday (0-6, Sunday=0)
+      const dayIndex = luxonWeekdayToDb(currentDate.weekday);
       const dayName = weekdayMap[dayIndex];
 
       const dayAvailability = availabilityByWeekday[dayName] || null;
@@ -522,14 +551,18 @@ exports.getStylistWeeklySchedule = async (req, res) => {
         }
       }
 
-      const dateKey = ymd(d);
+      // Use salon timezone date for matching bookings
+      const dateKey = ymd(currentDate);
       const bookingsForDate = bookingsByDate[dateKey] || [];
       const dayBookings = bookingsForDate.map(booking => {
-        logUtcDebug('userController.getStylistWeeklySchedule raw scheduled_start', booking.scheduled_start);
-        logUtcDebug('userController.getStylistWeeklySchedule raw scheduled_end', booking.scheduled_end);
+        // Parse SQL format datetime strings as UTC
+        const bookingStart = DateTime.fromSQL(booking.scheduled_start, { zone: 'utc' });
+        const bookingEnd = DateTime.fromSQL(booking.scheduled_end, { zone: 'utc' });
+        logUtcDebug('userController.getStylistWeeklySchedule parsed scheduled_start', bookingStart);
+        logUtcDebug('userController.getStylistWeeklySchedule parsed scheduled_end', bookingEnd);
         // Return full ISO datetime strings so frontend can properly convert to local timezone
-        const startTime = formatDateTime(booking.scheduled_start);
-        const endTime = formatDateTime(booking.scheduled_end);
+        const startTime = formatDateTime(bookingStart);
+        const endTime = formatDateTime(bookingEnd);
 
         const servicesResult = servicesByBookingId[booking.booking_id] || [];
         const totalDuration = servicesResult.reduce((sum, s) => sum + Number(s.duration_minutes), 0);
@@ -580,13 +613,16 @@ exports.getStylistWeeklySchedule = async (req, res) => {
         };
       });
 
-      const displayDate = formatMmDdYyyy(d);
+      const displayDate = formatMmDdYyyy(currentDate);
       schedule[displayDate] = {
         weekday: dayName,
         availability: dayAvailability,
         unavailability: dayUnavailability,
         bookings: dayBookings
       };
+      
+      // Move to next day
+      currentDate = currentDate.plus({ days: 1 });
     }
 
     return res.status(200).json({ 
@@ -660,34 +696,54 @@ exports.viewStylistMetrics = async (req, res) => {
       return res.status(401).json({ message: 'Invalid fields.' });
     }
 
-    const revenueMetricsQuery = 
-    `SELECT(
-    SELECT COALESCE(SUM(p.amount), 0)
-    FROM payments p
-    JOIN bookings b ON b.booking_id = p.booking_id
-    JOIN booking_services bs ON bs.booking_id = b.booking_id
-    WHERE p.status = 'SUCCEEDED'
-      AND p.created_at >= UTC_DATE()
-      AND p.created_at < UTC_DATE() + INTERVAL 1 DAY
-      AND bs.employee_id = (SELECT employee_id FROM employees WHERE user_id = ?)
-  ) AS revenue_today,
-  (SELECT COALESCE(SUM(p.amount), 0)
-    FROM payments p
-    JOIN bookings b ON b.booking_id = p.booking_id
-    JOIN booking_services bs ON bs.booking_id = b.booking_id
-    WHERE p.status = 'SUCCEEDED'
-      AND p.created_at >= UTC_DATE() - INTERVAL 7 DAY
-      AND p.created_at < UTC_DATE() + INTERVAL 1 DAY
-      AND bs.employee_id = (SELECT employee_id FROM employees WHERE user_id = ?)
-  ) AS revenue_past_week;`;
+    // Calculate date ranges using Luxon
+    const now = DateTime.utc();
+    const todayStart = toMySQLUtc(now.startOf('day'));
+    const todayEnd = toMySQLUtc(now.endOf('day'));
+    const weekAgoStart = toMySQLUtc(now.minus({ days: 7 }).startOf('day'));
 
-    const [revenueMetrics] = await db.execute(revenueMetricsQuery, [user_id, user_id]);
+    const revenueMetricsQuery = 
+    `SELECT
+    (SELECT COALESCE(SUM(p.amount), 0)
+      FROM payments p
+      JOIN bookings b ON b.booking_id = p.booking_id
+      JOIN booking_services bs ON bs.booking_id = b.booking_id
+      WHERE p.status = 'SUCCEEDED'
+        AND p.created_at >= ?
+        AND p.created_at < ?
+        AND bs.employee_id = (SELECT employee_id FROM employees WHERE user_id = ?)
+    ) AS revenue_today,
+
+    (SELECT COALESCE(SUM(p.amount), 0)
+      FROM payments p
+      JOIN bookings b ON b.booking_id = p.booking_id
+      JOIN booking_services bs ON bs.booking_id = b.booking_id
+      WHERE p.status = 'SUCCEEDED'
+        AND p.created_at >= ?
+        AND p.created_at < ?
+        AND bs.employee_id = (SELECT employee_id FROM employees WHERE user_id = ?)
+    ) AS revenue_past_week,
+
+    (SELECT COALESCE(SUM(p.amount), 0)
+      FROM payments p
+      JOIN bookings b ON b.booking_id = p.booking_id
+      JOIN booking_services bs ON bs.booking_id = b.booking_id
+      WHERE p.status = 'SUCCEEDED'
+        AND bs.employee_id = (SELECT employee_id FROM employees WHERE user_id = ?)
+    ) AS revenue_all_time;`;
+
+    const [revenueMetrics] = await db.execute(revenueMetricsQuery, [
+      todayStart, todayEnd, user_id,  // revenue_today
+      weekAgoStart, todayEnd, user_id,  // revenue_past_week
+      user_id  // revenue_all_time (if exists)
+    ]);
 
     return res.status(200).json({
       revenueMetrics: revenueMetrics[0]
     });
 
   } catch (err) {
+    console.error('viewStylistMetrics error:', err);
     return res.status(500).json({ message: 'Internal Server Error' });
   }
 

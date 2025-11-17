@@ -1,21 +1,40 @@
 require('dotenv').config();
 const connection = require('../config/databaseConnection');
+const { DateTime } = require('luxon');
+const { toMySQLUtc } = require('../utils/utilies');
 
 // AFVD 1.1 User Engagement
 exports.userEngagement = async (req, res) => {
     const db = connection.promise();
 
     try {
+        // Calculate date ranges using Luxon
+        const now = DateTime.utc();
+        const todayStart = toMySQLUtc(now.startOf('day'));
+        const tomorrowStart = toMySQLUtc(now.plus({ days: 1 }).startOf('day')); // Start of tomorrow (exclusive upper bound for today)
+        const yesterdayStart = toMySQLUtc(now.minus({ days: 1 }).startOf('day'));
+        const todayStartForYesterday = toMySQLUtc(now.startOf('day')); // Start of today (exclusive upper bound for yesterday)
+        const weekAgoStart = toMySQLUtc(now.minus({ days: 7 }).startOf('day'));
+        const twoWeeksAgoStart = toMySQLUtc(now.minus({ days: 14 }).startOf('day'));
+        
         const checkUserQuery = 
         `SELECT 
-        (SELECT COUNT(*) FROM logins WHERE DATE(login_date) = UTC_DATE()) AS today_logins,
-        (SELECT COUNT(*) FROM logins WHERE DATE(login_date) = UTC_DATE() - INTERVAL 1 DAY) AS yesterday_logins,
-        (SELECT COUNT(*) FROM logins WHERE login_date >= UTC_DATE() - INTERVAL 7 DAY AND login_date < UTC_DATE()) AS past_week_logins,
-        (SELECT COUNT(*) FROM logins WHERE login_date >= UTC_DATE() - INTERVAL 14 DAY AND login_date < UTC_DATE() - INTERVAL 7 DAY) AS previous_week_logins,
+        (SELECT COUNT(*) FROM logins WHERE login_date >= ? AND login_date < ?) AS today_logins,
+        (SELECT COUNT(*) FROM logins WHERE login_date >= ? AND login_date < ?) AS yesterday_logins,
+        (SELECT COUNT(*) FROM logins WHERE login_date >= ? AND login_date < ?) AS past_week_logins,
+        (SELECT COUNT(*) FROM logins WHERE login_date >= ? AND login_date < ?) AS previous_week_logins,
         (SELECT COUNT(*) FROM bookings) as total_bookings,
         (SELECT COUNT(*) AS total_repeat_users FROM ( SELECT salon_id, customer_user_id FROM bookings WHERE status IN ('SCHEDULED', 'COMPLETED') GROUP BY salon_id, customer_user_id HAVING COUNT(*) >= 2) AS repeats) AS repeat_bookers;
         `;
-        const [results] = await db.execute(checkUserQuery);
+        
+        const queryParams = [
+          todayStart, tomorrowStart,  // today_logins: from start of today to start of tomorrow (exclusive)
+          yesterdayStart, todayStartForYesterday,  // yesterday_logins: from start of yesterday to start of today (exclusive)
+          weekAgoStart, todayStart,  // past_week_logins: from 7 days ago to start of today (exclusive)
+          twoWeeksAgoStart, weekAgoStart  // previous_week_logins: from 14 days ago to 7 days ago (exclusive)
+        ];
+        
+        const [results] = await db.execute(checkUserQuery, queryParams);
 
         const top3ServicesQuery = `(SELECT s.name, COUNT(*) AS total_bookings FROM booking_services bs JOIN bookings b ON bs.booking_id = b.booking_id JOIN services s ON s.service_id = bs.service_id WHERE b.status IN ('SCHEDULED', 'COMPLETED') GROUP BY s.name ORDER BY total_bookings DESC LIMIT 3);`;
         const [top3Services] = await db.execute(top3ServicesQuery);
