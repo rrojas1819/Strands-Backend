@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const multer = require('multer');
-const { uploadBeforePhoto, uploadAfterPhoto, deletePhoto, getPhoto } = require('../controllers/fileController');
+const { uploadBeforePhoto, uploadAfterPhoto, deletePhoto, getPhoto, checkIfPhotoAttached } = require('../controllers/fileController');
 const { authenticateToken, roleAuthorization } = require('../middleware/auth.middleware');
 
 
@@ -29,5 +29,8 @@ router.delete('/delete-photo', authenticateToken, roleAuthorization(['OWNER','EM
 
 // UPH 1.6 Get Photo
 router.get('/get-photo', authenticateToken, roleAuthorization(['CUSTOMER','EMPLOYEE','OWNER']), getPhoto);
+
+// UPH 1.6 Check if photo attached
+router.get('/check-if-photo-attached', authenticateToken, roleAuthorization(['CUSTOMER','EMPLOYEE','OWNER']), checkIfPhotoAttached);
 
 module.exports = router;

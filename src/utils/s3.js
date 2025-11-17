@@ -2,6 +2,7 @@ require('dotenv').config();
 const connection = require('../config/databaseConnection');
 const crypto = require('crypto');
 const { S3Client, PutObjectCommand, HeadObjectCommand, DeleteObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
+const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 const { DateTime } = require('luxon');
 const { toMySQLUtc } = require('./utilies');
 
@@ -106,10 +107,27 @@ async function getFileStream(key) {
 	}
 }
 
+
+async function getFilePresigned(key) {
+	try {
+		const command = new GetObjectCommand({
+		  Bucket: process.env.AWS_S3_BUCKET,
+		  Key: key
+		});
+	
+		const url = await getSignedUrl(s3, command, { expiresIn: 120 });
+		return { url };
+	  } catch (err) {
+		console.error("Presigned error:", err);
+		return { error: "Failed to generate presigned URL" };
+	  }
+};
+
 module.exports = {
 	s3,
 	uploadUniqueFile,
 	deleteFile,
-	getFileStream
+	getFileStream,
+	getFilePresigned
 };
 
