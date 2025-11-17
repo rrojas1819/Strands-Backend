@@ -241,12 +241,16 @@ exports.getPhoto = async (req, res) => {
 			});
 		}
 	  	const getPictureKeyQuery = `
-		SELECT s3_key 
-		FROM pictures 
-		WHERE picture_id IN (
-			SELECT picture_id 
-			FROM booking_photos 
-			WHERE booking_id = ?);
+		SELECT p.s3_key
+		FROM booking_photos bp
+		JOIN pictures p ON p.picture_id = bp.picture_id
+		WHERE bp.booking_id = ?
+		ORDER BY 
+			CASE 
+				WHEN UPPER(bp.picture_type) = 'BEFORE' THEN 1
+				WHEN UPPER(bp.picture_type) = 'AFTER' THEN 2
+				ELSE 3
+			END;
 		`;
 
 		const [rows] = await db.execute(getPictureKeyQuery, [booking_id]);
@@ -255,16 +259,26 @@ exports.getPhoto = async (req, res) => {
 			return res.status(404).json({ message: "No photo found for this booking/type." });
 		}
 
-		const urls = [];
-		for (const row of rows) {
-			const { url, error } = await getFilePresigned(row.s3_key);
+		let before = "";
+		let after = "";
+
+		if (rows[0]) {
+			const { url, error } = await getFilePresigned(rows[0].s3_key);
 			if (error) {
 				return res.status(500).json({ error: "Failed to generate S3 pre-signed URL." });
 			}
-			urls.push(url);
+			before = url;
 		}
 
-		return res.status(200).json({ urls });
+		if (rows[1]) {
+			const { url, error } = await getFilePresigned(rows[1].s3_key);
+			if (error) {
+				return res.status(500).json({ error: "Failed to generate S3 pre-signed URL." });
+			}
+			after = url;
+		}
+
+		return res.status(200).json({ before, after });
 	} catch (err) {
 	  console.error("getPhoto error:", err);
 	  return res.status(500).json({
