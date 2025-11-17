@@ -26,12 +26,13 @@ const reviewRoutes = require('./routes/reviews');
 const staffReviewsRoutes = require('./routes/staffReviews');
 const appointmentNotesRoutes = require('./routes/appointmentNotes');
 const fileUploadRoutes = require('./routes/fileUpload');
+const notificationsRoutes = require('./routes/notifications');
 
 // Database Connection
 const db = require('./config/databaseConnection');
 
 // Get utilities and get start Token Cleanup
-const { startTokenCleanup, startBookingsAutoComplete, startLoyaltySeenUpdate } = require('./utils/utilies');
+const { startTokenCleanup, startBookingsAutoComplete, startLoyaltySeenUpdate, startAppointmentReminders } = require('./utils/utilies');
 
 // Set up Express and CORS
 const app = express();
@@ -39,6 +40,7 @@ const app = express();
 startTokenCleanup(db);
 startBookingsAutoComplete(db);
 startLoyaltySeenUpdate(db);
+startAppointmentReminders(db);
 app.use(cors());
 app.use(express.json());
 
@@ -56,6 +58,7 @@ app.use('/api/payments', paymentsRoutes);
 app.use('/api/reviews', reviewRoutes);
 app.use('/api/staff-reviews', staffReviewsRoutes);
 app.use('/api/appointment-notes', appointmentNotesRoutes);
+app.use('/api/notifications', notificationsRoutes);
 
 // Start Server
 const PORT = process.env.PORT || 3000;

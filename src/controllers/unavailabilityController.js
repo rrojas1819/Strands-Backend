@@ -102,13 +102,14 @@ exports.createRecurringBlock = async (req, res) => {
             
             if (!bookingStart.isValid || !bookingEnd.isValid) continue;
             
-            // Convert Luxon weekday to database weekday (0-6, Sunday=0)
-            const bookingWeekday = luxonWeekdayToDb(bookingStart.weekday);
+            // Convert booking to salon timezone to get correct weekday and date
+            const bookingStartInSalonTz = bookingStart.setZone(salonTimezone);
+            const bookingWeekday = luxonWeekdayToDb(bookingStartInSalonTz.weekday);
 
             if (bookingWeekday !== weekday) continue;
 
-            // Build date string in YYYY-MM-DD format
-            const bookingDateStr = bookingStart.toFormat('yyyy-MM-dd');
+            // Build date string in YYYY-MM-DD format using salon timezone
+            const bookingDateStr = bookingStartInSalonTz.toFormat('yyyy-MM-dd');
 
             const blockStartUtc = localAvailabilityToUtc(start, bookingDateStr, salonTimezone);
             const blockEndUtc = localAvailabilityToUtc(end, bookingDateStr, salonTimezone);

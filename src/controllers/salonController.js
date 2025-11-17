@@ -442,10 +442,6 @@ exports.configureLoyaltyProgram = async (req, res) => {
     const { target_visits, discount_percentage, note, active } = req.body;
     const owner_user_id = req.user?.user_id;
 
-    if (process.env.UTC_DEBUG === '1') {
-        console.log(owner_user_id);
-    }
-
     if (!target_visits || !discount_percentage) { 
       return res.status(400).json({ message: 'Missing required fields' });
     }
@@ -1205,13 +1201,7 @@ exports.getAvailableTimeSlotsRange = async (req, res) => {
       `;
       const startDateUtc = toMySQLUtc(startDate);
       const endDateUtc = toMySQLUtc(endDate.endOf('day')); // End of day
-      if (process.env.UTC_DEBUG === '1') {
-          console.log(`[DEBUG] Querying bookings for employee ${employee_id} between ${startDateUtc} and ${endDateUtc}`);
-      }
       const [bookingsResult] = await db.execute(getBookingsQuery, [employee_id, endDateUtc, startDateUtc]);
-      if (process.env.UTC_DEBUG === '1') {
-          console.log(`[DEBUG] Raw bookings from DB:`, JSON.stringify(bookingsResult, null, 2));
-      }
       
       // Create availability map by weekday
       const availabilityMap = {};
@@ -1230,30 +1220,17 @@ exports.getAvailableTimeSlotsRange = async (req, res) => {
       
       // Parse all bookings once - we'll check ALL bookings against ALL slots
       const allBookings = [];
-      if (process.env.UTC_DEBUG === '1') {
-          console.log(`[DEBUG] Total bookings from DB: ${bookingsResult.length}`);
-      }
       bookingsResult.forEach(booking => {
           const bookingStart = DateTime.fromSQL(booking.scheduled_start, { zone: 'utc' });
           const bookingEnd = DateTime.fromSQL(booking.scheduled_end, { zone: 'utc' });
           if (bookingStart.isValid && bookingEnd.isValid) {
-              if (process.env.UTC_DEBUG === '1') {
-                  console.log(`[DEBUG] Parsed booking: ${bookingStart.toISO()} to ${bookingEnd.toISO()}`);
-              }
               allBookings.push({
                   start: bookingStart,
                   end: bookingEnd,
                   status: booking.status
               });
-          } else {
-              if (process.env.UTC_DEBUG === '1') {
-                  console.log(`[DEBUG] Invalid booking parse:`, booking, bookingStart.invalidReason, bookingEnd.invalidReason);
-              }
           }
       });
-      if (process.env.UTC_DEBUG === '1') {
-          console.log(`[DEBUG] Total valid bookings: ${allBookings.length}`);
-      }
       
       // Generate time slots for each day
       const dailySlots = {};
@@ -1298,22 +1275,13 @@ exports.getAvailableTimeSlotsRange = async (req, res) => {
               
               // Track bookings - check ALL bookings, not just ones for this date
               // A booking can overlap with slots on any day in the range
-              if (process.env.UTC_DEBUG === '1') {
-                  console.log(`[DEBUG] ${dateStr}: Adding ${allBookings.length} bookings to blockedTimes`);
-              }
               allBookings.forEach(booking => {
-                  if (process.env.UTC_DEBUG === '1') {
-                      console.log(`[DEBUG] ${dateStr}: Adding booking to blockedTimes: ${booking.start.toISO()} to ${booking.end.toISO()}`);
-                  }
                   blockedTimes.push({
                       start: booking.start,
                       end: booking.end,
                       type: 'booked' // existing booking
                   });
               });
-              if (process.env.UTC_DEBUG === '1') {
-                  console.log(`[DEBUG] ${dateStr}: Total blockedTimes after adding bookings: ${blockedTimes.length}`);
-              }
               
               const getSlotBlockReason = (slotStart, slotEnd) => {
                   const slotStartUtc = slotStart.toUTC();
@@ -1326,9 +1294,6 @@ exports.getAvailableTimeSlotsRange = async (req, res) => {
                       const overlaps = (slotStartUtc < blockedEndUtc) && (blockedStartUtc < slotEndUtc);
                       
                       if (overlaps) {
-                          if (process.env.UTC_DEBUG === '1') {
-                              console.log(`[DEBUG] SLOT BLOCKED: Slot ${slotStartUtc.toISO()} to ${slotEndUtc.toISO()} overlaps with ${blocked.type} ${blockedStartUtc.toISO()} to ${blockedEndUtc.toISO()}`);
-                          }
                           logUtcDebug(`getAvailableTimeSlotsRange ${dateStr} slot blocked`, {
                               slotStart: slotStartUtc.toISO(),
                               slotEnd: slotEndUtc.toISO(),
@@ -1375,18 +1340,6 @@ exports.getAvailableTimeSlotsRange = async (req, res) => {
                   // Convert to salon local timezone for display
                   const slotStartLocal = slotStart.setZone(salonTimezone);
                   const slotEndLocal = slotEnd.setZone(salonTimezone);
-                  
-                  // Debug logging for 6:30-7pm slot specifically
-                  if (slotStartLocal.hour === 18 && slotStartLocal.minute === 30 && process.env.UTC_DEBUG === '1') {
-                      console.log(`[DEBUG] 6:30PM SLOT CHECK:`, {
-                          slotStartUTC: slotStart.toISO(),
-                          slotEndUTC: slotEnd.toISO(),
-                          slotStartLocal: slotStartLocal.toISO(),
-                          isBlocked: isBlocked,
-                          blockReason: blockReason,
-                          totalBlockedTimes: blockedTimes.length
-                      });
-                  }
                   
                   // Build slot object
                   const slot = {
@@ -2111,23 +2064,25 @@ exports.bookTimeSlot = async (req, res) => {
       return res.status(400).json({ message: 'Stylist has no availability set' });
     }
 
-
-    //Get the day of the week for the booking (UTC)
-    // Convert Luxon weekday to database weekday
-    const bookingDayOfWeek = luxonWeekdayToDb(startDate.weekday);
+    //Get the day of the week for the booking in SALON timezone (not UTC!)
+    const startDateInSalonTz = startDate.setZone(salonTimezone);
+    const bookingDayOfWeek = luxonWeekdayToDb(startDateInSalonTz.weekday);
+    
     const dayAvailability = availabilityResult.find(a => a.weekday === bookingDayOfWeek);
     if (!dayAvailability) {
       return res.status(400).json({ message: 'Stylist is not available on this day' });
     }
 
-    // Build UTC YYYY-MM-DD for the booking date (use UTC date from the booking)
-    const dayStr = startDate.toFormat('yyyy-MM-dd');
+    // Build YYYY-MM-DD for the booking date in SALON timezone (not UTC!)
+    const dayStr = startDateInSalonTz.toFormat('yyyy-MM-dd');
 
     // Convert availability to UTC using salon timezone (not request offset)
     const availStart = localAvailabilityToUtc(dayAvailability.start_time, dayStr, salonTimezone);
     const availEnd   = localAvailabilityToUtc(dayAvailability.end_time, dayStr, salonTimezone);
+    
     logUtcDebug('salonController.bookTimeSlot availStart (UTC)', availStart);
     logUtcDebug('salonController.bookTimeSlot availEnd (UTC)', availEnd);
+    
     if (startDate < availStart || endDate > availEnd) {
       return res.status(400).json({
         message: `Booking time must be within stylist's availability (${dayAvailability.start_time} - ${dayAvailability.end_time})`

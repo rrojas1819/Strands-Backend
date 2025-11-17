@@ -285,11 +285,12 @@ exports.rescheduleBooking = async (req, res) => {
 
         //getting all employees involved with the original booking along with the day
         const employeeIds = [...new Set(servicesRows.map(r => r.employee_id))];
-        // Convert Luxon weekday to database weekday (0-6, Sunday=0)
-        const bookingDayOfWeek = luxonWeekdayToDb(startDate.weekday);
+        
+        // Get the booking date in salon timezone (not UTC!)
+        const startDateInSalonTz = startDate.setZone(salonTimezone);
+        const bookingDayOfWeek = luxonWeekdayToDb(startDateInSalonTz.weekday);
 
-        // Build UTC YYYY-MM-DD for the booking date
-        const dayStr = startDate.toFormat('yyyy-MM-dd');
+        const dayStr = startDateInSalonTz.toFormat('yyyy-MM-dd');
 
         // Format as UTC for database storage
         const requestStartStr = toMySQLUtc(startDate);
