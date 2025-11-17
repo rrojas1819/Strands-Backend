@@ -1,5 +1,6 @@
 const connection = require('../config/databaseConnection'); //db connection
-const { formatDateTime, localAvailabilityToUtc } = require('../utils/utilies');
+const { formatDateTime, localAvailabilityToUtc, luxonWeekdayToDb } = require('../utils/utilies');
+const { DateTime } = require('luxon');
 
 //validating time for SQL
 const TIME_RX = /^([01]\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?$/;
@@ -74,34 +75,46 @@ exports.createRecurringBlock = async (req, res) => {
         ); if (overlap.length) return res.status(409).json({ message: 'Overlaps an existing recurring block' });
 
         //BS 1.7 Check for conflicting SCHEDULED appointments
+        // Use DATE_FORMAT to return SQL format (YYYY-MM-DD HH:mm:ss) for Luxon parsing
+        const currentUtc = DateTime.utc();
+        const currentUtcStr = currentUtc.toFormat('yyyy-MM-dd HH:mm:ss');
         const [bookings] = await db.execute(
-            `SELECT DISTINCT b.booking_id, b.scheduled_start, b.scheduled_end, u.full_name AS customer_name
+            `SELECT DISTINCT 
+                b.booking_id, 
+                DATE_FORMAT(b.scheduled_start, '%Y-%m-%d %H:%i:%s') AS scheduled_start,
+                DATE_FORMAT(b.scheduled_end, '%Y-%m-%d %H:%i:%s') AS scheduled_end,
+                u.full_name AS customer_name
              FROM bookings b
              JOIN booking_services bs ON b.booking_id = bs.booking_id
              LEFT JOIN users u ON b.customer_user_id = u.user_id
              WHERE bs.employee_id = ?
                AND b.status = 'SCHEDULED'
-               AND b.scheduled_start >= UTC_TIMESTAMP()
-             ORDER BY b.scheduled_start ASC`,
-            [employeeId]
+               AND b.scheduled_start >= ?
+             ORDER BY scheduled_start ASC`,
+            [employeeId, currentUtcStr]
         );
 
         const conflictingAppointments = [];
         for (const booking of bookings) {
-            const bookingStart = new Date(booking.scheduled_start);
-            const bookingEnd = new Date(booking.scheduled_end);
-            const bookingWeekday = bookingStart.getUTCDay();
+            // Parse SQL format datetime strings as UTC
+            const bookingStart = DateTime.fromSQL(booking.scheduled_start, { zone: 'utc' });
+            const bookingEnd = DateTime.fromSQL(booking.scheduled_end, { zone: 'utc' });
+            
+            if (!bookingStart.isValid || !bookingEnd.isValid) continue;
+            
+            // Convert booking to salon timezone to get correct weekday and date
+            const bookingStartInSalonTz = bookingStart.setZone(salonTimezone);
+            const bookingWeekday = luxonWeekdayToDb(bookingStartInSalonTz.weekday);
 
             if (bookingWeekday !== weekday) continue;
 
-            const bookingYear = bookingStart.getUTCFullYear();
-            const bookingMonth = String(bookingStart.getUTCMonth() + 1).padStart(2, '0');
-            const bookingDay = String(bookingStart.getUTCDate()).padStart(2, '0');
-            const bookingDateStr = `${bookingYear}-${bookingMonth}-${bookingDay}`;
+            // Build date string in YYYY-MM-DD format using salon timezone
+            const bookingDateStr = bookingStartInSalonTz.toFormat('yyyy-MM-dd');
 
             const blockStartUtc = localAvailabilityToUtc(start, bookingDateStr, salonTimezone);
             const blockEndUtc = localAvailabilityToUtc(end, bookingDateStr, salonTimezone);
             
+            // Compare DateTime objects directly
             if (bookingStart < blockEndUtc && bookingEnd > blockStartUtc) {
                 conflictingAppointments.push({
                     booking_id: booking.booking_id,

@@ -1,8 +1,9 @@
+const { DateTime } = require('luxon');
+
 function logUtcDebug(label, value) {
     if (process.env.UTC_DEBUG === '1') {
-        const type = value instanceof Date ? 'Date' : typeof value;
-        const printable =
-            value instanceof Date ? value.toISOString() : value;
+        const type = value instanceof DateTime ? 'DateTime' : typeof value;
+        const printable = value instanceof DateTime ? value.toISO() : value;
         console.log(`[UTC DEBUG] ${label}:`, printable, `(type: ${type})`);
     }
 }
@@ -12,131 +13,97 @@ const validateEmail = (email) => {
     return emailRegex.test(email);
 };
 
-function toMySQLUtc(date) {
-    return date.toISOString().slice(0, 19).replace('T', ' ');
+function toMySQLUtc(dt) {
+    if (!(dt instanceof DateTime)) {
+        throw new Error('toMySQLUtc requires a DateTime object');
+    }
+    return dt.toUTC().toFormat('yyyy-MM-dd HH:mm:ss');
 }
-
 
 function localAvailabilityToUtc(availabilityTime, dateStr, timezone) {
     if (!availabilityTime || !dateStr || !timezone) {
         throw new Error('localAvailabilityToUtc requires availabilityTime, dateStr, and timezone');
     }
 
-    const [year, month, day] = dateStr.split('-').map(Number);
     const [hours, minutes] = availabilityTime.split(':').map(Number);
 
-    if (isNaN(year) || isNaN(month) || isNaN(day) || isNaN(hours) || isNaN(minutes)) {
-        throw new Error(`Invalid date or time format: ${dateStr} ${availabilityTime}`);
+    if (isNaN(hours) || isNaN(minutes)) {
+        throw new Error(`Invalid time format: ${availabilityTime}`);
     }
 
-    const formatter = new Intl.DateTimeFormat('en-US', {
-        timeZone: timezone,
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: false
-    });
-    
-    const targetDate = new Date(Date.UTC(year, month - 1, day, 0, 0, 0, 0));
-    const nextDay = new Date(Date.UTC(year, month - 1, day + 1, 0, 0, 0, 0));
-    const dayRangeMs = nextDay.getTime() - targetDate.getTime();
-    
-    let low = targetDate.getTime();
-    let high = nextDay.getTime();
-    const targetHour = String(hours).padStart(2, '0');
-    const targetMin = String(minutes).padStart(2, '0');
-    const targetYear = String(year).padStart(4, '0');
-    const targetMonth = String(month).padStart(2, '0');
-    const targetDay = String(day).padStart(2, '0');
-    
-    for (let iter = 0; iter < 50; iter++) {
-        const mid = Math.floor((low + high) / 2);
-        const testUtc = new Date(mid);
-        const parts = formatter.formatToParts(testUtc);
-        const fYear = parts.find(p => p.type === 'year').value;
-        const fMonth = parts.find(p => p.type === 'month').value;
-        const fDay = parts.find(p => p.type === 'day').value;
-        const fHour = parts.find(p => p.type === 'hour').value;
-        const fMinute = parts.find(p => p.type === 'minute').value;
-        
-        const dateMatch = fYear === targetYear && fMonth === targetMonth && fDay === targetDay;
-        const timeMatch = fHour === targetHour && fMinute === targetMin;
-        
-        if (dateMatch && timeMatch) {
-            return testUtc;
-        }
-        
-        if (!dateMatch || (dateMatch && (fHour < targetHour || (fHour === targetHour && fMinute < targetMin)))) {
-            low = mid + 1;
-        } else {
-            high = mid - 1;
-        }
-        
-        if (low >= high) break;
+    const localDt = DateTime.fromObject(
+        {
+            year: parseInt(dateStr.split('-')[0]),
+            month: parseInt(dateStr.split('-')[1]),
+            day: parseInt(dateStr.split('-')[2]),
+            hour: hours,
+            minute: minutes,
+            second: 0,
+            millisecond: 0
+        },
+        { zone: timezone }
+    );
+
+    if (!localDt.isValid) {
+        throw new Error(`Invalid date or time: ${dateStr} ${availabilityTime} - ${localDt.invalidReason}`);
     }
-    
-    const startMs = targetDate.getTime();
-    const endMs = nextDay.getTime();
-    const stepMs = 60 * 1000;
-    
-    for (let ms = startMs; ms < endMs; ms += stepMs) {
-        const testUtc = new Date(ms);
-        const parts = formatter.formatToParts(testUtc);
-        const fYear = parts.find(p => p.type === 'year').value;
-        const fMonth = parts.find(p => p.type === 'month').value;
-        const fDay = parts.find(p => p.type === 'day').value;
-        const fHour = parts.find(p => p.type === 'hour').value;
-        const fMinute = parts.find(p => p.type === 'minute').value;
-        
-        if (fYear === targetYear && fMonth === targetMonth && fDay === targetDay &&
-            fHour === targetHour && fMinute === targetMin) {
-            return testUtc;
-        }
-    }
-    
-    const midnightUtc = new Date(Date.UTC(year, month - 1, day, 0, 0, 0, 0));
-    const midnightParts = formatter.formatToParts(midnightUtc);
-    const midnightLocalHour = parseInt(midnightParts.find(p => p.type === 'hour').value);
-    const offsetHours = -midnightLocalHour;
-    
-    return new Date(Date.UTC(year, month - 1, day, hours + offsetHours, minutes, 0, 0));
+
+    return localDt.toUTC();
 }
 
-const formatDateTime = (timeStr) => {
-    if (!timeStr) return null;
-    if (timeStr instanceof Date) {
-        return timeStr.toISOString();
-    }
-    let parsedInput = timeStr;
-    if (typeof timeStr === 'string') {
-        const isNaiveMySQL = timeStr.includes(' ') && !timeStr.includes('T') && !/[zZ]|[+-]\d{2}:\d{2}$/.test(timeStr);
+const formatDateTime = (dt) => {
+    if (!dt) return null;
+    
+    let dateTime;
+    
+    if (dt instanceof DateTime) {
+        dateTime = dt;
+    } else if (typeof dt === 'string') {
+        const isNaiveMySQL = dt.includes(' ') && !dt.includes('T') && !/[zZ]|[+-]\d{2}:\d{2}$/.test(dt);
         if (isNaiveMySQL) {
-            // Convert 'YYYY-MM-DD HH:mm:ss' -> 'YYYY-MM-DDTHH:mm:ssZ' (treat as UTC)
-            parsedInput = `${timeStr.replace(' ', 'T')}Z`;
+            dateTime = DateTime.fromSQL(dt, { zone: 'utc' });
+        } else {
+            dateTime = DateTime.fromISO(dt);
         }
+    } else {
+        return String(dt);
     }
-    const date = new Date(parsedInput);
-    if (!isNaN(date.getTime())) {
-        return date.toISOString();
+    
+    if (!dateTime || !dateTime.isValid) {
+        return String(dt);
     }
-    return String(timeStr);
+    
+    return dateTime.toISO();
 };
+
+function utcToLocalDateString(dt, timezone) {
+    if (!(dt instanceof DateTime)) {
+        throw new Error('utcToLocalDateString requires a DateTime object');
+    }
+    return dt.setZone(timezone).toFormat('yyyy-MM-dd');
+}
+
+// Helper to convert Luxon weekday (1-7, Monday=1, Sunday=7) to database weekday (0-6, Sunday=0, Saturday=6)
+function luxonWeekdayToDb(luxonWeekday) {
+    // Luxon: 1=Monday, 2=Tuesday, ..., 6=Saturday, 7=Sunday
+    // DB: 0=Sunday, 1=Monday, 2=Tuesday, ..., 6=Saturday
+    return luxonWeekday === 7 ? 0 : luxonWeekday;
+}
 
 // Cleanup job for expired tokens every 15 minutes for more responsive cleanup
 const startTokenCleanup = (connection) => {
     setInterval(async () => {
         try {
             const db = connection.promise();
+            const currentUtc = toMySQLUtc(DateTime.utc());
             
             const getExpiredUsersQuery = `
                 SELECT user_id 
                 FROM auth_credentials 
                 WHERE token_expires_at IS NOT NULL 
-                AND token_expires_at < NOW()
+                AND token_expires_at < ?
             `;
-            const [expiredUsers] = await db.execute(getExpiredUsersQuery);
+            const [expiredUsers] = await db.execute(getExpiredUsersQuery, [currentUtc]);
             
             if (expiredUsers.length > 0) {
                 const expiredUserIds = expiredUsers.map(user => user.user_id);
@@ -176,8 +143,7 @@ function startBookingsAutoComplete(connection) {
         try {
             const db = connection.promise();
             //Small grace period
-            const GRACE_MS = 2 * 60 * 1000; // 2 minutes
-            const nowMinusGrace = new Date(Date.now() - GRACE_MS);
+            const nowMinusGrace = DateTime.utc().minus({ minutes: 2 });
             const currentUtc = toMySQLUtc(nowMinusGrace);
 
             const updateQuery = `
@@ -198,7 +164,7 @@ function startLoyaltySeenUpdate(connection) {
     setInterval(async () => {
         try {
             const db = connection.promise();
-            const currentUtc = toMySQLUtc(new Date());
+            const currentUtc = toMySQLUtc(DateTime.utc());
 
             const getCompletedBookingsQuery = `
                 SELECT booking_id, customer_user_id, salon_id
@@ -223,19 +189,21 @@ function startLoyaltySeenUpdate(connection) {
                     const [membership] = await db.execute(checkMembershipQuery, [booking.customer_user_id, booking.salon_id]);
 
                     if (membership.length === 0) {
+                        const nowUtc = toMySQLUtc(DateTime.utc());
                         const insertMembershipQuery = `
                             INSERT INTO loyalty_memberships (user_id, salon_id, visits_count, created_at, updated_at)
-                            VALUES (?, ?, 0, NOW(), NOW())
+                            VALUES (?, ?, 0, ?, ?)
                         `;
-                        await db.execute(insertMembershipQuery, [booking.customer_user_id, booking.salon_id]);
+                        await db.execute(insertMembershipQuery, [booking.customer_user_id, booking.salon_id, nowUtc, nowUtc]);
                     }
 
+                    const nowUtc = toMySQLUtc(DateTime.utc());
                     const incrementVisitsQuery = `
                         UPDATE loyalty_memberships
-                        SET visits_count = visits_count + 1, updated_at = NOW()
+                        SET visits_count = visits_count + 1, updated_at = ?
                         WHERE user_id = ? AND salon_id = ?
                     `;
-                    await db.execute(incrementVisitsQuery, [booking.customer_user_id, booking.salon_id]);
+                    await db.execute(incrementVisitsQuery, [nowUtc, booking.customer_user_id, booking.salon_id]);
 
                     const getLoyaltyProgramQuery = `
                         SELECT target_visits, discount_percentage, note
@@ -259,27 +227,30 @@ function startLoyaltySeenUpdate(connection) {
                             if (current_visits >= target_visits) {
                                 const new_visits_count = current_visits - target_visits;
 
-                                const currentUtc = toMySQLUtc(new Date());
+                                const currentUtc = toMySQLUtc(DateTime.utc());
                                 const insertRewardQuery = `
                                     INSERT INTO available_rewards 
                                     (user_id, salon_id, active, discount_percentage, note, redeemed_at, creationDate, created_at, updated_at)
-                                    VALUES (?, ?, 1, ?, ?, NULL, ?, NOW(), NOW())
+                                    VALUES (?, ?, 1, ?, ?, NULL, ?, ?, ?)
                                 `;
                                 await db.execute(insertRewardQuery, [
                                     booking.customer_user_id,
                                     booking.salon_id,
                                     program.discount_percentage,
                                     program.note,
+                                    currentUtc,
+                                    currentUtc,
                                     currentUtc
                                 ]);
 
                                 const resetVisitsQuery = `
                                     UPDATE loyalty_memberships
-                                    SET visits_count = ?, updated_at = NOW()
+                                    SET visits_count = ?, updated_at = ?
                                     WHERE user_id = ? AND salon_id = ?
                                 `;
                                 await db.execute(resetVisitsQuery, [
                                     new_visits_count,
+                                    currentUtc,
                                     booking.customer_user_id,
                                     booking.salon_id
                                 ]);
@@ -313,20 +284,101 @@ function startLoyaltySeenUpdate(connection) {
     }, 15 * 60 * 1000); // Every 15 minutes 
 }
 
-function utcToLocalDateString(utcDate, timezone) {
-    const formatter = new Intl.DateTimeFormat('en-US', {
-        timeZone: timezone,
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit'
-    });
-    
-    const parts = formatter.formatToParts(utcDate);
-    const year = parts.find(p => p.type === 'year').value;
-    const month = parts.find(p => p.type === 'month').value;
-    const day = parts.find(p => p.type === 'day').value;
-    
-    return `${year}-${month}-${day}`;
+
+// NC 1.1 - Job to send appointment reminders (24h, 1h, 15min before)
+function startAppointmentReminders(connection) {
+    setInterval(async () => {
+        try {
+            const db = connection.promise();
+            const now = DateTime.utc();
+            
+            const queryStart = toMySQLUtc(now);
+            const queryEnd = toMySQLUtc(now.plus({ hours: 25 }));
+            
+            const [bookings] = await db.execute(
+                `SELECT 
+                    b.booking_id,
+                    b.customer_user_id,
+                    b.salon_id,
+                    DATE_FORMAT(b.scheduled_start, '%Y-%m-%d %H:%i:%s') AS scheduled_start,
+                    b.scheduled_start AS scheduled_start_raw,
+                    u.email,
+                    s.name AS salon_name
+                 FROM bookings b
+                 JOIN users u ON b.customer_user_id = u.user_id
+                 JOIN salons s ON b.salon_id = s.salon_id
+                 WHERE b.status = 'SCHEDULED'
+                   AND b.scheduled_start > ?
+                   AND b.scheduled_start <= ?`,
+                [queryStart, queryEnd]
+            );
+
+            for (const booking of bookings) {
+                const scheduledStart = DateTime.fromSQL(booking.scheduled_start, { zone: 'utc' });
+                if (!scheduledStart.isValid) continue;
+
+                const reminder24hWindowStart = now.plus({ hours: 23, minutes: 55 });
+                const reminder24hWindowEnd = now.plus({ hours: 24, minutes: 5 });
+                
+                const reminder1hWindowStart = now.plus({ minutes: 55 });
+                const reminder1hWindowEnd = now.plus({ minutes: 65 });
+                
+                const reminder15minWindowStart = now.plus({ minutes: 10 });
+                const reminder15minWindowEnd = now.plus({ minutes: 20 });
+
+                let reminderType = null;
+                let message = '';
+                let shouldSend = false;
+
+                if (scheduledStart >= reminder24hWindowStart && scheduledStart <= reminder24hWindowEnd) {
+                    reminderType = 'APPOINTMENT_REMINDER_24H';
+                    message = `Reminder: You have an appointment at ${booking.salon_name} in 24 hours.`;
+                    shouldSend = true;
+                }
+                else if (scheduledStart >= reminder1hWindowStart && scheduledStart <= reminder1hWindowEnd) {
+                    reminderType = 'APPOINTMENT_REMINDER_1H';
+                    message = `Reminder: You have an appointment at ${booking.salon_name} in 1 hour.`;
+                    shouldSend = true;
+                }
+                else if (scheduledStart >= reminder15minWindowStart && scheduledStart <= reminder15minWindowEnd) {
+                    reminderType = 'APPOINTMENT_REMINDER_15MIN';
+                    message = `Reminder: You have an appointment at ${booking.salon_name} in 15 minutes.`;
+                    shouldSend = true;
+                }
+
+                if (shouldSend && reminderType) {
+                    const [existing] = await db.execute(
+                        `SELECT notification_id 
+                         FROM notifications_inbox 
+                         WHERE booking_id = ? 
+                           AND type_code = ? 
+                           AND user_id = ?`,
+                        [booking.booking_id, reminderType, booking.customer_user_id]
+                    );
+
+                    if (existing.length === 0) {
+                        const nowUtc = toMySQLUtc(now);
+                        await db.execute(
+                            `INSERT INTO notifications_inbox 
+                             (user_id, salon_id, email, booking_id, type_code, status, message, sender_email, created_at)
+                             VALUES (?, ?, ?, ?, ?, 'UNREAD', ?, 'SYSTEM', ?)`,
+                            [
+                                booking.customer_user_id,
+                                booking.salon_id,
+                                booking.email,
+                                booking.booking_id,
+                                reminderType,
+                                message,
+                                nowUtc
+                            ]
+                        );
+                    }
+                }
+            }
+        } catch (error) {
+            console.error('Appointment reminders job failed:', error);
+        }
+    }, 60 * 1000); // Run every minute
 }
 
 module.exports = {
@@ -336,7 +388,9 @@ module.exports = {
     toMySQLUtc,
     formatDateTime,
     startLoyaltySeenUpdate,
+    startAppointmentReminders,
     logUtcDebug,
     localAvailabilityToUtc,
-    utcToLocalDateString
+    utcToLocalDateString,
+    luxonWeekdayToDb
 };
