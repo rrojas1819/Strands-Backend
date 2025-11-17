@@ -328,6 +328,11 @@ exports.getStylistWeeklySchedule = async (req, res) => {
     const employee_id = employeeResult[0].employee_id;
     const salon_id = employeeResult[0].salon_id;
 
+    // Get salon timezone - critical for grouping bookings by correct date
+    const getSalonTimezoneQuery = 'SELECT timezone FROM salons WHERE salon_id = ?';
+    const [salonTimezoneResult] = await db.execute(getSalonTimezoneQuery, [salon_id]);
+    const salonTimezone = salonTimezoneResult[0]?.timezone || 'America/New_York';
+
     const getAvailabilityQuery = `
       SELECT availability_id, employee_id, weekday, start_time, end_time, created_at, updated_at 
       FROM employee_availability 
@@ -433,7 +438,9 @@ exports.getStylistWeeklySchedule = async (req, res) => {
       // Parse SQL format datetime as UTC
       const bookingDt = DateTime.fromSQL(booking.scheduled_start, { zone: 'utc' });
       if (bookingDt.isValid) {
-        const key = ymd(bookingDt);
+        // Convert to salon timezone to get the correct local date
+        const bookingDtInSalonTz = bookingDt.setZone(salonTimezone);
+        const key = ymd(bookingDtInSalonTz);  // Use salon timezone date!
         if (!bookingsByDate[key]) bookingsByDate[key] = [];
         bookingsByDate[key].push(booking);
         bookingIds.push(booking.booking_id);
@@ -507,8 +514,12 @@ exports.getStylistWeeklySchedule = async (req, res) => {
     });
 
     // Iterate through each day in the range using Luxon
-    let currentDate = startOfDay;
-    while (currentDate <= endOfDay) {
+    // Convert date range to salon timezone for correct day grouping
+    const startOfDayInSalonTz = startOfDay.setZone(salonTimezone).startOf('day');
+    const endOfDayInSalonTz = endOfDay.setZone(salonTimezone).endOf('day');
+    
+    let currentDate = startOfDayInSalonTz;
+    while (currentDate <= endOfDayInSalonTz) {
       // Convert Luxon weekday to database weekday (0-6, Sunday=0)
       const dayIndex = luxonWeekdayToDb(currentDate.weekday);
       const dayName = weekdayMap[dayIndex];
@@ -540,6 +551,7 @@ exports.getStylistWeeklySchedule = async (req, res) => {
         }
       }
 
+      // Use salon timezone date for matching bookings
       const dateKey = ymd(currentDate);
       const bookingsForDate = bookingsByDate[dateKey] || [];
       const dayBookings = bookingsForDate.map(booking => {

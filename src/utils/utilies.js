@@ -285,6 +285,102 @@ function startLoyaltySeenUpdate(connection) {
 }
 
 
+// NC 1.1 - Job to send appointment reminders (24h, 1h, 15min before)
+function startAppointmentReminders(connection) {
+    setInterval(async () => {
+        try {
+            const db = connection.promise();
+            const now = DateTime.utc();
+            
+            const queryStart = toMySQLUtc(now);
+            const queryEnd = toMySQLUtc(now.plus({ hours: 25 }));
+            
+            const [bookings] = await db.execute(
+                `SELECT 
+                    b.booking_id,
+                    b.customer_user_id,
+                    b.salon_id,
+                    DATE_FORMAT(b.scheduled_start, '%Y-%m-%d %H:%i:%s') AS scheduled_start,
+                    b.scheduled_start AS scheduled_start_raw,
+                    u.email,
+                    s.name AS salon_name
+                 FROM bookings b
+                 JOIN users u ON b.customer_user_id = u.user_id
+                 JOIN salons s ON b.salon_id = s.salon_id
+                 WHERE b.status = 'SCHEDULED'
+                   AND b.scheduled_start > ?
+                   AND b.scheduled_start <= ?`,
+                [queryStart, queryEnd]
+            );
+
+            for (const booking of bookings) {
+                const scheduledStart = DateTime.fromSQL(booking.scheduled_start, { zone: 'utc' });
+                if (!scheduledStart.isValid) continue;
+
+                const reminder24hWindowStart = now.plus({ hours: 23, minutes: 55 });
+                const reminder24hWindowEnd = now.plus({ hours: 24, minutes: 5 });
+                
+                const reminder1hWindowStart = now.plus({ minutes: 55 });
+                const reminder1hWindowEnd = now.plus({ minutes: 65 });
+                
+                const reminder15minWindowStart = now.plus({ minutes: 10 });
+                const reminder15minWindowEnd = now.plus({ minutes: 20 });
+
+                let reminderType = null;
+                let message = '';
+                let shouldSend = false;
+
+                if (scheduledStart >= reminder24hWindowStart && scheduledStart <= reminder24hWindowEnd) {
+                    reminderType = 'APPOINTMENT_REMINDER_24H';
+                    message = `Reminder: You have an appointment at ${booking.salon_name} in 24 hours.`;
+                    shouldSend = true;
+                }
+                else if (scheduledStart >= reminder1hWindowStart && scheduledStart <= reminder1hWindowEnd) {
+                    reminderType = 'APPOINTMENT_REMINDER_1H';
+                    message = `Reminder: You have an appointment at ${booking.salon_name} in 1 hour.`;
+                    shouldSend = true;
+                }
+                else if (scheduledStart >= reminder15minWindowStart && scheduledStart <= reminder15minWindowEnd) {
+                    reminderType = 'APPOINTMENT_REMINDER_15MIN';
+                    message = `Reminder: You have an appointment at ${booking.salon_name} in 15 minutes.`;
+                    shouldSend = true;
+                }
+
+                if (shouldSend && reminderType) {
+                    const [existing] = await db.execute(
+                        `SELECT notification_id 
+                         FROM notifications_inbox 
+                         WHERE booking_id = ? 
+                           AND type_code = ? 
+                           AND user_id = ?`,
+                        [booking.booking_id, reminderType, booking.customer_user_id]
+                    );
+
+                    if (existing.length === 0) {
+                        const nowUtc = toMySQLUtc(now);
+                        await db.execute(
+                            `INSERT INTO notifications_inbox 
+                             (user_id, salon_id, email, booking_id, type_code, status, message, sender_email, created_at)
+                             VALUES (?, ?, ?, ?, ?, 'UNREAD', ?, 'SYSTEM', ?)`,
+                            [
+                                booking.customer_user_id,
+                                booking.salon_id,
+                                booking.email,
+                                booking.booking_id,
+                                reminderType,
+                                message,
+                                nowUtc
+                            ]
+                        );
+                    }
+                }
+            }
+        } catch (error) {
+            console.error('Appointment reminders job failed:', error);
+        }
+    }, 60 * 1000); // Run every minute
+}
+
 module.exports = {
     validateEmail,
     startTokenCleanup,
@@ -292,6 +388,7 @@ module.exports = {
     toMySQLUtc,
     formatDateTime,
     startLoyaltySeenUpdate,
+    startAppointmentReminders,
     logUtcDebug,
     localAvailabilityToUtc,
     utcToLocalDateString,
