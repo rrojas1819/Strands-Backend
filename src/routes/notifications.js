@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { getNotifications, markAsRead, stylistSendReminder } = require('../controllers/notificationsController');
+const { getNotifications, markAsRead, stylistSendReminder, deleteNotification } = require('../controllers/notificationsController');
 const { authenticateToken, roleAuthorization} = require('../middleware/auth.middleware');
 
 // NC 1.1 - Get user's notifications with pagination
@@ -11,6 +11,9 @@ router.post('/mark-read', authenticateToken, roleAuthorization(['OWNER','EMPLOYE
 
 // NC 1.1 - Stylist manually sends appointment reminder to specific customers by email
 router.post('/stylist/send-reminder', authenticateToken, roleAuthorization(['EMPLOYEE']), stylistSendReminder);
+
+// NC 1.1 - Delete notification
+router.delete('/:notification_id', authenticateToken, roleAuthorization(['OWNER','EMPLOYEE','CUSTOMER',"ADMIN"]), deleteNotification);
 
 module.exports = router;
 

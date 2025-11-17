@@ -187,9 +187,8 @@ exports.stylistSendReminder = async (req, res) => {
             return res.status(401).json({ message: 'Unauthorized' });
         }
 
-        // Get stylist's employee_id, salon_id, and email
         const [employeeResult] = await db.execute(
-            `SELECT e.employee_id, e.salon_id, u.email
+            `SELECT e.employee_id, e.salon_id, u.email, u.full_name
              FROM employees e
              JOIN users u ON e.user_id = u.user_id
              WHERE e.user_id = ? AND e.active = 1`,
@@ -203,6 +202,7 @@ exports.stylistSendReminder = async (req, res) => {
         const employee_id = employeeResult[0].employee_id;
         const salon_id = employeeResult[0].salon_id;
         const stylist_email = employeeResult[0].email;
+        const stylist_name = employeeResult[0].full_name;
 
         // Check if stylist has sent a reminder in the last hour
         const now = DateTime.utc();
@@ -235,10 +235,11 @@ exports.stylistSendReminder = async (req, res) => {
         }
 
         const [salonTimezoneResult] = await db.execute(
-            'SELECT timezone FROM salons WHERE salon_id = ?',
+            'SELECT timezone, name FROM salons WHERE salon_id = ?',
             [salon_id]
         );
         const salonTimezone = salonTimezoneResult[0]?.timezone || 'America/New_York';
+        const salon_name = salonTimezoneResult[0]?.name || '';
 
         const todayInSalonTz = now.setZone(salonTimezone);
         const startOfDay = todayInSalonTz.startOf('day');
@@ -318,16 +319,41 @@ exports.stylistSendReminder = async (req, res) => {
                 const customer = bookingsByCustomer[customerId];
                 const customerBookings = customer.bookings;
 
-                let message = `Reminder: You have ${customerBookings.length} appointment${customerBookings.length > 1 ? 's' : ''} scheduled for ${dateStr}:\n\n`;
+                let message = `Reminder: You have ${customerBookings.length} appointment${customerBookings.length > 1 ? 's' : ''} at ${salon_name} with ${stylist_name} scheduled for ${dateStr}:\n\n`;
                 
-                customerBookings.forEach((booking, index) => {
+                for (let i = 0; i < customerBookings.length; i++) {
+                    const booking = customerBookings[i];
                     const startTime = booking.scheduled_start.toFormat('h:mm a');
                     const endTime = booking.scheduled_end.toFormat('h:mm a');
-                    message += `${index + 1}. ${startTime} - ${endTime}\n`;
-                });
+                    
+                    message += `${i + 1}. ${startTime} - ${endTime}\n`;
+                    
+                    const [services] = await db.execute(
+                        `SELECT 
+                            s.name AS service_name,
+                            bs.duration_minutes
+                         FROM booking_services bs
+                         JOIN services s ON bs.service_id = s.service_id
+                         WHERE bs.booking_id = ? AND bs.employee_id = ?
+                         ORDER BY s.name`,
+                        [booking.booking_id, employee_id]
+                    );
+                    
+                    if (services.length > 0) {
+                        message += `   Services:\n`;
+                        services.forEach((service) => {
+                            message += `   - ${service.service_name}`;
+                            if (service.duration_minutes) {
+                                message += ` (${service.duration_minutes} min)`;
+                            }
+                            message += `\n`;
+                        });
+                    }
+                    message += `\n`;
+                }
 
-                if (message.length > 400) {
-                    message = message.substring(0, 397) + '...';
+                if (message.length > 500) {
+                    message = message.substring(0, 497) + '...';
                 }
 
                 const firstBookingId = customerBookings[0].booking_id;
@@ -379,6 +405,60 @@ exports.stylistSendReminder = async (req, res) => {
 
     } catch (error) {
         console.error('stylistSendReminder error:', error);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
+// NC 1.1 - Delete notification
+exports.deleteNotification = async (req, res) => {
+    const db = connection.promise();
+
+    try {
+        const user_id = req.user?.user_id;
+        const { notification_id } = req.params;
+
+        if (!user_id) {
+            return res.status(401).json({ message: 'Unauthorized' });
+        }
+
+        if (!notification_id || isNaN(notification_id)) {
+            return res.status(400).json({ message: 'Invalid notification_id' });
+        }
+
+        const [notification] = await db.execute(
+            `SELECT notification_id 
+             FROM notifications_inbox 
+             WHERE notification_id = ? AND user_id = ?`,
+            [notification_id, user_id]
+        );
+
+        if (notification.length === 0) {
+            return res.status(404).json({ 
+                message: 'Notification not found or does not belong to you' 
+            });
+        }
+
+        const [result] = await db.execute(
+            `DELETE FROM notifications_inbox 
+             WHERE notification_id = ? AND user_id = ?`,
+            [notification_id, user_id]
+        );
+
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ 
+                message: 'Notification not found or does not belong to you' 
+            });
+        }
+
+        return res.status(200).json({
+            message: 'Notification deleted successfully',
+            data: {
+                notification_id: parseInt(notification_id, 10)
+            }
+        });
+
+    } catch (error) {
+        console.error('deleteNotification error:', error);
         return res.status(500).json({ message: 'Internal server error' });
     }
 };

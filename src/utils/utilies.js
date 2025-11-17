@@ -301,9 +301,11 @@ function startAppointmentReminders(connection) {
                     b.customer_user_id,
                     b.salon_id,
                     DATE_FORMAT(b.scheduled_start, '%Y-%m-%d %H:%i:%s') AS scheduled_start,
+                    DATE_FORMAT(b.scheduled_end, '%Y-%m-%d %H:%i:%s') AS scheduled_end,
                     b.scheduled_start AS scheduled_start_raw,
                     u.email,
-                    s.name AS salon_name
+                    s.name AS salon_name,
+                    s.timezone AS salon_timezone
                  FROM bookings b
                  JOIN users u ON b.customer_user_id = u.user_id
                  JOIN salons s ON b.salon_id = s.salon_id
@@ -315,6 +317,7 @@ function startAppointmentReminders(connection) {
 
             for (const booking of bookings) {
                 const scheduledStart = DateTime.fromSQL(booking.scheduled_start, { zone: 'utc' });
+                const scheduledEnd = DateTime.fromSQL(booking.scheduled_end, { zone: 'utc' });
                 if (!scheduledStart.isValid) continue;
 
                 const reminder24hWindowStart = now.plus({ hours: 23, minutes: 55 });
@@ -327,22 +330,22 @@ function startAppointmentReminders(connection) {
                 const reminder15minWindowEnd = now.plus({ minutes: 20 });
 
                 let reminderType = null;
-                let message = '';
+                let timeUntil = '';
                 let shouldSend = false;
 
                 if (scheduledStart >= reminder24hWindowStart && scheduledStart <= reminder24hWindowEnd) {
                     reminderType = 'APPOINTMENT_REMINDER_24H';
-                    message = `Reminder: You have an appointment at ${booking.salon_name} in 24 hours.`;
+                    timeUntil = '24 hours';
                     shouldSend = true;
                 }
                 else if (scheduledStart >= reminder1hWindowStart && scheduledStart <= reminder1hWindowEnd) {
                     reminderType = 'APPOINTMENT_REMINDER_1H';
-                    message = `Reminder: You have an appointment at ${booking.salon_name} in 1 hour.`;
+                    timeUntil = '1 hour';
                     shouldSend = true;
                 }
                 else if (scheduledStart >= reminder15minWindowStart && scheduledStart <= reminder15minWindowEnd) {
                     reminderType = 'APPOINTMENT_REMINDER_15MIN';
-                    message = `Reminder: You have an appointment at ${booking.salon_name} in 15 minutes.`;
+                    timeUntil = '15 minutes';
                     shouldSend = true;
                 }
 
@@ -357,6 +360,46 @@ function startAppointmentReminders(connection) {
                     );
 
                     if (existing.length === 0) {
+                        const [services] = await db.execute(
+                            `SELECT 
+                                s.name AS service_name,
+                                bs.duration_minutes
+                             FROM booking_services bs
+                             JOIN services s ON bs.service_id = s.service_id
+                             WHERE bs.booking_id = ?
+                             ORDER BY s.name`,
+                            [booking.booking_id]
+                        );
+
+                        const salonTimezone = booking.salon_timezone || 'America/New_York';
+                        
+                        const bookingStartLocal = scheduledStart.setZone(salonTimezone);
+                        const bookingEndLocal = scheduledEnd.setZone(salonTimezone);
+                        
+                        const appointmentDate = bookingStartLocal.toFormat('EEEE, MMMM d, yyyy');
+                        const appointmentTime = bookingStartLocal.toFormat('h:mm a');
+                        const appointmentEndTime = bookingEndLocal.toFormat('h:mm a');
+                        
+                        let message = `Reminder: You have an appointment at ${booking.salon_name} in ${timeUntil}.\n\n`;
+                        message += `Date: ${appointmentDate}\n`;
+                        message += `Time: ${appointmentTime} - ${appointmentEndTime}\n`;
+                        
+                        if (services.length > 0) {
+                            message += `\nServices:\n`;
+                            services.forEach((service) => {
+                                message += `- ${service.service_name}`;
+                                if (service.duration_minutes) {
+                                    message += ` (${service.duration_minutes} min)`;
+                                }
+                                message += `\n`;
+                            });
+                        }
+
+                        // Truncate message if too long (max 500 chars)
+                        if (message.length > 500) {
+                            message = message.substring(0, 497) + '...';
+                        }
+
                         const nowUtc = toMySQLUtc(now);
                         await db.execute(
                             `INSERT INTO notifications_inbox 
@@ -368,7 +411,7 @@ function startAppointmentReminders(connection) {
                                 booking.email,
                                 booking.booking_id,
                                 reminderType,
-                                message,
+                                message.trim(),
                                 nowUtc
                             ]
                         );
