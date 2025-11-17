@@ -1,4 +1,4 @@
-const { uploadUniqueFile, deleteFile, getFile, getFileStream } = require('../utils/s3.js');
+const { uploadUniqueFile, deleteFile, getFilePresigned } = require('../utils/s3.js');
 const connection = require('../config/databaseConnection');
 
 // UPH 1.6 Upload After Photo
@@ -219,49 +219,55 @@ exports.deletePhoto = async (req, res) => {
 // UPH 1.6 Get Photos
 exports.getPhoto = async (req, res) => {
 	const db = connection.promise();
+  
 	try {
 		const { booking_id, type } = req.query;
-
-		if (!booking_id || !type) {
-			return res.status(400).json({ 
-				error: "Booking ID and type are required." 
+  
+	  	if (!booking_id || !type) {
+			return res.status(400).json({
+				error: "Booking ID and photo type are required."
 			});
 		}
 
-		const getPictureKeyQuery = 
-		`SELECT s3_key FROM pictures WHERE picture_id = (SELECT picture_id FROM booking_photos WHERE booking_id = ? AND picture_type = ?);`;
-
-		const [getPictureKeyResults] = await db.execute(getPictureKeyQuery, [booking_id, type]);
-
-		if (getPictureKeyResults.length === 0) {
-			return res.status(404).json({ message: 'Picture key not found' });
-		}
-
-		const file = await getFileStream(getPictureKeyResults[0].s3_key);
-		if (file.error) {
-			return res.status(400).json({ 
-				message: file.error 
+		if (type !== "BEFORE" && type !== "AFTER") {
+			return res.status(400).json({
+				error: "Invalid type."
 			});
 		}
+  
+	  	const getPictureKeyQuery = `
+		SELECT s3_key 
+		FROM pictures 
+		WHERE picture_id = (
+			SELECT picture_id 
+			FROM booking_photos 
+			WHERE booking_id = ? AND picture_type = '${type}');
+		`;
 
-		res.setHeader('Content-Type', file.contentType || 'application/octet-stream');
-		if (file.contentLength) 
-			res.setHeader('Content-Length', String(file.contentLength));
+		const [rows] = await db.execute(getPictureKeyQuery, [booking_id]);
 
-		file.stream.on('error', (err) => {
-			console.error('S3 stream error', err);
-			if (!res.headersSent) {
-				res.status(500).end('Stream error');
-			} else {
-				res.end();
-			}
-		});
+  
+	  if (rows.length === 0) {
+		return res.status(404).json({ message: "No photo found for this booking/type." });
+	  }
+  
+	  const key = rows[0].s3_key;
+  
+	const { url, error } = await getFilePresigned(key);
+  
+		if (error) {
+		  return res.status(500).json({ error: "Failed to generate S3 pre-signed URL." });
+		}
+  
+		return res.json({ url });
 
-		file.stream.pipe(res);
+  
+	  
 	} catch (err) {
-		console.error('getPhoto error:', err);
-		return res.status(500).json({ 
-			message: 'Failed to fetch file' 
-		});
+	  console.error("getPhoto error:", err);
+	  return res.status(500).json({
+		message: "Internal server error retrieving photo."
+	  });
 	}
-};
+  };
+  
