@@ -221,53 +221,83 @@ exports.getPhoto = async (req, res) => {
 	const db = connection.promise();
   
 	try {
-		const { booking_id, type } = req.query;
+		const { booking_id } = req.query;
   
-	  	if (!booking_id || !type) {
+	  	if (!booking_id) {
 			return res.status(400).json({
-				error: "Booking ID and photo type are required."
+				error: "Booking ID are required."
 			});
 		}
-
-		if (type !== "BEFORE" && type !== "AFTER") {
-			return res.status(400).json({
-				error: "Invalid type."
-			});
-		}
-  
 	  	const getPictureKeyQuery = `
 		SELECT s3_key 
 		FROM pictures 
-		WHERE picture_id = (
+		WHERE picture_id IN (
 			SELECT picture_id 
 			FROM booking_photos 
-			WHERE booking_id = ? AND picture_type = '${type}');
+			WHERE booking_id = ?);
 		`;
 
 		const [rows] = await db.execute(getPictureKeyQuery, [booking_id]);
 
-  
-	  if (rows.length === 0) {
-		return res.status(404).json({ message: "No photo found for this booking/type." });
-	  }
-  
-	  const key = rows[0].s3_key;
-  
-	const { url, error } = await getFilePresigned(key);
-  
-		if (error) {
-		  return res.status(500).json({ error: "Failed to generate S3 pre-signed URL." });
+		if (rows.length === 0) {
+			return res.status(404).json({ message: "No photo found for this booking/type." });
 		}
-  
-		return res.json({ url });
 
-  
-	  
+		const urls = [];
+		for (const row of rows) {
+			const { url, error } = await getFilePresigned(row.s3_key);
+			if (error) {
+				return res.status(500).json({ error: "Failed to generate S3 pre-signed URL." });
+			}
+			urls.push(url);
+		}
+
+		return res.status(200).json({ urls });
 	} catch (err) {
 	  console.error("getPhoto error:", err);
 	  return res.status(500).json({
 		message: "Internal server error retrieving photo."
 	  });
 	}
-  };
+};
+
+// UPH 1.6 Check if photo attached
+exports.checkIfPhotoAttached = async (req, res) => {
+	const db = connection.promise();
+
+	try {
+		const { booking_id } = req.query;
+
+		if (!booking_id) {
+			return res.status(400).json({
+				error: "Booking ID are required."
+			});
+		}
+
+	  	const getPictureKeyQuery = `
+		SELECT s3_key 
+		FROM pictures 
+		WHERE picture_id IN (
+			SELECT picture_id 
+			FROM booking_photos 
+			WHERE booking_id = ?);
+		`;
+
+		const [rows] = await db.execute(getPictureKeyQuery, [booking_id]);
+
+		if (rows.length === 0) {
+			return res.status(404).json({ message: "No photo found for this booking." });
+		}
+
+		return res.status(200).json({
+			message: "Photos exist."
+		});
+	}
+	catch (error) {
+		console.error("Check if photo attached error:", error);
+		res.status(500).json({ 
+			error: "Failed to check if photo attached." 
+		});
+	}
+};
   
