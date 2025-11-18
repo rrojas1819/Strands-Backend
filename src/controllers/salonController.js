@@ -867,7 +867,9 @@ exports.setEmployeeAvailability = async (req, res) => {
                       weekdayNumber, 
                       normalizedStartTime, 
                       normalizedEndTime,
-                      availability.slot_interval_minutes || 30
+                      availability.slot_interval_minutes || 30,
+                      nowUtc,
+                      nowUtc
                   ]);
                   results.push({ 
                       weekday: weekday.toUpperCase(), 
