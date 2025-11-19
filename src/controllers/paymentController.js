@@ -93,7 +93,8 @@ exports.processPayment = async (req, res) => {
             order_id,
             booking_id,
             use_loyalty_discount = false,
-            reward_id
+            reward_id,
+            promo_code
         } = req.body;
 
         // Validate required fields
@@ -144,11 +145,21 @@ exports.processPayment = async (req, res) => {
             return res.status(404).json({ message: 'Billing address not found or does not belong to you' });
         }
 
+        if (use_loyalty_discount && promo_code) {
+            return res.status(400).json({
+                message: 'Cannot use both promo code and loyalty discount. Please choose one.'
+            });
+        }
+
         // If booking_id is provided, validate booking exists, belongs to user, and is in PENDING status
         let salon_id = null;
         let loyaltyEligible = false;
         let loyaltyDiscountPercentage = null;
         let rewardId = null;
+        let promoEligible = false;
+        let promoDiscountPercentage = null;
+        let userPromoId = null;
+        let promoCodeUsed = null;
 
         if (booking_id) {
             const [bookingRows] = await db.execute(
@@ -198,9 +209,58 @@ exports.processPayment = async (req, res) => {
             }
         }
 
+        if (promo_code) {
+            if (!booking_id) {
+                return res.status(400).json({
+                    message: 'Promo code can only be used with booking_id payments'
+                });
+            }
+
+            if (!salon_id) {
+                return res.status(400).json({
+                    message: 'Promo code requires a valid booking'
+                });
+            }
+
+            const [promoRows] = await db.execute(
+                `SELECT user_promo_id, user_id, salon_id, discount_pct, status, expires_at
+                 FROM user_promotions
+                 WHERE promo_code = ? AND user_id = ? AND salon_id = ? AND status = 'ISSUED'`,
+                [promo_code, user_id, salon_id]
+            );
+
+            if (promoRows.length === 0) {
+                return res.status(400).json({
+                    message: 'Invalid promo code. The code may not exist, belong to another user, or is for a different salon.'
+                });
+            }
+
+            const promo = promoRows[0];
+            
+            if (promo.expires_at) {
+                const expiresAt = DateTime.fromSQL(promo.expires_at, { zone: 'utc' });
+                const now = DateTime.utc();
+                if (expiresAt < now) {
+                    return res.status(400).json({
+                        message: 'This promo code has expired.'
+                    });
+                }
+            }
+
+            promoEligible = true;
+            promoDiscountPercentage = promo.discount_pct;
+            userPromoId = promo.user_promo_id;
+            promoCodeUsed = promo_code;
+        }
+
         let finalAmount = roundedAmount;
         if (loyaltyEligible && use_loyalty_discount) {
             finalAmount = Math.round(roundedAmount * (1 - loyaltyDiscountPercentage / 100) * 100) / 100;
+            if (finalAmount < 0.01) {
+                return res.status(400).json({ message: 'Discounted amount must be at least 0.01' });
+            }
+        } else if (promoEligible && promo_code) {
+            finalAmount = Math.round(roundedAmount * (1 - promoDiscountPercentage / 100) * 100) / 100;
             if (finalAmount < 0.01) {
                 return res.status(400).json({ message: 'Discounted amount must be at least 0.01' });
             }
@@ -214,8 +274,8 @@ exports.processPayment = async (req, res) => {
             const nowUtc = toMySQLUtc(DateTime.utc());
             const insertPaymentQuery = `
                 INSERT INTO payments 
-                (credit_card_id, billing_address_id, amount, booking_id, order_id, reward_id, status, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, 'SUCCEEDED', ?, ?)
+                (credit_card_id, billing_address_id, amount, booking_id, order_id, reward_id, user_promo_id, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'SUCCEEDED', ?, ?)
             `;
 
             const [paymentResults] = await db.execute(insertPaymentQuery, [
@@ -225,6 +285,7 @@ exports.processPayment = async (req, res) => {
                 booking_id || null,
                 order_id || null,
                 (use_loyalty_discount && loyaltyEligible && rewardId) ? rewardId : null,
+                (promoEligible && userPromoId) ? userPromoId : null,
                 nowUtc,
                 nowUtc
             ]);
@@ -269,6 +330,105 @@ exports.processPayment = async (req, res) => {
                 }
             }
 
+            // Redeem promo code if used
+            if (promoEligible && userPromoId) {
+                const redeemedAt = toMySQLUtc(DateTime.utc());
+                const [updatePromoResult] = await db.execute(
+                    `UPDATE user_promotions
+                     SET status = 'REDEEMED', redeemed_at = ?
+                     WHERE user_promo_id = ? AND user_id = ? AND salon_id = ? AND status = 'ISSUED'`,
+                    [redeemedAt, userPromoId, user_id, salon_id]
+                );
+
+                if (updatePromoResult.affectedRows !== 1) {
+                    await db.query('ROLLBACK');
+                    if (booking_id) {
+                        try {
+                            await db.execute(
+                                `DELETE FROM bookings 
+                                 WHERE booking_id = ? AND customer_user_id = ? AND status = 'PENDING'`,
+                                [booking_id, user_id]
+                            );
+                        } catch (_) {}
+                    }
+                    return res.status(400).json({ 
+                        message: 'Cannot redeem promo code: code no longer available or already redeemed' 
+                    });
+                }
+
+                // Create notification for promo code usage
+                const [salonInfo] = await db.execute(
+                    'SELECT name FROM salons WHERE salon_id = ?',
+                    [salon_id]
+                );
+                const salonName = salonInfo.length > 0 ? salonInfo[0].name : 'the salon';
+
+                // Get booking information
+                let bookingInfo = null;
+                let employeeId = null;
+                let stylistName = null;
+                
+                if (booking_id) {
+                    const [bookingDetails] = await db.execute(
+                        `SELECT scheduled_start, scheduled_end 
+                         FROM bookings 
+                         WHERE booking_id = ?`,
+                        [booking_id]
+                    );
+                    
+                    if (bookingDetails.length > 0) {
+                        const scheduledStart = DateTime.fromSQL(bookingDetails[0].scheduled_start, { zone: 'utc' });
+                        bookingInfo = {
+                            scheduled_start: scheduledStart.toFormat('EEE, MMM d, yyyy h:mm a'),
+                            scheduled_end: DateTime.fromSQL(bookingDetails[0].scheduled_end, { zone: 'utc' }).toFormat('EEE, MMM d, yyyy h:mm a')
+                        };
+                    }
+
+                    // Get stylist information from booking_services
+                    const [stylistInfo] = await db.execute(
+                        `SELECT DISTINCT e.employee_id, e.full_name
+                         FROM booking_services bs
+                         JOIN employees e ON bs.employee_id = e.employee_id
+                         WHERE bs.booking_id = ?
+                         LIMIT 1`,
+                        [booking_id]
+                    );
+
+                    if (stylistInfo.length > 0) {
+                        employeeId = stylistInfo[0].employee_id;
+                        stylistName = stylistInfo[0].full_name;
+                    }
+                }
+
+                // Build notification message with booking and stylist info
+                let notificationMessage = `You successfully used promo code ${promoCodeUsed} for ${promoDiscountPercentage}% off your payment at ${salonName}.`;
+                
+                if (bookingInfo) {
+                    notificationMessage += ` Your appointment is scheduled for ${bookingInfo.scheduled_start}.`;
+                }
+                
+                if (stylistName) {
+                    notificationMessage += ` Your stylist is ${stylistName}.`;
+                }
+
+                await db.execute(
+                    `INSERT INTO notifications_inbox
+                        (user_id, salon_id, booking_id, employee_id, payment_id, type_code, promo_code, user_promo_id, status, message, created_at)
+                     VALUES (?, ?, ?, ?, ?, 'PROMO_REDEEMED', ?, ?, 'UNREAD', ?, ?)`,
+                    [
+                        user_id,
+                        salon_id,
+                        booking_id || null,
+                        employeeId,
+                        paymentResults.insertId,
+                        promoCodeUsed,
+                        userPromoId,
+                        notificationMessage,
+                        nowUtc
+                    ]
+                );
+            }
+
             // If booking_id was provided, update booking status from PENDING to SCHEDULED
             if (booking_id) {
                 const [updateBookingResult] = await db.execute(
@@ -300,8 +460,10 @@ exports.processPayment = async (req, res) => {
                 data: {
                     payment_id: paymentResults.insertId,
                     amount: finalAmount,
-                    original_amount: loyaltyEligible && use_loyalty_discount ? roundedAmount : undefined,
-                    discount_applied: loyaltyEligible && use_loyalty_discount,
+                    original_amount: (loyaltyEligible && use_loyalty_discount) || (promoEligible && promo_code) ? roundedAmount : undefined,
+                    discount_applied: (loyaltyEligible && use_loyalty_discount) || (promoEligible && promo_code),
+                    discount_type: loyaltyEligible && use_loyalty_discount ? 'loyalty' : (promoEligible && promo_code ? 'promo_code' : undefined),
+                    ...(promoEligible && promo_code ? { promo_code: promoCodeUsed, promo_discount_pct: promoDiscountPercentage } : {}),
                     ...(booking_id ? { booking_status_updated: true } : {})
                 }
             });

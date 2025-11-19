@@ -25,6 +25,7 @@ const paymentsRoutes = require('./routes/payments');
 const reviewRoutes = require('./routes/reviews');
 const staffReviewsRoutes = require('./routes/staffReviews');
 const appointmentNotesRoutes = require('./routes/appointmentNotes');
+const promotionsRoutes = require('./routes/promotions');
 const fileUploadRoutes = require('./routes/fileUpload');
 const notificationsRoutes = require('./routes/notifications');
 
@@ -59,6 +60,7 @@ app.use('/api/reviews', reviewRoutes);
 app.use('/api/staff-reviews', staffReviewsRoutes);
 app.use('/api/appointment-notes', appointmentNotesRoutes);
 app.use('/api/notifications', notificationsRoutes);
+app.use('/api/promotions', promotionsRoutes);
 
 // Start Server
 const PORT = process.env.PORT || 3000;
