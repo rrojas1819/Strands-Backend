@@ -342,13 +342,15 @@ exports.getSalonGallery = async (req, res) => {
 		const currentPage = Math.floor(offsetNum / limitNum) + 1;
 
 		const getSalonGalleryQuery = `
-			SELECT p.s3_key, bp.picture_type
+			SELECT p.s3_key, bp.picture_type, s.name, b.scheduled_end
 			FROM booking_photos bp 
 			JOIN bookings b ON bp.booking_id = b.booking_id
 			JOIN booking_services bs ON bs.booking_id = b.booking_id
+  			JOIN services s ON bs.service_id = s.service_id
 			JOIN employees e ON bs.employee_id = e.employee_id
 			JOIN pictures p On bp.picture_id = p.picture_id
-			WHERE e.employee_id = ? AND bp.booking_id IN (SELECT booking_id FROM bookings WHERE salon_id = ?) 
+			WHERE e.employee_id = ? AND bp.booking_id IN (SELECT booking_id FROM bookings WHERE salon_id = ?)
+
 			LIMIT ${limit} OFFSET ${offset};
 		`;
 
@@ -366,9 +368,6 @@ exports.getSalonGallery = async (req, res) => {
 			db.execute(getCountQuery, [employee_id, salon_id])
 		]);
 
-		console.log(countRows);
-		console.log(rows);
-
 		const total = countRows[0]?.total || 0;
 		const totalPages = Math.ceil(total / limitNum);
 
@@ -376,7 +375,7 @@ exports.getSalonGallery = async (req, res) => {
 			return res.status(404).json({ message: "No photos found for this salon." });
 		}
 
-		// Build before and after arrays
+		// Build before and after arrays with metadata
 		const before = [];
 		const after = [];
 		
@@ -384,11 +383,17 @@ exports.getSalonGallery = async (req, res) => {
 			const { url, error } = await getFilePresigned(row.s3_key);
 			if (error || !url) return;
 			
+			const item = {
+				url,
+				service_name: row.name,
+				scheduled_end: row.scheduled_end
+			};
+			
 			const pictureType = (row.picture_type || '').toUpperCase();
 			if (pictureType === 'BEFORE') {
-				before.push(url);
+				before.push(item);
 			} else if (pictureType === 'AFTER') {
-				after.push(url);
+				after.push(item);
 			}
 		}));
 
