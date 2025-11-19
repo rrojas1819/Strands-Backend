@@ -369,26 +369,46 @@ exports.processPayment = async (req, res) => {
                 let stylistName = null;
                 
                 if (booking_id) {
+                    // Get salon timezone for proper date formatting
+                    const [salonTimezoneResult] = await db.execute(
+                        'SELECT timezone FROM salons WHERE salon_id = ?',
+                        [salon_id]
+                    );
+                    const salonTimezone = salonTimezoneResult.length > 0 ? salonTimezoneResult[0].timezone : 'America/New_York';
+                    
                     const [bookingDetails] = await db.execute(
-                        `SELECT scheduled_start, scheduled_end 
+                        `SELECT DATE_FORMAT(scheduled_start, '%Y-%m-%d %H:%i:%s') AS scheduled_start,
+                                DATE_FORMAT(scheduled_end, '%Y-%m-%d %H:%i:%s') AS scheduled_end
                          FROM bookings 
                          WHERE booking_id = ?`,
                         [booking_id]
                     );
                     
                     if (bookingDetails.length > 0) {
+                        // Parse SQL format datetime as UTC
                         const scheduledStart = DateTime.fromSQL(bookingDetails[0].scheduled_start, { zone: 'utc' });
-                        bookingInfo = {
-                            scheduled_start: scheduledStart.toFormat('EEE, MMM d, yyyy h:mm a'),
-                            scheduled_end: DateTime.fromSQL(bookingDetails[0].scheduled_end, { zone: 'utc' }).toFormat('EEE, MMM d, yyyy h:mm a')
-                        };
+                        const scheduledEnd = DateTime.fromSQL(bookingDetails[0].scheduled_end, { zone: 'utc' });
+                        
+                        if (scheduledStart.isValid && scheduledEnd.isValid) {
+                            const bookingStartLocal = scheduledStart.setZone(salonTimezone);
+                            const bookingEndLocal = scheduledEnd.setZone(salonTimezone);
+                            
+                            const appointmentDate = bookingStartLocal.toFormat('EEEE, MMMM d, yyyy');
+                            const appointmentTime = bookingStartLocal.toFormat('h:mm a');
+                            const appointmentEndTime = bookingEndLocal.toFormat('h:mm a');
+                            
+                            bookingInfo = {
+                                scheduled_start: `Date: ${appointmentDate}\nTime: ${appointmentTime} - ${appointmentEndTime}`
+                            };
+                        }
                     }
 
                     // Get stylist information from booking_services
                     const [stylistInfo] = await db.execute(
-                        `SELECT DISTINCT e.employee_id, e.full_name
+                        `SELECT DISTINCT e.employee_id, u.full_name
                          FROM booking_services bs
                          JOIN employees e ON bs.employee_id = e.employee_id
+                         JOIN users u ON e.user_id = u.user_id
                          WHERE bs.booking_id = ?
                          LIMIT 1`,
                         [booking_id]
@@ -400,21 +420,27 @@ exports.processPayment = async (req, res) => {
                     }
                 }
 
-                // Build notification message with booking and stylist info
+                // Get user email for notification
+                const [userInfo] = await db.execute(
+                    'SELECT email FROM users WHERE user_id = ?',
+                    [user_id]
+                );
+                const userEmail = userInfo.length > 0 ? userInfo[0].email : null;
+
                 let notificationMessage = `You successfully used promo code ${promoCodeUsed} for ${promoDiscountPercentage}% off your payment at ${salonName}.`;
                 
                 if (bookingInfo) {
-                    notificationMessage += ` Your appointment is scheduled for ${bookingInfo.scheduled_start}.`;
+                    notificationMessage += `\n\nYour appointment is scheduled for:\n${bookingInfo.scheduled_start}`;
                 }
                 
                 if (stylistName) {
-                    notificationMessage += ` Your stylist is ${stylistName}.`;
+                    notificationMessage += `\n\nYour stylist is ${stylistName}.`;
                 }
 
                 await db.execute(
                     `INSERT INTO notifications_inbox
-                        (user_id, salon_id, booking_id, employee_id, payment_id, type_code, promo_code, user_promo_id, status, message, created_at)
-                     VALUES (?, ?, ?, ?, ?, 'PROMO_REDEEMED', ?, ?, 'UNREAD', ?, ?)`,
+                        (user_id, salon_id, booking_id, employee_id, payment_id, type_code, promo_code, user_promo_id, status, message, sender_email, email, created_at)
+                     VALUES (?, ?, ?, ?, ?, 'PROMO_REDEEMED', ?, ?, 'UNREAD', ?, 'SYSTEM', ?, ?)`,
                     [
                         user_id,
                         salon_id,
@@ -424,6 +450,7 @@ exports.processPayment = async (req, res) => {
                         promoCodeUsed,
                         userPromoId,
                         notificationMessage,
+                        userEmail,
                         nowUtc
                     ]
                 );
