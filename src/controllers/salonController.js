@@ -601,10 +601,11 @@ exports.setSalonHours = async (req, res) => {
           });
       }
       
-      const getSalonQuery = 'SELECT salon_id FROM salons WHERE owner_user_id = ?';
+      const getSalonQuery = 'SELECT salon_id, timezone FROM salons WHERE owner_user_id = ?';
       const [salonResult] = await db.execute(getSalonQuery, [owner_user_id]);
     
       const salon_id = salonResult[0].salon_id;
+      const salonTimezone = salonResult[0].timezone || 'America/New_York';
       
       const results = [];
       const errors = [];
@@ -617,17 +618,49 @@ exports.setSalonHours = async (req, res) => {
                   errors.push(`${weekday}: Invalid weekday`);
                   continue;
               }
-              //if the day is not open, delete it
-               if (!hours || hours === false || Object.keys(hours).length === 0) {
-                   const weekdayNumber = WEEKDAY_TO_NUMBER[weekday.toUpperCase()];
-                   const deleteQuery = `
-                       DELETE FROM salon_availability 
-                       WHERE salon_id = ? AND weekday = ?
-                   `;
-                   await db.execute(deleteQuery, [salon_id, weekdayNumber]);
-                   results.push({ weekday: weekday.toUpperCase(), action: 'removed' });
-                   continue;
-               }
+              
+              const shouldDelete = hours === null || 
+                                   hours === false || 
+                                   (typeof hours === 'object' && Object.keys(hours).length === 0) ||
+                                   (hours && hours.is_open === false);
+              
+              if (shouldDelete) {
+                  const weekdayNumber = WEEKDAY_TO_NUMBER[weekday.toUpperCase()];
+                  
+                  const checkBookingsQuery = `
+                      SELECT b.booking_id, b.scheduled_start
+                      FROM bookings b
+                      WHERE b.salon_id = ?
+                        AND b.status NOT IN ('CANCELED', 'NO_SHOW')
+                      LIMIT 1000
+                  `;
+                  const [allBookings] = await db.execute(checkBookingsQuery, [salon_id]);
+                  
+                  let hasBookingsOnWeekday = false;
+                  for (const booking of allBookings) {
+                      const bookingStart = DateTime.fromSQL(booking.scheduled_start, { zone: 'utc' });
+                      const bookingStartInSalonTz = bookingStart.setZone(salonTimezone);
+                      const bookingWeekday = luxonWeekdayToDb(bookingStartInSalonTz.weekday);
+                      
+                      if (bookingWeekday === weekdayNumber) {
+                          hasBookingsOnWeekday = true;
+                          break;
+                      }
+                  }
+                  
+                  if (hasBookingsOnWeekday) {
+                      errors.push(`${weekday}: Cannot delete salon hours. There are existing bookings on this day. Please cancel or reschedule all bookings first.`);
+                      continue;
+                  }
+                  
+                  const deleteQuery = `
+                      DELETE FROM salon_availability 
+                      WHERE salon_id = ? AND weekday = ?
+                  `;
+                  await db.execute(deleteQuery, [salon_id, weekdayNumber]);
+                  results.push({ weekday: weekday.toUpperCase(), action: 'removed' });
+                  continue;
+              }
               
               if (!hours.start_time || !hours.end_time) {
                   errors.push(`${weekday}: start_time and end_time are required`);
@@ -734,12 +767,13 @@ exports.setEmployeeAvailability = async (req, res) => {
       }
       
      
-      const getSalonQuery = 'SELECT salon_id FROM salons WHERE owner_user_id = ?';
+      const getSalonQuery = 'SELECT salon_id, timezone FROM salons WHERE owner_user_id = ?';
       const [salonResult] = await db.execute(getSalonQuery, [owner_user_id]);
       
    
       
        const salon_id = salonResult[0].salon_id;
+       const salonTimezone = salonResult[0].timezone || 'America/New_York';
        
        // Get salon operating hours for validation
       const getSalonHoursQuery = `
@@ -772,9 +806,42 @@ exports.setEmployeeAvailability = async (req, res) => {
                   continue;
               }
               
-              // If the day is not available, delete it
-              if (!availability || availability === false || Object.keys(availability).length === 0) {
+            
+              const shouldDelete = availability === null || 
+                                   availability === false || 
+                                   (typeof availability === 'object' && Object.keys(availability).length === 0) ||
+                                   (availability && availability.is_available === false);
+              
+              if (shouldDelete) {
                   const weekdayNumber = WEEKDAY_TO_NUMBER[weekday.toUpperCase()];
+                  
+                  const checkBookingsQuery = `
+                      SELECT b.booking_id, b.scheduled_start
+                      FROM bookings b
+                      JOIN booking_services bs ON b.booking_id = bs.booking_id
+                      WHERE bs.employee_id = ?
+                        AND b.status NOT IN ('CANCELED', 'NO_SHOW')
+                      LIMIT 1000
+                  `;
+                  const [employeeBookings] = await db.execute(checkBookingsQuery, [employeeId]);
+                  
+                  let hasBookingsOnWeekday = false;
+                  for (const booking of employeeBookings) {
+                      const bookingStart = DateTime.fromSQL(booking.scheduled_start, { zone: 'utc' });
+                      const bookingStartInSalonTz = bookingStart.setZone(salonTimezone);
+                      const bookingWeekday = luxonWeekdayToDb(bookingStartInSalonTz.weekday);
+                      
+                      if (bookingWeekday === weekdayNumber) {
+                          hasBookingsOnWeekday = true;
+                          break;
+                      }
+                  }
+                  
+                  if (hasBookingsOnWeekday) {
+                      errors.push(`${weekday}: Cannot delete employee availability. This employee has existing bookings on this day. Please cancel or reschedule all bookings first.`);
+                      continue;
+                  }
+                  
                   const deleteQuery = `
                       DELETE FROM employee_availability 
                       WHERE employee_id = ? AND weekday = ?

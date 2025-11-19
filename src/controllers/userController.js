@@ -650,7 +650,7 @@ exports.viewLoyaltyProgram = async (req, res) => {
       }
 
       const getLoyaltyProgramQuery = 
-      `SELECT lm.visits_count, lp.target_visits, lp.discount_percentage, lp.note, s.name as salon_name
+      `SELECT lm.visits_count, lm.total_visits_count, lp.target_visits, lp.discount_percentage, lp.note, s.name as salon_name
       FROM loyalty_memberships lm
       JOIN loyalty_programs lp ON lm.salon_id = lp.salon_id
       JOIN salons s ON s.salon_id = lp.salon_id
@@ -664,10 +664,10 @@ exports.viewLoyaltyProgram = async (req, res) => {
           });
       }
 
-      const getGoldenSalonsQuery = `SELECT COUNT(*) as golden_salons FROM loyalty_memberships WHERE user_id = ? and visits_count >= 5;`;
+      const getGoldenSalonsQuery = `SELECT COUNT(*) as golden_salons FROM loyalty_memberships WHERE user_id = ? and COALESCE(total_visits_count, visits_count, 0) >= 5;`;
       const [goldenSalons] = await db.execute(getGoldenSalonsQuery, [user_id]);    
   
-      const getTotalVisitsQuery = `SELECT SUM(visits_count) as total_visits FROM loyalty_memberships WHERE user_id = ?;`;
+      const getTotalVisitsQuery = `SELECT SUM(COALESCE(total_visits_count, visits_count, 0)) as total_visits FROM loyalty_memberships WHERE user_id = ?;`;
       const [totalVisits] = await db.execute(getTotalVisitsQuery, [user_id]);
 
       const getUserRewardsQuery = `SELECT reward_id, creationDate AS earned_at, active, redeemed_at, discount_percentage, note FROM available_rewards WHERE salon_id = ? AND user_id = ?;`;

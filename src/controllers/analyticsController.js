@@ -85,8 +85,8 @@ exports.loyaltyProgramAnalytics = async (req, res) => {
         const loyaltyProgramDataQuery = `SELECT
         (SELECT COUNT(*) FROM users) AS total_users,
         (SELECT COUNT(DISTINCT customer_user_id) FROM bookings) AS users_with_bookings,
-        (SELECT COUNT(*) FROM loyalty_memberships WHERE visits_count < 5)  AS bronze_status,
-        (SELECT COUNT(*) FROM loyalty_memberships WHERE visits_count >= 5) AS golden_status,
+        (SELECT COUNT(*) FROM loyalty_memberships WHERE COALESCE(total_visits_count, visits_count, 0) < 5)  AS bronze_status,
+        (SELECT COUNT(*) FROM loyalty_memberships WHERE COALESCE(total_visits_count, visits_count, 0) >= 5) AS golden_status,
         (SELECT COUNT(*) FROM available_rewards) as total_rewards, (SELECT COUNT(*) FROM available_rewards WHERE active = 0) as redeemed_rewards;
         `;
         const [loyaltyProgramData] = await db.execute(loyaltyProgramDataQuery);
@@ -96,9 +96,9 @@ exports.loyaltyProgramAnalytics = async (req, res) => {
         `SELECT 
         s.name AS salon_name,
         COUNT(DISTINCT lm.user_id) AS participants,
-        COUNT(DISTINCT CASE WHEN lm.visits_count >= 5 THEN lm.user_id END) AS golden_members,
-        SUM(lm.visits_count) AS total_visits,
-        ROUND(AVG(lm.visits_count), 2) AS avg_visits_per_member
+        COUNT(DISTINCT CASE WHEN COALESCE(lm.total_visits_count, lm.visits_count, 0) >= 5 THEN lm.user_id END) AS golden_members,
+        SUM(COALESCE(lm.total_visits_count, lm.visits_count, 0)) AS total_visits,
+        ROUND(AVG(COALESCE(lm.total_visits_count, lm.visits_count, 0)), 2) AS avg_visits_per_member
         FROM loyalty_memberships lm
         JOIN salons s ON s.salon_id = lm.salon_id
         GROUP BY s.salon_id, s.name
