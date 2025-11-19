@@ -323,3 +323,139 @@ exports.salonRevenueAnalytics = async (req, res) => {
         });
     }
 };
+
+// AFDV 1.6 Customer Retention Analytics
+exports.customerRetentionAnalytics = async (req, res) => {
+    const db = connection.promise();
+    try {
+        const customerRebookRateQuery = 
+        `SELECT 
+            ROUND(
+                (SUM(CASE WHEN booking_count > 1 THEN 1 ELSE 0 END) 
+                / COUNT(*)) * 100, 2
+            ) AS rebooking_rate_percent
+        FROM (
+            SELECT 
+                customer_user_id,
+                COUNT(*) AS booking_count
+            FROM bookings
+            WHERE status IN ('scheduled', 'completed')
+            GROUP BY customer_user_id
+        ) AS t;`
+        const [customerRebookRateResults] = await db.execute(customerRebookRateQuery);
+
+        if (customerRebookRateResults.affectedRows === 0) {
+            return res.status(200).json({
+                data: {
+                    rebooking_rate_percent: 0
+                }
+            });
+        }
+
+        const customerAvgRebookIntervalQuery = 
+        `SELECT 
+            ROUND(AVG(days_between), 2) AS avg_return_interval_days
+        FROM (
+            SELECT
+                customer_user_id,
+                DATEDIFF(
+                    scheduled_start,
+                    LAG(scheduled_start) OVER (
+                        PARTITION BY customer_user_id 
+                        ORDER BY scheduled_start
+                    )
+                ) AS days_between
+            FROM bookings
+            WHERE status IN ('scheduled', 'completed')
+        ) AS t
+        WHERE days_between IS NOT NULL;`;
+
+        const [customerAvgRebookIntervalResults] = await db.execute(customerAvgRebookIntervalQuery);
+
+        if (customerAvgRebookIntervalResults.affectedRows === 0) {
+            return res.status(200).json({
+                data: {
+                    avg_return_interval_days: 0
+                }
+            });
+        }
+
+        const customerFirstTimeVSReturnTimeQuery = 
+        `SELECT
+            SUM(CASE WHEN booking_count = 1 THEN 1 ELSE 0 END) AS first_time_customers,
+            SUM(CASE WHEN booking_count > 1 THEN 1 ELSE 0 END) AS returning_customers,
+            ROUND(
+                SUM(CASE WHEN booking_count = 1 THEN 1 ELSE 0 END) 
+                / COUNT(*) * 100, 
+            2) AS first_time_percentage,
+            ROUND(
+                SUM(CASE WHEN booking_count > 1 THEN 1 ELSE 0 END) 
+                / COUNT(*) * 100, 
+            2) AS returning_percentage
+        FROM (
+            SELECT 
+                customer_user_id,
+                COUNT(*) AS booking_count
+            FROM bookings
+            WHERE status IN ('scheduled', 'completed')
+            GROUP BY customer_user_id
+        ) AS t;`;
+
+        const [customerFirstTimeVSReturnTimeResults] = await db.execute(customerFirstTimeVSReturnTimeQuery);
+        if (customerFirstTimeVSReturnTimeResults.affectedRows === 0) {
+            return res.status(200).json({
+                data: {
+                    first_time_customers: 0,
+                    returning_customers: 0,
+                }
+            });
+        }
+
+        const favoriteStylistLoyaltyQuery = 
+        `SELECT 
+            u.full_name as stylist_name,
+            s.name as salon_name,
+            COUNT(*) AS loyal_customers
+        FROM (
+            SELECT 
+                b.customer_user_id,
+                bs.employee_id,
+                COUNT(*) AS times_booked
+            FROM booking_services bs
+            JOIN bookings b ON b.booking_id = bs.booking_id
+            WHERE b.status IN ('scheduled', 'completed')
+            GROUP BY b.customer_user_id, bs.employee_id
+        ) AS t
+        JOIN employees e ON t.employee_id = e.employee_id
+        JOIN users u ON u.user_id = e.user_id
+        JOIN salons s ON s.salon_id = e.salon_id
+        WHERE times_booked > 1
+        GROUP BY u.full_name, s.name
+        ORDER BY loyal_customers DESC;`;
+
+        const [favoriteStylistLoyaltyResults] = await db.execute(favoriteStylistLoyaltyQuery);
+        
+        if (favoriteStylistLoyaltyResults.affectedRows === 0) {
+            return res.status(200).json({
+                data: {
+                    favorite_stylist_loyalty: []
+                }
+            });
+        }
+
+        res.status(200).json({
+            data: {
+                rebooking_rate_percent: customerRebookRateResults[0].rebooking_rate_percent,
+                avg_return_interval_days: customerAvgRebookIntervalResults[0].avg_return_interval_days,
+                first_time_VS_return_time: customerFirstTimeVSReturnTimeResults,
+                favorite_stylist_loyalty: favoriteStylistLoyaltyResults,
+            }
+        });
+    }
+    catch (error) {
+        console.error('customerRetentionAnalytics error:', error);
+        res.status(500).json({
+            message: "Internal server error"
+        });
+    }
+};
