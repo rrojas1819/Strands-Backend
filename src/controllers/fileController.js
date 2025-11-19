@@ -347,9 +347,8 @@ exports.getSalonGallery = async (req, res) => {
 			JOIN bookings b ON bp.booking_id = b.booking_id
 			JOIN booking_services bs ON bs.booking_id = b.booking_id
 			JOIN employees e ON bs.employee_id = e.employee_id
-			JOIN users u ON u.user_id = e.user_id
 			JOIN pictures p On bp.picture_id = p.picture_id
-			WHERE u.user_id = ? AND bp.booking_id IN (SELECT booking_id FROM bookings WHERE salon_id = ?) 
+			WHERE e.employee_id = ? AND bp.booking_id IN (SELECT booking_id FROM bookings WHERE salon_id = ?) 
 			LIMIT ${limit} OFFSET ${offset};
 		`;
 
@@ -359,8 +358,7 @@ exports.getSalonGallery = async (req, res) => {
 			JOIN bookings b ON bp.booking_id = b.booking_id
 			JOIN booking_services bs ON bs.booking_id = b.booking_id
 			JOIN employees e ON bs.employee_id = e.employee_id
-			JOIN users u ON u.user_id = e.user_id
-			WHERE u.user_id = ? AND b.salon_id = ?;
+			WHERE e.employee_id = ? AND b.salon_id = ?;
 		`;
 
 		const [[rows], [countRows]] = await Promise.all([
