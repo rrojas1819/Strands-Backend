@@ -325,3 +325,95 @@ exports.checkIfPhotoAttached = async (req, res) => {
 	}
 };
   
+exports.getSalonGallery = async (req, res) => {
+	const db = connection.promise();
+
+	try {
+		const { salon_id, employee_id, limit, offset } = req.query;
+
+		if (!salon_id || !employee_id || isNaN(limit) || isNaN(offset)) {
+			return res.status(400).json({
+				error: "Fields missing or invalid."
+			});
+		}
+
+		const limitNum = parseInt(limit);
+		const offsetNum = parseInt(offset);
+		const currentPage = Math.floor(offsetNum / limitNum) + 1;
+
+		const getSalonGalleryQuery = `
+			SELECT p.s3_key, bp.picture_type
+			FROM booking_photos bp 
+			JOIN bookings b ON bp.booking_id = b.booking_id
+			JOIN booking_services bs ON bs.booking_id = b.booking_id
+			JOIN employees e ON bs.employee_id = e.employee_id
+			JOIN users u ON u.user_id = e.user_id
+			JOIN pictures p On bp.picture_id = p.picture_id
+			WHERE u.user_id = ? AND bp.booking_id IN (SELECT booking_id FROM bookings WHERE salon_id = ?) 
+			LIMIT ${limit} OFFSET ${offset};
+		`;
+
+		const getCountQuery = `
+			SELECT COUNT(*) as total
+			FROM booking_photos bp 
+			JOIN bookings b ON bp.booking_id = b.booking_id
+			JOIN booking_services bs ON bs.booking_id = b.booking_id
+			JOIN employees e ON bs.employee_id = e.employee_id
+			JOIN users u ON u.user_id = e.user_id
+			WHERE u.user_id = ? AND b.salon_id = ?;
+		`;
+
+		const [[rows], [countRows]] = await Promise.all([
+			db.execute(getSalonGalleryQuery, [employee_id, salon_id]),
+			db.execute(getCountQuery, [employee_id, salon_id])
+		]);
+
+		console.log(countRows);
+		console.log(rows);
+
+		const total = countRows[0]?.total || 0;
+		const totalPages = Math.ceil(total / limitNum);
+
+		if (rows.length === 0) {
+			return res.status(404).json({ message: "No photos found for this salon." });
+		}
+
+		// Build before and after arrays
+		const before = [];
+		const after = [];
+		
+		await Promise.all(rows.map(async (row) => {
+			const { url, error } = await getFilePresigned(row.s3_key);
+			if (error || !url) return;
+			
+			const pictureType = (row.picture_type || '').toUpperCase();
+			if (pictureType === 'BEFORE') {
+				before.push(url);
+			} else if (pictureType === 'AFTER') {
+				after.push(url);
+			}
+		}));
+
+		return res.status(200).json({
+			before,
+			after,
+			pagination: {
+				currentPage,
+				limit: limitNum,
+				offset: offsetNum,
+				total,
+				totalPages,
+				hasNextPage: currentPage < totalPages,
+				hasPreviousPage: currentPage > 1
+			}
+		});
+
+	} catch (error) {
+		console.error("getSalonGallery error:", error);
+		res.status(500).json({ 
+			error: "Failed to get salon gallery." 
+		});
+	}
+
+	
+  }
