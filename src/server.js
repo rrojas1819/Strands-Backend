@@ -1,5 +1,7 @@
 const express = require('express');
 const cors = require('cors');
+const swaggerUi = require('swagger-ui-express');
+const swaggerSpec = require('./config/swagger');
 require('dotenv').config();
 
 
@@ -45,6 +47,11 @@ startAppointmentReminders(db);
 app.use(cors());
 app.use(express.json());
 
+// Swagger API Documentation
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
+	customCss: '.swagger-ui .topbar { display: none }',
+	customSiteTitle: 'Strands API Documentation'
+}));
 
 //Use Routes
 app.use('/api', healthRoutes);
