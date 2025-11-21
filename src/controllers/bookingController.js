@@ -19,6 +19,9 @@ exports.getMyAppointments = async (req, res) => {
         limit = Math.max(1, Math.min(parseInt(limit, 10) || 10, 100)); // Max 100 per page
         const offset = (page - 1) * limit;
 
+        const limitInt = Math.floor(limit);
+        const offsetInt = Math.floor(offset);
+
         // Get total count
         const [countResult] = await db.execute(
             `SELECT COUNT(*) as total 
@@ -48,8 +51,8 @@ exports.getMyAppointments = async (req, res) => {
              JOIN salons s ON b.salon_id = s.salon_id
              WHERE b.customer_user_id = ?
              ORDER BY b.scheduled_start DESC
-             LIMIT ? OFFSET ?`,
-            [customer_user_id, limit, offset]
+             LIMIT ${limitInt} OFFSET ${offsetInt}`,
+            [customer_user_id]
         );
 
         if (bookings.length === 0) {
