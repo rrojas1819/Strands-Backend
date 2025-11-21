@@ -633,9 +633,6 @@ const sendUnusedOffersNotifications = async (db = null, salon_id = null) => {
             const errors = [];
             for (const userData of usersToNotify) {
                 try {
-                    const elevenHoursAgo = now.minus({ hours: 11 });
-                    const elevenHoursAgoUtc = toMySQLUtc(elevenHoursAgo);
-
                     const createNotificationChunks = (message) => {
                         const maxMessageLength = 400;
                         const messageChunks = [];
@@ -709,19 +706,7 @@ const sendUnusedOffersNotifications = async (db = null, salon_id = null) => {
                             promoMessage += `\n`;
                         });
 
-                        const [recentPromoNotification] = await db.execute(
-                            `SELECT notification_id 
-                             FROM notifications_inbox 
-                             WHERE user_id = ? 
-                               AND salon_id = ? 
-                               AND type_code = ?
-                               AND message LIKE ?
-                               AND created_at >= ?`,
-                            [userData.user_id, userData.salon_id, type_code, '%promo codes%', elevenHoursAgoUtc]
-                        );
-
-                        if (recentPromoNotification.length === 0) {
-                            const promoChunks = createNotificationChunks(promoMessage);
+                        const promoChunks = createNotificationChunks(promoMessage);
                             
                             for (let i = 0; i < promoChunks.length; i++) {
                                 const [result] = await db.execute(
@@ -750,7 +735,6 @@ const sendUnusedOffersNotifications = async (db = null, salon_id = null) => {
                                     total_parts: promoChunks.length > 1 ? promoChunks.length : null
                                 });
                             }
-                        }
                     }
 
                     if (userData.rewards.length > 0) {
@@ -765,19 +749,7 @@ const sendUnusedOffersNotifications = async (db = null, salon_id = null) => {
                             rewardMessage += `\n`;
                         });
 
-                        const [recentRewardNotification] = await db.execute(
-                            `SELECT notification_id 
-                             FROM notifications_inbox 
-                             WHERE user_id = ? 
-                               AND salon_id = ? 
-                               AND type_code = ?
-                               AND message LIKE ?
-                               AND created_at >= ?`,
-                            [userData.user_id, userData.salon_id, type_code, '%loyalty rewards%', elevenHoursAgoUtc]
-                        );
-
-                        if (recentRewardNotification.length === 0) {
-                            const rewardChunks = createNotificationChunks(rewardMessage);
+                        const rewardChunks = createNotificationChunks(rewardMessage);
                             
                             for (let i = 0; i < rewardChunks.length; i++) {
                                 const [result] = await db.execute(
@@ -806,7 +778,6 @@ const sendUnusedOffersNotifications = async (db = null, salon_id = null) => {
                                     total_parts: rewardChunks.length > 1 ? rewardChunks.length : null
                                 });
                             }
-                        }
                     }
                 } catch (userError) {
                     // Log error for this specific user but continue with others
