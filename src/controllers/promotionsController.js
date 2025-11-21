@@ -67,9 +67,9 @@ exports.sendPromotionToCustomer = async (req, res) => {
         const ownerUserId = req.user?.user_id;
         const salonIdFromParams = req.params.salonId;
         const { email, description, discount_pct, expires_at } = req.body || {};
-        if (!email || !description || !discount_pct) {
+        if (!email  || !discount_pct) {
             return res.status(400).json({
-                message: 'email, description, and discount amount are required'
+                message: 'email, and discount amount are required'
             });
         }
         const discountPctNum = Number(discount_pct);
@@ -125,7 +125,7 @@ GROUP BY users.user_id, users.full_name`,
                     user[0].user_id,
                     salonId,
                     promoCode,
-                    description,
+                    description || '',
                     discountPctNum,
                     issuedAt,
                     expiresAtSql
@@ -138,7 +138,8 @@ GROUP BY users.user_id, users.full_name`,
                 : '';
             let message =
                 `Thanks for being a loyal customer at ${salon.name}! ` +
-                `Use promo code ${promoCode} for ${discountPctNum}% off your next visit. ${description}.${expiresFragment}`;
+                `Use promo code ${promoCode} for ${discountPctNum}% off your next visit. ${expiresFragment}
+                ${description ? ` ${description}.` : ''}`;
 
             if (message.length > 400) {
                 message = message.slice(0, 397) + '...';
