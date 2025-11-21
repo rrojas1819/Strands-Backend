@@ -194,9 +194,9 @@ exports.issueLoyalCustomerPromotions = async (req, res) => {
         const salonIdFromParams = parseInt(req.params.salonId, 10);
         const { description, discount_pct, expires_at } = req.body || {};
 
-        if (!description || !discount_pct) {
+        if (!discount_pct) {
             return res.status(400).json({
-                message: 'description and discount_pct are required'
+                message: 'discount_pct is required'
             });
         }
 
@@ -261,7 +261,7 @@ exports.issueLoyalCustomerPromotions = async (req, res) => {
                         user.user_id,
                         salonId,
                         promoCode,
-                        description,
+                        description || '',
                         discountPctNum,
                         issuedAt,
                         expiresAtSql
@@ -274,7 +274,7 @@ exports.issueLoyalCustomerPromotions = async (req, res) => {
                     : '';
                 let message =
                     `Thanks for being a loyal (Gold) guest at ${salon.name}! ` +
-                    `Use promo code ${promoCode} for ${discountPctNum}% off your next visit. ${description}.${expiresFragment}`;
+                    `Use promo code ${promoCode} for ${discountPctNum}% off your next visit.${description ? ` ${description}.` : ''} ${expiresFragment}`;
 
                 if (message.length > 400) {
                     message = message.slice(0, 397) + '...';
@@ -379,7 +379,7 @@ exports.getUserPromotions = async (req, res) => {
     }
 };
 
-// Preview promo code - Get promo info and discounted price without redeeming
+//NC 1.2 - Preview promo code - Get promo info and discounted price without redeeming
 exports.previewPromoCode = async (req, res) => {
     const db = connection.promise();
 

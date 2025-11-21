@@ -12,7 +12,7 @@ router.post('/salons/:salonId/sendPromoToCustomer',authenticateToken,roleAuthori
 // NC 1.2 - Get user promotions
 router.get('/user/get-promotions',authenticateToken,roleAuthorization(['CUSTOMER']),getUserPromotions);
 
-// Preview promo code - Get promo info and discounted price without redeeming
+//NC 1.2 - Preview promo code - Get promo info and discounted price without redeeming
 router.post('/preview',authenticateToken,roleAuthorization(['CUSTOMER']),previewPromoCode);
 
 module.exports = router;

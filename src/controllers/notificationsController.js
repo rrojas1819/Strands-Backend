@@ -476,6 +476,37 @@ const sendUnusedOffersNotifications = async (db = null, salon_id = null) => {
         const nowUtc = toMySQLUtc(now);
         const type_code = 'UNUSED_OFFERS_REMINDER';
 
+        let allCustomers = [];
+        if (salon_id !== null) {
+            const [customers] = await db.execute(
+                `SELECT DISTINCT 
+                    b.customer_user_id AS user_id,
+                    s.salon_id,
+                    s.name AS salon_name,
+                    u.email,
+                    u.full_name
+                 FROM bookings b
+                 JOIN salons s ON s.salon_id = b.salon_id
+                 JOIN users u ON u.user_id = b.customer_user_id
+                 WHERE b.salon_id = ?`,
+                [salon_id]
+            );
+            allCustomers = customers;
+        }
+
+        if (salon_id !== null && allCustomers.length === 0) {
+            return {
+                success: true,
+                notifications_created: 0,
+                message: 'No customers found for this salon'
+            };
+        }
+
+        const customerUserIds = salon_id !== null && allCustomers.length > 0 
+            ? allCustomers.map(c => c.user_id) 
+            : null;
+
+        // Query unused promos - filter by salon_id and customer list if provided
         let promoQuery = `SELECT 
                 up.user_id,
                 up.salon_id,
@@ -497,9 +528,15 @@ const sendUnusedOffersNotifications = async (db = null, salon_id = null) => {
             promoQuery += ` AND up.salon_id = ?`;
             promoParams.push(salon_id);
         }
+        if (customerUserIds !== null && customerUserIds.length > 0) {
+            const placeholders = customerUserIds.map(() => '?').join(',');
+            promoQuery += ` AND up.user_id IN (${placeholders})`;
+            promoParams.push(...customerUserIds);
+        }
 
         const [unusedPromos] = await db.execute(promoQuery, promoParams);
 
+        // Query unused rewards - filter by salon_id and customer list if provided
         let rewardQuery = `SELECT 
                 ar.user_id,
                 ar.salon_id,
@@ -520,6 +557,11 @@ const sendUnusedOffersNotifications = async (db = null, salon_id = null) => {
         if (salon_id !== null) {
             rewardQuery += ` AND ar.salon_id = ?`;
             rewardParams.push(salon_id);
+        }
+        if (customerUserIds !== null && customerUserIds.length > 0) {
+            const placeholders = customerUserIds.map(() => '?').join(',');
+            rewardQuery += ` AND ar.user_id IN (${placeholders})`;
+            rewardParams.push(...customerUserIds);
         }
 
         const [unusedRewards] = await db.execute(rewardQuery, rewardParams);
