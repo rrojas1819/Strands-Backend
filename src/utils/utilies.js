@@ -434,6 +434,19 @@ function startAppointmentReminders(connection) {
     }, 60 * 1000); // Run every minute
 }
 
+// NC 1.3 - Job to send notifications about unused promos and rewards every 12 hours
+function startUnusedOffersReminders(connection) {
+    setInterval(async () => {
+        try {
+            const db = connection.promise();
+            const notificationsController = require('../controllers/notificationsController');
+            await notificationsController.sendUnusedOffersNotifications(db);
+        } catch (error) {
+            console.error('Unused offers reminders job failed:', error);
+        }
+    }, 12 * 60 * 60 * 1000); // Run every 12 hours
+}
+
 module.exports = {
     validateEmail,
     startTokenCleanup,
@@ -442,6 +455,7 @@ module.exports = {
     formatDateTime,
     startLoyaltySeenUpdate,
     startAppointmentReminders,
+    startUnusedOffersReminders,
     logUtcDebug,
     localAvailabilityToUtc,
     utcToLocalDateString,

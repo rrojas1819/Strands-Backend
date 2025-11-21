@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { getNotifications, markAsRead, stylistSendReminder, deleteNotification } = require('../controllers/notificationsController');
+const { getNotifications, markAsRead, stylistSendReminder, deleteNotification, ownerSendUnusedOffersNotifications } = require('../controllers/notificationsController');
 const { authenticateToken, roleAuthorization} = require('../middleware/auth.middleware');
 
 // NC 1.1 - Get user's notifications with pagination
@@ -14,6 +14,9 @@ router.post('/stylist/send-reminder', authenticateToken, roleAuthorization(['EMP
 
 // NC 1.1 - Delete notification
 router.delete('/delete/:notification_id', authenticateToken, roleAuthorization(['OWNER','EMPLOYEE','CUSTOMER',"ADMIN"]), deleteNotification);
+
+// NC 1.3 - Owner endpoint to manually trigger unused offers notifications
+router.post('/owner/send-unused-offers', authenticateToken, roleAuthorization(['OWNER']), ownerSendUnusedOffersNotifications);
 
 module.exports = router;
 

@@ -463,3 +463,378 @@ exports.deleteNotification = async (req, res) => {
     }
 };
 
+// NC 1.3 - Helper function to send notifications about unused promos and rewards
+// Can be used by both scheduled job and manual endpoint
+const sendUnusedOffersNotifications = async (db = null, salon_id = null) => {
+    const useExternalDb = db !== null;
+    if (!useExternalDb) {
+        db = connection.promise();
+    }
+
+    try {
+        const now = DateTime.utc();
+        const nowUtc = toMySQLUtc(now);
+        const type_code = 'UNUSED_OFFERS_REMINDER';
+
+        let promoQuery = `SELECT 
+                up.user_id,
+                up.salon_id,
+                up.promo_code,
+                up.description,
+                up.discount_pct,
+                DATE_FORMAT(up.expires_at, '%Y-%m-%d %H:%i:%s') AS expires_at,
+                s.name AS salon_name,
+                u.email,
+                u.full_name
+             FROM user_promotions up
+             JOIN salons s ON s.salon_id = up.salon_id
+             JOIN users u ON u.user_id = up.user_id
+             WHERE up.status = 'ISSUED'
+               AND (up.expires_at IS NULL OR up.expires_at > ?)`;
+        
+        const promoParams = [nowUtc];
+        if (salon_id !== null) {
+            promoQuery += ` AND up.salon_id = ?`;
+            promoParams.push(salon_id);
+        }
+
+        const [unusedPromos] = await db.execute(promoQuery, promoParams);
+
+        let rewardQuery = `SELECT 
+                ar.user_id,
+                ar.salon_id,
+                ar.reward_id,
+                ar.discount_percentage,
+                ar.note,
+                ar.creationDate,
+                s.name AS salon_name,
+                u.email,
+                u.full_name
+             FROM available_rewards ar
+             JOIN salons s ON s.salon_id = ar.salon_id
+             JOIN users u ON u.user_id = ar.user_id
+             WHERE ar.active = 1 
+               AND ar.redeemed_at IS NULL`;
+        
+        const rewardParams = [];
+        if (salon_id !== null) {
+            rewardQuery += ` AND ar.salon_id = ?`;
+            rewardParams.push(salon_id);
+        }
+
+        const [unusedRewards] = await db.execute(rewardQuery, rewardParams);
+
+        const userSalonMap = {};
+
+        for (const promo of unusedPromos) {
+            const key = `${promo.user_id}_${promo.salon_id}`;
+            if (!userSalonMap[key]) {
+                userSalonMap[key] = {
+                    user_id: promo.user_id,
+                    salon_id: promo.salon_id,
+                    salon_name: promo.salon_name,
+                    email: promo.email,
+                    full_name: promo.full_name,
+                    promos: [],
+                    rewards: []
+                };
+            }
+            userSalonMap[key].promos.push({
+                promo_code: promo.promo_code,
+                description: promo.description,
+                discount_pct: promo.discount_pct,
+                expires_at: promo.expires_at
+            });
+        }
+
+        for (const reward of unusedRewards) {
+            const key = `${reward.user_id}_${reward.salon_id}`;
+            if (!userSalonMap[key]) {
+                userSalonMap[key] = {
+                    user_id: reward.user_id,
+                    salon_id: reward.salon_id,
+                    salon_name: reward.salon_name,
+                    email: reward.email,
+                    full_name: reward.full_name,
+                    promos: [],
+                    rewards: []
+                };
+            }
+            userSalonMap[key].rewards.push({
+                reward_id: reward.reward_id,
+                discount_percentage: reward.discount_percentage,
+                note: reward.note,
+                creationDate: reward.creationDate
+            });
+        }
+
+        const usersToNotify = Object.values(userSalonMap).filter(
+            user => user.promos.length > 0 || user.rewards.length > 0
+        );
+
+        if (usersToNotify.length === 0) {
+            return {
+                success: true,
+                notifications_created: 0,
+                message: 'No users with unused offers found'
+            };
+        }
+
+        const notificationsCreated = [];
+        const shouldUseTransaction = !useExternalDb;
+
+        if (shouldUseTransaction) {
+            await db.beginTransaction();
+        }
+
+        try {
+            for (const userData of usersToNotify) {
+                const elevenHoursAgo = now.minus({ hours: 11 });
+                const elevenHoursAgoUtc = toMySQLUtc(elevenHoursAgo);
+
+                const createNotificationChunks = (message) => {
+                    const maxMessageLength = 400;
+                    const messageChunks = [];
+                    
+                    if (message.length <= maxMessageLength) {
+                        messageChunks.push(message.trim());
+                    } else {
+                        let remaining = message;
+                        let partNumber = 1;
+                        const totalParts = Math.ceil(message.length / maxMessageLength);
+                        
+                        while (remaining.length > 0) {
+                            if (remaining.length <= maxMessageLength) {
+                                let chunk = remaining.trim();
+                                if (totalParts > 1) {
+                                    chunk = `(Part ${partNumber}/${totalParts})\n${chunk}`;
+                                }
+                                messageChunks.push(chunk);
+                                break;
+                            }
+                            
+                            let splitPoint = maxMessageLength;
+                            const searchStart = Math.max(0, maxMessageLength - 50);
+                            const lastNewline = remaining.lastIndexOf('\n', maxMessageLength);
+                            
+                            if (lastNewline > searchStart) {
+                                splitPoint = lastNewline + 1;
+                            }
+                            
+                            let chunk = remaining.substring(0, splitPoint).trim();
+                            if (totalParts > 1) {
+                                chunk = `(Part ${partNumber}/${totalParts})\n${chunk}`;
+                            }
+                            messageChunks.push(chunk);
+                            
+                            remaining = remaining.substring(splitPoint);
+                            partNumber++;
+                        }
+                    }
+                    return messageChunks;
+                };
+
+                if (userData.promos.length > 0) {
+                    let promoMessage = `You have unused promo codes at ${userData.salon_name}:\n\n`;
+                    promoMessage += `Promo Codes (${userData.promos.length}):\n`;
+                    
+                    userData.promos.forEach((promo, index) => {
+                        promoMessage += `${index + 1}. Code: ${promo.promo_code} - ${promo.discount_pct}% off`;
+                        if (promo.description) {
+                            promoMessage += ` - ${promo.description}`;
+                        }
+                        if (promo.expires_at) {
+                            let expiresAt = null;
+                            if (typeof promo.expires_at === 'string') {
+                                expiresAt = DateTime.fromSQL(promo.expires_at, { zone: 'utc' });
+                                if (!expiresAt.isValid) {
+                                    expiresAt = DateTime.fromISO(promo.expires_at);
+                                }
+                                if (!expiresAt.isValid) {
+                                    const mysqlDate = promo.expires_at.replace(' ', 'T') + 'Z';
+                                    expiresAt = DateTime.fromISO(mysqlDate);
+                                }
+                            } else if (promo.expires_at instanceof Date) {
+                                expiresAt = DateTime.fromJSDate(promo.expires_at, { zone: 'utc' });
+                            }
+                            
+                            if (expiresAt && expiresAt.isValid) {
+                                promoMessage += ` (Expires: ${expiresAt.toFormat('MMM d, yyyy')})`;
+                            }
+                        }
+                        promoMessage += `\n`;
+                    });
+
+                    const [recentPromoNotification] = await db.execute(
+                        `SELECT notification_id 
+                         FROM notifications_inbox 
+                         WHERE user_id = ? 
+                           AND salon_id = ? 
+                           AND type_code = ?
+                           AND message LIKE ?
+                           AND created_at >= ?`,
+                        [userData.user_id, userData.salon_id, type_code, '%promo codes%', elevenHoursAgoUtc]
+                    );
+
+                    if (recentPromoNotification.length === 0) {
+                        const promoChunks = createNotificationChunks(promoMessage);
+                        
+                        for (let i = 0; i < promoChunks.length; i++) {
+                            const [result] = await db.execute(
+                                `INSERT INTO notifications_inbox 
+                                 (user_id, salon_id, email, type_code, status, message, sender_email, created_at)
+                                 VALUES (?, ?, ?, ?, 'UNREAD', ?, 'SYSTEM', ?)`,
+                                [
+                                    userData.user_id,
+                                    userData.salon_id,
+                                    userData.email,
+                                    type_code,
+                                    promoChunks[i],
+                                    nowUtc
+                                ]
+                            );
+
+                            notificationsCreated.push({
+                                notification_id: result.insertId,
+                                user_id: userData.user_id,
+                                email: userData.email,
+                                salon_id: userData.salon_id,
+                                salon_name: userData.salon_name,
+                                type: 'promo_codes',
+                                promos_count: userData.promos.length,
+                                part_number: promoChunks.length > 1 ? i + 1 : null,
+                                total_parts: promoChunks.length > 1 ? promoChunks.length : null
+                            });
+                        }
+                    }
+                }
+
+                if (userData.rewards.length > 0) {
+                    let rewardMessage = `You have unused loyalty rewards at ${userData.salon_name}:\n\n`;
+                    rewardMessage += `Loyalty Rewards (${userData.rewards.length}):\n`;
+                    
+                    userData.rewards.forEach((reward, index) => {
+                        rewardMessage += `${index + 1}. ${reward.discount_percentage}% off`;
+                        if (reward.note) {
+                            rewardMessage += ` - ${reward.note}`;
+                        }
+                        rewardMessage += `\n`;
+                    });
+
+                    const [recentRewardNotification] = await db.execute(
+                        `SELECT notification_id 
+                         FROM notifications_inbox 
+                         WHERE user_id = ? 
+                           AND salon_id = ? 
+                           AND type_code = ?
+                           AND message LIKE ?
+                           AND created_at >= ?`,
+                        [userData.user_id, userData.salon_id, type_code, '%loyalty rewards%', elevenHoursAgoUtc]
+                    );
+
+                    if (recentRewardNotification.length === 0) {
+                        const rewardChunks = createNotificationChunks(rewardMessage);
+                        
+                        for (let i = 0; i < rewardChunks.length; i++) {
+                            const [result] = await db.execute(
+                                `INSERT INTO notifications_inbox 
+                                 (user_id, salon_id, email, type_code, status, message, sender_email, created_at)
+                                 VALUES (?, ?, ?, ?, 'UNREAD', ?, 'SYSTEM', ?)`,
+                                [
+                                    userData.user_id,
+                                    userData.salon_id,
+                                    userData.email,
+                                    type_code,
+                                    rewardChunks[i],
+                                    nowUtc
+                                ]
+                            );
+
+                            notificationsCreated.push({
+                                notification_id: result.insertId,
+                                user_id: userData.user_id,
+                                email: userData.email,
+                                salon_id: userData.salon_id,
+                                salon_name: userData.salon_name,
+                                type: 'loyalty_rewards',
+                                rewards_count: userData.rewards.length,
+                                part_number: rewardChunks.length > 1 ? i + 1 : null,
+                                total_parts: rewardChunks.length > 1 ? rewardChunks.length : null
+                            });
+                        }
+                    }
+                }
+            }
+
+            if (shouldUseTransaction) {
+                await db.commit();
+            }
+
+            return {
+                success: true,
+                notifications_created: notificationsCreated.length,
+                total_users_with_offers: usersToNotify.length,
+                notifications: notificationsCreated
+            };
+
+        } catch (txError) {
+            if (shouldUseTransaction) {
+                await db.rollback();
+            }
+            throw txError;
+        }
+
+    } catch (error) {
+        console.error('sendUnusedOffersNotifications error:', error);
+        throw error;
+    }
+};
+
+exports.sendUnusedOffersNotifications = sendUnusedOffersNotifications;
+
+// NC 1.3 - Owner endpoint to manually trigger unused offers notifications
+exports.ownerSendUnusedOffersNotifications = async (req, res) => {
+    const db = connection.promise();
+    
+    try {
+        const owner_user_id = req.user?.user_id;
+
+        if (!owner_user_id) {
+            return res.status(401).json({ message: 'Unauthorized' });
+        }
+
+        // Verify user is an owner and get their salon_id
+        const [ownerCheck] = await db.execute(
+            'SELECT user_id FROM users WHERE user_id = ? AND role = ?',
+            [owner_user_id, 'OWNER']
+        );
+
+        if (ownerCheck.length === 0) {
+            return res.status(403).json({ message: 'Only owners can trigger this notification' });
+        }
+
+        // Get the owner's salon_id
+        const [salonResult] = await db.execute(
+            'SELECT salon_id FROM salons WHERE owner_user_id = ?',
+            [owner_user_id]
+        );
+
+        if (salonResult.length === 0) {
+            return res.status(404).json({ message: 'Salon not found for this owner' });
+        }
+
+        const salon_id = salonResult[0].salon_id;
+
+        const result = await sendUnusedOffersNotifications(db, salon_id);
+
+        return res.status(200).json({
+            message: 'Unused offers notifications sent successfully',
+            data: result
+        });
+
+    } catch (error) {
+        console.error('ownerSendUnusedOffersNotifications error:', error);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
