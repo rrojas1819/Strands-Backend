@@ -588,181 +588,199 @@ const sendUnusedOffersNotifications = async (db = null, salon_id = null) => {
         }
 
         try {
+            const errors = [];
             for (const userData of usersToNotify) {
-                const elevenHoursAgo = now.minus({ hours: 11 });
-                const elevenHoursAgoUtc = toMySQLUtc(elevenHoursAgo);
+                try {
+                    const elevenHoursAgo = now.minus({ hours: 11 });
+                    const elevenHoursAgoUtc = toMySQLUtc(elevenHoursAgo);
 
-                const createNotificationChunks = (message) => {
-                    const maxMessageLength = 400;
-                    const messageChunks = [];
-                    
-                    if (message.length <= maxMessageLength) {
-                        messageChunks.push(message.trim());
-                    } else {
-                        let remaining = message;
-                        let partNumber = 1;
-                        const totalParts = Math.ceil(message.length / maxMessageLength);
+                    const createNotificationChunks = (message) => {
+                        const maxMessageLength = 400;
+                        const messageChunks = [];
                         
-                        while (remaining.length > 0) {
-                            if (remaining.length <= maxMessageLength) {
-                                let chunk = remaining.trim();
+                        if (message.length <= maxMessageLength) {
+                            messageChunks.push(message.trim());
+                        } else {
+                            let remaining = message;
+                            let partNumber = 1;
+                            const totalParts = Math.ceil(message.length / maxMessageLength);
+                            
+                            while (remaining.length > 0) {
+                                if (remaining.length <= maxMessageLength) {
+                                    let chunk = remaining.trim();
+                                    if (totalParts > 1) {
+                                        chunk = `(Part ${partNumber}/${totalParts})\n${chunk}`;
+                                    }
+                                    messageChunks.push(chunk);
+                                    break;
+                                }
+                                
+                                let splitPoint = maxMessageLength;
+                                const searchStart = Math.max(0, maxMessageLength - 50);
+                                const lastNewline = remaining.lastIndexOf('\n', maxMessageLength);
+                                
+                                if (lastNewline > searchStart) {
+                                    splitPoint = lastNewline + 1;
+                                }
+                                
+                                let chunk = remaining.substring(0, splitPoint).trim();
                                 if (totalParts > 1) {
                                     chunk = `(Part ${partNumber}/${totalParts})\n${chunk}`;
                                 }
                                 messageChunks.push(chunk);
-                                break;
-                            }
-                            
-                            let splitPoint = maxMessageLength;
-                            const searchStart = Math.max(0, maxMessageLength - 50);
-                            const lastNewline = remaining.lastIndexOf('\n', maxMessageLength);
-                            
-                            if (lastNewline > searchStart) {
-                                splitPoint = lastNewline + 1;
-                            }
-                            
-                            let chunk = remaining.substring(0, splitPoint).trim();
-                            if (totalParts > 1) {
-                                chunk = `(Part ${partNumber}/${totalParts})\n${chunk}`;
-                            }
-                            messageChunks.push(chunk);
-                            
-                            remaining = remaining.substring(splitPoint);
-                            partNumber++;
-                        }
-                    }
-                    return messageChunks;
-                };
-
-                if (userData.promos.length > 0) {
-                    let promoMessage = `You have unused promo codes at ${userData.salon_name}:\n\n`;
-                    promoMessage += `Promo Codes (${userData.promos.length}):\n`;
-                    
-                    userData.promos.forEach((promo, index) => {
-                        promoMessage += `${index + 1}. Code: ${promo.promo_code} - ${promo.discount_pct}% off`;
-                        if (promo.description) {
-                            promoMessage += ` - ${promo.description}`;
-                        }
-                        if (promo.expires_at) {
-                            let expiresAt = null;
-                            if (typeof promo.expires_at === 'string') {
-                                expiresAt = DateTime.fromSQL(promo.expires_at, { zone: 'utc' });
-                                if (!expiresAt.isValid) {
-                                    expiresAt = DateTime.fromISO(promo.expires_at);
-                                }
-                                if (!expiresAt.isValid) {
-                                    const mysqlDate = promo.expires_at.replace(' ', 'T') + 'Z';
-                                    expiresAt = DateTime.fromISO(mysqlDate);
-                                }
-                            } else if (promo.expires_at instanceof Date) {
-                                expiresAt = DateTime.fromJSDate(promo.expires_at, { zone: 'utc' });
-                            }
-                            
-                            if (expiresAt && expiresAt.isValid) {
-                                promoMessage += ` (Expires: ${expiresAt.toFormat('MMM d, yyyy')})`;
+                                
+                                remaining = remaining.substring(splitPoint);
+                                partNumber++;
                             }
                         }
-                        promoMessage += `\n`;
-                    });
+                        return messageChunks;
+                    };
 
-                    const [recentPromoNotification] = await db.execute(
-                        `SELECT notification_id 
-                         FROM notifications_inbox 
-                         WHERE user_id = ? 
-                           AND salon_id = ? 
-                           AND type_code = ?
-                           AND message LIKE ?
-                           AND created_at >= ?`,
-                        [userData.user_id, userData.salon_id, type_code, '%promo codes%', elevenHoursAgoUtc]
-                    );
-
-                    if (recentPromoNotification.length === 0) {
-                        const promoChunks = createNotificationChunks(promoMessage);
+                    if (userData.promos.length > 0) {
+                        let promoMessage = `You have unused promo codes at ${userData.salon_name}:\n\n`;
+                        promoMessage += `Promo Codes (${userData.promos.length}):\n`;
                         
-                        for (let i = 0; i < promoChunks.length; i++) {
-                            const [result] = await db.execute(
-                                `INSERT INTO notifications_inbox 
-                                 (user_id, salon_id, email, type_code, status, message, sender_email, created_at)
-                                 VALUES (?, ?, ?, ?, 'UNREAD', ?, 'SYSTEM', ?)`,
-                                [
-                                    userData.user_id,
-                                    userData.salon_id,
-                                    userData.email,
-                                    type_code,
-                                    promoChunks[i],
-                                    nowUtc
-                                ]
-                            );
+                        userData.promos.forEach((promo, index) => {
+                            promoMessage += `${index + 1}. Code: ${promo.promo_code} - ${promo.discount_pct}% off`;
+                            if (promo.description) {
+                                promoMessage += ` - ${promo.description}`;
+                            }
+                            if (promo.expires_at) {
+                                let expiresAt = null;
+                                if (typeof promo.expires_at === 'string') {
+                                    expiresAt = DateTime.fromSQL(promo.expires_at, { zone: 'utc' });
+                                    if (!expiresAt.isValid) {
+                                        expiresAt = DateTime.fromISO(promo.expires_at);
+                                    }
+                                    if (!expiresAt.isValid) {
+                                        const mysqlDate = promo.expires_at.replace(' ', 'T') + 'Z';
+                                        expiresAt = DateTime.fromISO(mysqlDate);
+                                    }
+                                } else if (promo.expires_at instanceof Date) {
+                                    expiresAt = DateTime.fromJSDate(promo.expires_at, { zone: 'utc' });
+                                }
+                                
+                                if (expiresAt && expiresAt.isValid) {
+                                    promoMessage += ` (Expires: ${expiresAt.toFormat('MMM d, yyyy')})`;
+                                }
+                            }
+                            promoMessage += `\n`;
+                        });
 
-                            notificationsCreated.push({
-                                notification_id: result.insertId,
-                                user_id: userData.user_id,
-                                email: userData.email,
-                                salon_id: userData.salon_id,
-                                salon_name: userData.salon_name,
-                                type: 'promo_codes',
-                                promos_count: userData.promos.length,
-                                part_number: promoChunks.length > 1 ? i + 1 : null,
-                                total_parts: promoChunks.length > 1 ? promoChunks.length : null
-                            });
+                        const [recentPromoNotification] = await db.execute(
+                            `SELECT notification_id 
+                             FROM notifications_inbox 
+                             WHERE user_id = ? 
+                               AND salon_id = ? 
+                               AND type_code = ?
+                               AND message LIKE ?
+                               AND created_at >= ?`,
+                            [userData.user_id, userData.salon_id, type_code, '%promo codes%', elevenHoursAgoUtc]
+                        );
+
+                        if (recentPromoNotification.length === 0) {
+                            const promoChunks = createNotificationChunks(promoMessage);
+                            
+                            for (let i = 0; i < promoChunks.length; i++) {
+                                const [result] = await db.execute(
+                                    `INSERT INTO notifications_inbox 
+                                     (user_id, salon_id, email, type_code, status, message, sender_email, created_at)
+                                     VALUES (?, ?, ?, ?, 'UNREAD', ?, 'SYSTEM', ?)`,
+                                    [
+                                        userData.user_id,
+                                        userData.salon_id,
+                                        userData.email,
+                                        type_code,
+                                        promoChunks[i],
+                                        nowUtc
+                                    ]
+                                );
+
+                                notificationsCreated.push({
+                                    notification_id: result.insertId,
+                                    user_id: userData.user_id,
+                                    email: userData.email,
+                                    salon_id: userData.salon_id,
+                                    salon_name: userData.salon_name,
+                                    type: 'promo_codes',
+                                    promos_count: userData.promos.length,
+                                    part_number: promoChunks.length > 1 ? i + 1 : null,
+                                    total_parts: promoChunks.length > 1 ? promoChunks.length : null
+                                });
+                            }
                         }
                     }
-                }
 
-                if (userData.rewards.length > 0) {
-                    let rewardMessage = `You have unused loyalty rewards at ${userData.salon_name}:\n\n`;
-                    rewardMessage += `Loyalty Rewards (${userData.rewards.length}):\n`;
-                    
-                    userData.rewards.forEach((reward, index) => {
-                        rewardMessage += `${index + 1}. ${reward.discount_percentage}% off`;
-                        if (reward.note) {
-                            rewardMessage += ` - ${reward.note}`;
-                        }
-                        rewardMessage += `\n`;
-                    });
-
-                    const [recentRewardNotification] = await db.execute(
-                        `SELECT notification_id 
-                         FROM notifications_inbox 
-                         WHERE user_id = ? 
-                           AND salon_id = ? 
-                           AND type_code = ?
-                           AND message LIKE ?
-                           AND created_at >= ?`,
-                        [userData.user_id, userData.salon_id, type_code, '%loyalty rewards%', elevenHoursAgoUtc]
-                    );
-
-                    if (recentRewardNotification.length === 0) {
-                        const rewardChunks = createNotificationChunks(rewardMessage);
+                    if (userData.rewards.length > 0) {
+                        let rewardMessage = `You have unused loyalty rewards at ${userData.salon_name}:\n\n`;
+                        rewardMessage += `Loyalty Rewards (${userData.rewards.length}):\n`;
                         
-                        for (let i = 0; i < rewardChunks.length; i++) {
-                            const [result] = await db.execute(
-                                `INSERT INTO notifications_inbox 
-                                 (user_id, salon_id, email, type_code, status, message, sender_email, created_at)
-                                 VALUES (?, ?, ?, ?, 'UNREAD', ?, 'SYSTEM', ?)`,
-                                [
-                                    userData.user_id,
-                                    userData.salon_id,
-                                    userData.email,
-                                    type_code,
-                                    rewardChunks[i],
-                                    nowUtc
-                                ]
-                            );
+                        userData.rewards.forEach((reward, index) => {
+                            rewardMessage += `${index + 1}. ${reward.discount_percentage}% off`;
+                            if (reward.note) {
+                                rewardMessage += ` - ${reward.note}`;
+                            }
+                            rewardMessage += `\n`;
+                        });
 
-                            notificationsCreated.push({
-                                notification_id: result.insertId,
-                                user_id: userData.user_id,
-                                email: userData.email,
-                                salon_id: userData.salon_id,
-                                salon_name: userData.salon_name,
-                                type: 'loyalty_rewards',
-                                rewards_count: userData.rewards.length,
-                                part_number: rewardChunks.length > 1 ? i + 1 : null,
-                                total_parts: rewardChunks.length > 1 ? rewardChunks.length : null
-                            });
+                        const [recentRewardNotification] = await db.execute(
+                            `SELECT notification_id 
+                             FROM notifications_inbox 
+                             WHERE user_id = ? 
+                               AND salon_id = ? 
+                               AND type_code = ?
+                               AND message LIKE ?
+                               AND created_at >= ?`,
+                            [userData.user_id, userData.salon_id, type_code, '%loyalty rewards%', elevenHoursAgoUtc]
+                        );
+
+                        if (recentRewardNotification.length === 0) {
+                            const rewardChunks = createNotificationChunks(rewardMessage);
+                            
+                            for (let i = 0; i < rewardChunks.length; i++) {
+                                const [result] = await db.execute(
+                                    `INSERT INTO notifications_inbox 
+                                     (user_id, salon_id, email, type_code, status, message, sender_email, created_at)
+                                     VALUES (?, ?, ?, ?, 'UNREAD', ?, 'SYSTEM', ?)`,
+                                    [
+                                        userData.user_id,
+                                        userData.salon_id,
+                                        userData.email,
+                                        type_code,
+                                        rewardChunks[i],
+                                        nowUtc
+                                    ]
+                                );
+
+                                notificationsCreated.push({
+                                    notification_id: result.insertId,
+                                    user_id: userData.user_id,
+                                    email: userData.email,
+                                    salon_id: userData.salon_id,
+                                    salon_name: userData.salon_name,
+                                    type: 'loyalty_rewards',
+                                    rewards_count: userData.rewards.length,
+                                    part_number: rewardChunks.length > 1 ? i + 1 : null,
+                                    total_parts: rewardChunks.length > 1 ? rewardChunks.length : null
+                                });
+                            }
                         }
                     }
+                } catch (userError) {
+                    // Log error for this specific user but continue with others
+                    console.error(`Error processing user ${userData.user_id} for unused offers notification:`, {
+                        user_id: userData.user_id,
+                        email: userData.email,
+                        salon_id: userData.salon_id,
+                        error: userError.message,
+                        stack: userError.stack
+                    });
+                    errors.push({
+                        user_id: userData.user_id,
+                        email: userData.email,
+                        error: userError.message
+                    });
+                    // Continue processing other users
                 }
             }
 
@@ -774,6 +792,9 @@ const sendUnusedOffersNotifications = async (db = null, salon_id = null) => {
                 success: true,
                 notifications_created: notificationsCreated.length,
                 total_users_with_offers: usersToNotify.length,
+                users_processed: usersToNotify.length - errors.length,
+                users_failed: errors.length,
+                errors: errors.length > 0 ? errors : undefined,
                 notifications: notificationsCreated
             };
 
