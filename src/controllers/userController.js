@@ -475,7 +475,7 @@ exports.getStylistWeeklySchedule = async (req, res) => {
     if (bookingIds.length > 0) {
       const paymentPlaceholders = bookingIds.map(() => '?').join(',');
       [allPayments] = await db.execute(
-        `SELECT p.booking_id, p.amount, p.reward_id, p.status
+        `SELECT p.booking_id, p.amount, p.reward_id, p.user_promo_id, p.status
          FROM payments p
          WHERE p.booking_id IN (${paymentPlaceholders})
          AND p.status = 'SUCCEEDED'
@@ -502,7 +502,23 @@ exports.getStylistWeeklySchedule = async (req, res) => {
       );
     }
 
-    // Group payments and rewards
+    // Extract promo IDs and bulk query promo codes
+    const promoIds = allPayments.filter(p => p.user_promo_id).map(p => p.user_promo_id);
+    let allPromos = [];
+    if (promoIds.length > 0) {
+      const promoPlaceholders = promoIds.map(() => '?').join(',');
+      [allPromos] = await db.execute(
+        `SELECT user_promo_id, promo_code, description, discount_pct, status,
+                DATE_FORMAT(issued_at, '%Y-%m-%d %H:%i:%s') AS issued_at,
+                DATE_FORMAT(expires_at, '%Y-%m-%d %H:%i:%s') AS expires_at,
+                DATE_FORMAT(redeemed_at, '%Y-%m-%d %H:%i:%s') AS redeemed_at
+         FROM user_promotions
+         WHERE user_promo_id IN (${promoPlaceholders})`,
+        promoIds
+      );
+    }
+
+    // Group payments, rewards, and promos
     const paymentsByBooking = {};
     allPayments.forEach(p => {
       paymentsByBooking[p.booking_id] = p;
@@ -511,6 +527,11 @@ exports.getStylistWeeklySchedule = async (req, res) => {
     const rewardsById = {};
     allRewards.forEach(r => {
       rewardsById[r.reward_id] = r;
+    });
+
+    const promosById = {};
+    allPromos.forEach(p => {
+      promosById[p.user_promo_id] = p;
     });
 
     // Iterate through each day in the range using Luxon
@@ -571,6 +592,7 @@ exports.getStylistWeeklySchedule = async (req, res) => {
         const payment = paymentsByBooking[booking.booking_id];
         let actualAmountPaid = null;
         let rewardInfo = null;
+        let promoInfo = null;
 
         if (payment) {
           actualAmountPaid = Number(payment.amount);
@@ -583,6 +605,20 @@ exports.getStylistWeeklySchedule = async (req, res) => {
               note: reward.note,
               creationDate: formatDateTime(reward.creationDate),
               redeemed_at: formatDateTime(reward.redeemed_at)
+            };
+          }
+
+          if (payment.user_promo_id && promosById[payment.user_promo_id]) {
+            const promo = promosById[payment.user_promo_id];
+            promoInfo = {
+              user_promo_id: promo.user_promo_id,
+              promo_code: promo.promo_code,
+              description: promo.description,
+              discount_pct: promo.discount_pct,
+              status: promo.status,
+              issued_at: formatDateTime(promo.issued_at),
+              expires_at: promo.expires_at ? formatDateTime(promo.expires_at) : null,
+              redeemed_at: promo.redeemed_at ? formatDateTime(promo.redeemed_at) : null
             };
           }
         }
@@ -609,7 +645,8 @@ exports.getStylistWeeklySchedule = async (req, res) => {
           total_duration_minutes: totalDuration,
           total_price: totalPrice,
           actual_amount_paid: actualAmountPaid,
-          reward: rewardInfo
+          reward: rewardInfo,
+          promo: promoInfo
         };
       });
 
