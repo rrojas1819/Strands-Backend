@@ -17,10 +17,11 @@ exports.getMyAppointments = async (req, res) => {
         let { page = 1, limit = 10 } = req.query;
         page = Math.max(1, parseInt(page, 10) || 1);
         limit = Math.max(1, Math.min(parseInt(limit, 10) || 10, 100)); // Max 100 per page
-        const offset = (page - 1) * limit;
-
-        const limitInt = Math.floor(limit);
-        const offsetInt = Math.floor(offset);
+        
+        // Ensure values are integers
+        const pageInt = parseInt(page, 10);
+        const limitInt = parseInt(limit, 10);
+        const offsetInt = (pageInt - 1) * limitInt;
 
         // Get total count
         const [countResult] = await db.execute(
@@ -56,17 +57,18 @@ exports.getMyAppointments = async (req, res) => {
         );
 
         if (bookings.length === 0) {
+            const totalPages = total > 0 ? Math.ceil(total / limitInt) : 0;
             return res.status(200).json({
                 message: 'No appointments found',
                 data: [],
                 pagination: {
-                    current_page: page,
-                    total_pages: Math.ceil(total / limit),
+                    current_page: pageInt,
+                    total_pages: totalPages,
                     total_items: total,
-                    limit: limit,
-                    offset: offset,
-                    has_next_page: offset + bookings.length < total,
-                    has_prev_page: offset > 0
+                    limit: limitInt,
+                    offset: offsetInt,
+                    has_next_page: false,
+                    has_prev_page: pageInt > 1
                 }
             });
         }
@@ -251,27 +253,47 @@ exports.getMyAppointments = async (req, res) => {
             };
         });
 
-        const totalPages = Math.ceil(total / limit);
-        const hasNextPage = offset + bookings.length < total;
-        const hasPrevPage = offset > 0;
+        // Calculate pagination metadata
+        const totalPages = total > 0 ? Math.ceil(total / limitInt) : 0;
+        const itemsReturned = appointmentData.length;
+        const hasNextPage = offsetInt + itemsReturned < total;
+        const hasPrevPage = pageInt > 1;
 
         return res.status(200).json({
             message: 'Appointments retrieved successfully',
             data: appointmentData,
             pagination: {
-                current_page: page,
+                current_page: pageInt,
                 total_pages: totalPages,
                 total_items: total,
-                limit: limit,
-                offset: offset,
+                items_per_page: limitInt,
+                items_returned: itemsReturned,
+                limit: limitInt,
+                offset: offsetInt,
                 has_next_page: hasNextPage,
                 has_prev_page: hasPrevPage
             }
         });
 
     } catch (error) {
-        console.error('getMyAppointments error:', error);
-        return res.status(500).json({ message: 'Internal server error' });
+        const customer_user_id = req.user?.user_id;
+        const { page, limit } = req.query;
+        
+        console.error('getMyAppointments error:', {
+            message: error.message,
+            stack: error.stack,
+            user_id: customer_user_id,
+            query_params: { page, limit },
+            error_name: error.name,
+            sql_error: error.sql || error.sqlMessage || null,
+            sql_state: error.sqlState || null,
+            errno: error.errno || null
+        });
+        
+        return res.status(500).json({ 
+            message: 'Internal server error',
+            error: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
     }
 };
 
@@ -927,7 +949,7 @@ bookingParams = [customer_user_id, employee_id];
         if (bookingIds.length > 0) {
             const paymentPlaceholders = bookingIds.map(() => '?').join(',');
             [allPayments] = await db.execute(
-                `SELECT p.booking_id, p.amount, p.reward_id, p.status
+                `SELECT p.booking_id, p.amount, p.reward_id, p.user_promo_id, p.status
                  FROM payments p
                  WHERE p.booking_id IN (${paymentPlaceholders})
                  AND p.status = 'SUCCEEDED'
@@ -954,7 +976,23 @@ bookingParams = [customer_user_id, employee_id];
             );
         }
 
-        // Group payments and rewards
+        // Extract promo IDs and bulk query promo codes
+        const promoIds = allPayments.filter(p => p.user_promo_id).map(p => p.user_promo_id);
+        let allPromos = [];
+        if (promoIds.length > 0) {
+            const promoPlaceholders = promoIds.map(() => '?').join(',');
+            [allPromos] = await db.execute(
+                `SELECT user_promo_id, promo_code, description, discount_pct, status,
+                        DATE_FORMAT(issued_at, '%Y-%m-%d %H:%i:%s') AS issued_at,
+                        DATE_FORMAT(expires_at, '%Y-%m-%d %H:%i:%s') AS expires_at,
+                        DATE_FORMAT(redeemed_at, '%Y-%m-%d %H:%i:%s') AS redeemed_at
+                 FROM user_promotions
+                 WHERE user_promo_id IN (${promoPlaceholders})`,
+                promoIds
+            );
+        }
+
+        // Group payments, rewards, and promos
         const paymentsByBooking = {};
         allPayments.forEach(p => {
             paymentsByBooking[p.booking_id] = p;
@@ -963,6 +1001,11 @@ bookingParams = [customer_user_id, employee_id];
         const rewardsById = {};
         allRewards.forEach(r => {
             rewardsById[r.reward_id] = r;
+        });
+
+        const promosById = {};
+        allPromos.forEach(p => {
+            promosById[p.user_promo_id] = p;
         });
 
         // Merging booking and service information and showing it as a visit
@@ -975,6 +1018,7 @@ bookingParams = [customer_user_id, employee_id];
             const payment = paymentsByBooking[b.booking_id];
             let actualAmountPaid = null;
             let rewardInfo = null;
+            let promoInfo = null;
 
             if (payment) {
                 actualAmountPaid = Number(payment.amount);
@@ -989,6 +1033,20 @@ bookingParams = [customer_user_id, employee_id];
                         redeemed_at: formatDateTime(reward.redeemed_at)
                     };
                 }
+
+                if (payment.user_promo_id && promosById[payment.user_promo_id]) {
+                    const promo = promosById[payment.user_promo_id];
+                    promoInfo = {
+                        user_promo_id: promo.user_promo_id,
+                        promo_code: promo.promo_code,
+                        description: promo.description,
+                        discount_pct: promo.discount_pct,
+                        status: promo.status,
+                        issued_at: formatDateTime(promo.issued_at),
+                        expires_at: promo.expires_at ? formatDateTime(promo.expires_at) : null,
+                        redeemed_at: promo.redeemed_at ? formatDateTime(promo.redeemed_at) : null
+                    };
+                }
             }
 
             return {
@@ -1000,7 +1058,8 @@ bookingParams = [customer_user_id, employee_id];
                 services,
                 total_price,
                 actual_amount_paid: actualAmountPaid,
-                reward: rewardInfo
+                reward: rewardInfo,
+                promo: promoInfo
             };
         });
 
