@@ -13,6 +13,22 @@ exports.getMyAppointments = async (req, res) => {
             return res.status(401).json({ message: 'Unauthorized' });
         }
 
+        // Pagination parameters
+        let { page = 1, limit = 10 } = req.query;
+        page = Math.max(1, parseInt(page, 10) || 1);
+        limit = Math.max(1, Math.min(parseInt(limit, 10) || 10, 100)); // Max 100 per page
+        const offset = (page - 1) * limit;
+
+        // Get total count
+        const [countResult] = await db.execute(
+            `SELECT COUNT(*) as total 
+             FROM bookings b
+             WHERE b.customer_user_id = ?`,
+            [customer_user_id]
+        );
+        const total = countResult[0]?.total || 0;
+
+        // Get bookings with pagination
         const [bookings] = await db.execute(
             `SELECT 
                 b.booking_id,
@@ -31,14 +47,24 @@ exports.getMyAppointments = async (req, res) => {
              FROM bookings b
              JOIN salons s ON b.salon_id = s.salon_id
              WHERE b.customer_user_id = ?
-             ORDER BY b.scheduled_start DESC`,
-            [customer_user_id]
+             ORDER BY b.scheduled_start DESC
+             LIMIT ? OFFSET ?`,
+            [customer_user_id, limit, offset]
         );
 
         if (bookings.length === 0) {
             return res.status(200).json({
                 message: 'No appointments found',
-                data: []
+                data: [],
+                pagination: {
+                    current_page: page,
+                    total_pages: Math.ceil(total / limit),
+                    total_items: total,
+                    limit: limit,
+                    offset: offset,
+                    has_next_page: offset + bookings.length < total,
+                    has_prev_page: offset > 0
+                }
             });
         }
 
@@ -65,9 +91,9 @@ exports.getMyAppointments = async (req, res) => {
             bookingIds
         );
 
-        // Bulk query
+        // Bulk query: Get payments with user_promo_id
         const [allPayments] = await db.execute(
-            `SELECT p.booking_id, p.amount, p.reward_id, p.status
+            `SELECT p.booking_id, p.amount, p.reward_id, p.user_promo_id, p.status
              FROM payments p
              WHERE p.booking_id IN (${placeholders})
              AND p.status = 'SUCCEEDED'
@@ -93,6 +119,22 @@ exports.getMyAppointments = async (req, res) => {
             );
         }
 
+        // Extract promo IDs and bulk query promo codes
+        const promoIds = allPayments.filter(p => p.user_promo_id).map(p => p.user_promo_id);
+        let allPromos = [];
+        if (promoIds.length > 0) {
+            const promoPlaceholders = promoIds.map(() => '?').join(',');
+            [allPromos] = await db.execute(
+                `SELECT user_promo_id, promo_code, description, discount_pct, status,
+                        DATE_FORMAT(issued_at, '%Y-%m-%d %H:%i:%s') AS issued_at,
+                        DATE_FORMAT(expires_at, '%Y-%m-%d %H:%i:%s') AS expires_at,
+                        DATE_FORMAT(redeemed_at, '%Y-%m-%d %H:%i:%s') AS redeemed_at
+                 FROM user_promotions
+                 WHERE user_promo_id IN (${promoPlaceholders})`,
+                promoIds
+            );
+        }
+
         // Group results
         const servicesByBooking = {};
         allServices.forEach(s => {
@@ -112,6 +154,11 @@ exports.getMyAppointments = async (req, res) => {
             rewardsById[r.reward_id] = r;
         });
 
+        const promosById = {};
+        allPromos.forEach(p => {
+            promosById[p.user_promo_id] = p;
+        });
+
         // Map results back to bookings
         const appointmentData = bookings.map(booking => {
             const services = servicesByBooking[booking.booking_id] || [];
@@ -119,6 +166,7 @@ exports.getMyAppointments = async (req, res) => {
 
             let actualAmountPaid = null;
             let rewardInfo = null;
+            let promoInfo = null;
 
             if (payment) {
                 actualAmountPaid = Number(payment.amount);
@@ -131,6 +179,20 @@ exports.getMyAppointments = async (req, res) => {
                         note: reward.note,
                         creationDate: formatDateTime(reward.creationDate),
                         redeemed_at: formatDateTime(reward.redeemed_at)
+                    };
+                }
+
+                if (payment.user_promo_id && promosById[payment.user_promo_id]) {
+                    const promo = promosById[payment.user_promo_id];
+                    promoInfo = {
+                        user_promo_id: promo.user_promo_id,
+                        promo_code: promo.promo_code,
+                        description: promo.description,
+                        discount_pct: promo.discount_pct,
+                        status: promo.status,
+                        issued_at: formatDateTime(promo.issued_at),
+                        expires_at: promo.expires_at ? formatDateTime(promo.expires_at) : null,
+                        redeemed_at: promo.redeemed_at ? formatDateTime(promo.redeemed_at) : null
                     };
                 }
             }
@@ -181,13 +243,27 @@ exports.getMyAppointments = async (req, res) => {
                 total_price: totalPrice,
                 actual_amount_paid: actualAmountPaid,
                 reward: rewardInfo,
+                promo: promoInfo,
                 notes: booking.notes
             };
         });
 
+        const totalPages = Math.ceil(total / limit);
+        const hasNextPage = offset + bookings.length < total;
+        const hasPrevPage = offset > 0;
+
         return res.status(200).json({
             message: 'Appointments retrieved successfully',
-            data: appointmentData
+            data: appointmentData,
+            pagination: {
+                current_page: page,
+                total_pages: totalPages,
+                total_items: total,
+                limit: limit,
+                offset: offset,
+                has_next_page: hasNextPage,
+                has_prev_page: hasPrevPage
+            }
         });
 
     } catch (error) {
