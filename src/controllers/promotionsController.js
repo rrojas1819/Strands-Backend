@@ -379,3 +379,123 @@ exports.getUserPromotions = async (req, res) => {
     }
 };
 
+// Preview promo code - Get promo info and discounted price without redeeming
+exports.previewPromoCode = async (req, res) => {
+    const db = connection.promise();
+
+    try {
+        const userId = req.user?.user_id;
+        const { promo_code, booking_id } = req.body;
+
+        if (!userId) {
+            return res.status(401).json({ message: 'Unauthorized' });
+        }
+
+        if (!promo_code) {
+            return res.status(400).json({
+                message: 'promo_code is required'
+            });
+        }
+
+        if (!booking_id) {
+            return res.status(400).json({
+                message: 'booking_id is required'
+            });
+        }
+
+        const [bookingRows] = await db.execute(
+            'SELECT booking_id, status, customer_user_id, salon_id FROM bookings WHERE booking_id = ?',
+            [booking_id]
+        );
+
+        if (bookingRows.length === 0) {
+            return res.status(404).json({ message: 'Booking not found' });
+        }
+
+        if (bookingRows[0].customer_user_id !== userId) {
+            return res.status(403).json({ message: 'Booking does not belong to you' });
+        }
+
+        const salon_id = bookingRows[0].salon_id;
+
+        const [promoRows] = await db.execute(
+            `SELECT user_promo_id, user_id, salon_id, promo_code, description, discount_pct, status, expires_at,
+                    DATE_FORMAT(issued_at, '%Y-%m-%d %H:%i:%s') AS issued_at,
+                    DATE_FORMAT(expires_at, '%Y-%m-%d %H:%i:%s') AS expires_at_formatted
+             FROM user_promotions
+             WHERE promo_code = ? AND user_id = ? AND salon_id = ? AND status = 'ISSUED'`,
+            [promo_code, userId, salon_id]
+        );
+
+        if (promoRows.length === 0) {
+            return res.status(400).json({
+                message: 'Invalid promo code. The code may not exist, belong to another user, or is for a different salon.'
+            });
+        }
+
+        const promo = promoRows[0];
+
+        if (promo.expires_at) {
+            const expiresAt = DateTime.fromSQL(promo.expires_at, { zone: 'utc' });
+            const now = DateTime.utc();
+            if (expiresAt < now) {
+                return res.status(400).json({
+                    message: 'This promo code has expired.'
+                });
+            }
+        }
+
+        const [servicesRows] = await db.execute(
+            `SELECT bs.service_id, bs.price, bs.duration_minutes, s.name AS service_name
+             FROM booking_services bs
+             JOIN services s ON bs.service_id = s.service_id
+             WHERE bs.booking_id = ?`,
+            [booking_id]
+        );
+
+        const originalTotal = servicesRows.reduce((sum, service) => sum + Number(service.price || 0), 0);
+        const roundedOriginalTotal = Math.round(originalTotal * 100) / 100;
+
+        const discountPercentage = promo.discount_pct;
+        const discountedTotal = Math.round(roundedOriginalTotal * (1 - discountPercentage / 100) * 100) / 100;
+        const discountAmount = Math.round((roundedOriginalTotal - discountedTotal) * 100) / 100;
+
+        const promoInfo = {
+            user_promo_id: promo.user_promo_id,
+            promo_code: promo.promo_code,
+            description: promo.description,
+            discount_pct: promo.discount_pct,
+            status: promo.status,
+            issued_at: formatDateTime(promo.issued_at),
+            expires_at: promo.expires_at_formatted ? formatDateTime(promo.expires_at_formatted) : null
+        };
+
+        return res.status(200).json({
+            message: 'Promo code preview retrieved',
+            data: {
+                promo: promoInfo,
+                booking: {
+                    booking_id: booking_id,
+                    services: servicesRows.map(s => ({
+                        service_id: s.service_id,
+                        service_name: s.service_name,
+                        price: Number(s.price),
+                        duration_minutes: s.duration_minutes
+                    }))
+                },
+                pricing: {
+                    original_total: roundedOriginalTotal,
+                    discount_percentage: discountPercentage,
+                    discount_amount: discountAmount,
+                    discounted_total: discountedTotal
+                }
+            }
+        });
+    } catch (error) {
+        console.error('previewPromoCode error:', error);
+        return res.status(500).json({
+            message: 'Internal server error'
+        });
+    }
+};
+
