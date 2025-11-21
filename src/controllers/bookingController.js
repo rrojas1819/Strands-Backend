@@ -14,7 +14,7 @@ exports.getMyAppointments = async (req, res) => {
         }
 
         // Pagination parameters
-        let { page = 1, limit = 10 } = req.query;
+        let { page = 1, limit = 10, filter } = req.query;
         page = Math.max(1, parseInt(page, 10) || 1);
         limit = Math.max(1, Math.min(parseInt(limit, 10) || 10, 100)); // Max 100 per page
         
@@ -23,16 +23,40 @@ exports.getMyAppointments = async (req, res) => {
         const limitInt = parseInt(limit, 10);
         const offsetInt = (pageInt - 1) * limitInt;
 
-        // Get total count
+        let statusFilter = null;
+        if (filter) {
+            const filterLower = filter.toLowerCase();
+            if (filterLower === 'canceled') {
+                statusFilter = 'CANCELED';
+            } else if (filterLower === 'upcoming') {
+                statusFilter = 'SCHEDULED';
+            } else if (filterLower === 'past') {
+                statusFilter = 'COMPLETED';
+            } else {
+                return res.status(400).json({ 
+                    message: 'Invalid filter. Must be one of: canceled, upcoming, past' 
+                });
+            }
+        }
+
+        // Build WHERE clause with optional status filter
+        let whereClause = 'WHERE b.customer_user_id = ?';
+        const queryParams = [customer_user_id];
+        
+        if (statusFilter) {
+            whereClause += ' AND b.status = ?';
+            queryParams.push(statusFilter);
+        }
+
         const [countResult] = await db.execute(
             `SELECT COUNT(*) as total 
              FROM bookings b
-             WHERE b.customer_user_id = ?`,
-            [customer_user_id]
+             ${whereClause}`,
+            queryParams
         );
         const total = countResult[0]?.total || 0;
 
-        // Get bookings with pagination
+        // Get bookings with pagination and filter
         const [bookings] = await db.execute(
             `SELECT 
                 b.booking_id,
@@ -50,10 +74,10 @@ exports.getMyAppointments = async (req, res) => {
                 s.email AS salon_email
              FROM bookings b
              JOIN salons s ON b.salon_id = s.salon_id
-             WHERE b.customer_user_id = ?
+             ${whereClause}
              ORDER BY b.scheduled_start DESC
              LIMIT ${limitInt} OFFSET ${offsetInt}`,
-            [customer_user_id]
+            queryParams
         );
 
         if (bookings.length === 0) {
@@ -61,6 +85,7 @@ exports.getMyAppointments = async (req, res) => {
             return res.status(200).json({
                 message: 'No appointments found',
                 data: [],
+                filter: filter || null,
                 pagination: {
                     current_page: pageInt,
                     total_pages: totalPages,
@@ -262,6 +287,7 @@ exports.getMyAppointments = async (req, res) => {
         return res.status(200).json({
             message: 'Appointments retrieved successfully',
             data: appointmentData,
+            filter: filter || null,
             pagination: {
                 current_page: pageInt,
                 total_pages: totalPages,
@@ -277,13 +303,13 @@ exports.getMyAppointments = async (req, res) => {
 
     } catch (error) {
         const customer_user_id = req.user?.user_id;
-        const { page, limit } = req.query;
+        const { page, limit, filter } = req.query;
         
         console.error('getMyAppointments error:', {
             message: error.message,
             stack: error.stack,
             user_id: customer_user_id,
-            query_params: { page, limit },
+            query_params: { page, limit, filter },
             error_name: error.name,
             sql_error: error.sql || error.sqlMessage || null,
             sql_state: error.sqlState || null,
