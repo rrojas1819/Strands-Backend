@@ -447,6 +447,31 @@ function startUnusedOffersReminders(connection) {
     }, 12 * 60 * 60 * 1000); // Run every 12 hours
 }
 
+function startExpirePromoCodes(connection) {
+    setInterval(async () => {
+        try {
+            const db = connection.promise();
+            const now = DateTime.utc();
+            const nowUtc = toMySQLUtc(now);
+
+            const [result] = await db.execute(
+                `UPDATE user_promotions 
+                 SET status = 'EXPIRED'
+                 WHERE status = 'ISSUED' 
+                   AND expires_at IS NOT NULL 
+                   AND expires_at <= ?`,
+                [nowUtc]
+            );
+
+            if (result.affectedRows > 0) {
+                console.log(`Expired ${result.affectedRows} promo code(s) at ${now.toISO()}`);
+            }
+        } catch (error) {
+            console.error('Expire promo codes job failed:', error);
+        }
+    }, 5 * 60 * 1000); // Run every 5 minutes
+}
+
 module.exports = {
     validateEmail,
     startTokenCleanup,
@@ -456,6 +481,7 @@ module.exports = {
     startLoyaltySeenUpdate,
     startAppointmentReminders,
     startUnusedOffersReminders,
+    startExpirePromoCodes,
     logUtcDebug,
     localAvailabilityToUtc,
     utcToLocalDateString,
