@@ -138,8 +138,7 @@ GROUP BY users.user_id, users.full_name`,
                 : '';
             let message =
                 `Thanks for being a loyal customer at ${salon.name}! ` +
-                `Use promo code ${promoCode} for ${discountPctNum}% off your next visit. ${expiresFragment}
-                ${description ? ` ${description}.` : ''}`;
+                `Use promo code ${promoCode} for ${discountPctNum}% off your next visit.${description ? ` ${description}.` : ''} ${expiresFragment}`;
 
             if (message.length > 400) {
                 message = message.slice(0, 397) + '...';
