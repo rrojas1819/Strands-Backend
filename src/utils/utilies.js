@@ -130,7 +130,7 @@ const startTokenCleanup = (connection) => {
                 //console.log(`Cleanup: Deactivated ${userResult.affectedRows} users and cleared ${tokenResult.affectedRows} expired tokens`);
             }
         } catch (error) {
-            //console.error('Cleanup job failed:', error);
+            console.error('Token cleanup job failed:', error);
         }
     }, 15 * 60 * 1000); // Every 15 minutes
 };
@@ -155,6 +155,7 @@ function startBookingsAutoComplete(connection) {
             `;
             await db.execute(updateQuery, [currentUtc]);
         } catch (error) {
+            console.error('Bookings auto-complete job failed:', error);
         }
     }, 1 * 60 * 1000); 
 }
@@ -267,6 +268,7 @@ function startLoyaltySeenUpdate(connection) {
 
                     await db.commit();
                 } catch (bookingError) {
+                    console.error('Loyalty seen update job - booking error:', bookingError);
                     await db.rollback();
                 }
             }
@@ -279,7 +281,7 @@ function startLoyaltySeenUpdate(connection) {
             `;
             await db.execute(updateCanceledQuery);
         } catch (error) {
-            //console.error('Loyalty seen update job failed:', error);
+            console.error('Loyalty seen update job failed:', error);
         }
     }, 2 * 60 * 1000); // Every 1 minute 
 }
@@ -472,6 +474,102 @@ function startExpirePromoCodes(connection) {
     }, 5 * 60 * 1000); // Run every 5 minutes
 }
 
+// Job to delete temporary credit cards after all associated bookings have passed
+function startTempCreditCardCleanup(connection) {
+    setInterval(async () => {
+        try {
+            const db = connection.promise();
+            const now = DateTime.utc();
+            const nowUtc = toMySQLUtc(now);
+
+            // Find all temporary credit cards
+            const [tempCards] = await db.execute(
+                `SELECT credit_card_id, user_id 
+                 FROM credit_cards 
+                 WHERE is_temporary = TRUE`
+            );
+
+            if (tempCards.length === 0) {
+                return; // No temporary cards to process
+            }
+
+            const cardsToDelete = [];
+
+            for (const card of tempCards) {
+                const [paymentsWithBookings] = await db.execute(
+                    `SELECT DISTINCT p.booking_id 
+                     FROM payments p
+                     WHERE p.credit_card_id = ? 
+                       AND p.booking_id IS NOT NULL`,
+                    [card.credit_card_id]
+                );
+
+                if (paymentsWithBookings.length === 0) {
+                    const [anyPayments] = await db.execute(
+                        `SELECT payment_id 
+                         FROM payments 
+                         WHERE credit_card_id = ? 
+                         LIMIT 1`,
+                        [card.credit_card_id]
+                    );
+
+                   
+                    if (anyPayments.length === 0) {
+                        cardsToDelete.push(card.credit_card_id);
+                    }
+                    continue;
+                }
+
+                const bookingIds = paymentsWithBookings.map(p => p.booking_id);
+                const placeholders = bookingIds.map(() => '?').join(',');
+                
+                const [bookings] = await db.execute(
+                    `SELECT booking_id, 
+                            status,
+                            DATE_FORMAT(scheduled_end, '%Y-%m-%d %H:%i:%s') AS scheduled_end
+                     FROM bookings 
+                     WHERE booking_id IN (${placeholders})`,
+                    bookingIds
+                );
+
+                let allBookingsPassed = true;
+                for (const booking of bookings) {
+                    if (booking.status === 'COMPLETED') {
+                        continue;
+                    }
+                    
+                    const bookingEnd = DateTime.fromSQL(booking.scheduled_end, { zone: 'utc' });
+                    if (bookingEnd.isValid && bookingEnd > now) {
+                        allBookingsPassed = false;
+                        break;
+                    }
+                }
+
+                if (allBookingsPassed && bookings.length > 0) {
+                    cardsToDelete.push(card.credit_card_id);
+                }
+            }
+
+            // Delete temporary cards where all bookings have passed
+            if (cardsToDelete.length > 0) {
+                const deletePlaceholders = cardsToDelete.map(() => '?').join(',');
+                const [deleteResult] = await db.execute(
+                    `DELETE FROM credit_cards 
+                     WHERE credit_card_id IN (${deletePlaceholders}) 
+                       AND is_temporary = TRUE`,
+                    cardsToDelete
+                );
+
+                if (deleteResult.affectedRows > 0) {
+                    console.log(`Deleted ${deleteResult.affectedRows} temporary credit card(s) at ${now.toISO()}`);
+                }
+            }
+        } catch (error) {
+            console.error('Temp credit card cleanup job failed:', error);
+        }
+    }, 1 * 60 * 60 * 1000); // Run every hour
+}
+
 module.exports = {
     validateEmail,
     startTokenCleanup,
@@ -482,6 +580,7 @@ module.exports = {
     startAppointmentReminders,
     startUnusedOffersReminders,
     startExpirePromoCodes,
+    startTempCreditCardCleanup,
     logUtcDebug,
     localAvailabilityToUtc,
     utcToLocalDateString,

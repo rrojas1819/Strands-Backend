@@ -1,4 +1,3 @@
-require('dotenv').config();
 const connection = require('../config/databaseConnection');
 const { DateTime } = require('luxon');
 const { toMySQLUtc } = require('../utils/utilies');
@@ -32,8 +31,10 @@ exports.addProduct = async (req, res) => {
         });
     } catch (error) {
         if (error.code === 'ER_DUP_ENTRY') {
+            console.error('addProduct error - duplicate SKU:', error);
             return res.status(409).json({ message: 'SKU already exists' });
         }
+        console.error('addProduct error:', error);
         res.status(500).json({
             message: "Internal server error"
         });
@@ -66,6 +67,7 @@ exports.getProducts = async (req, res) => {
         });
 
     } catch (error) {
+        console.error('getProducts error:', error);
         res.status(500).json({
             message: "Internal server error"
         });
