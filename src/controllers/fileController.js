@@ -494,7 +494,7 @@ exports.getSalonPhoto = async (req, res) => {
 				error: "Booking ID are required."
 			});
 		}
-		
+
 		const getSalonPhotoQuery = `SELECT p.s3_key FROM pictures p JOIN salon_photos sp ON p.picture_id = sp.picture_id WHERE sp.salon_id = ? LIMIT 1;`;
 		const [rows] = await db.execute(getSalonPhotoQuery, [salon_id]);
 
@@ -513,5 +513,92 @@ exports.getSalonPhoto = async (req, res) => {
 	  return res.status(500).json({
 		message: "Internal server error retrieving photo."
 	  });
+	}
+};
+
+// UAR 1.3 Delete Salon Photo
+exports.deleteSalonPhoto = async (req, res) => {
+	const db = connection.promise();
+
+	try {
+		const owner_user_id = req.user?.user_id;
+
+		if (!owner_user_id) {
+			return res.status(400).json({ 
+				error: "Owner user ID is required." 
+			});
+		}
+
+		const getPictureIdQuery = `
+			SELECT p.picture_id, p.s3_key FROM pictures p JOIN salon_photos sp ON p.picture_id = sp.picture_id WHERE sp.salon_id = (SELECT salon_id FROM salons WHERE owner_user_id = ?) LIMIT 1;
+		`;
+
+		const [salonPhotoRows] = await db.execute(getPictureIdQuery, [owner_user_id]);
+
+		if (process.env.UTC_DEBUG === '1') {
+			console.log(bookingPhotoRows);
+		}
+
+		if (salonPhotoRows.length === 0) {
+			return res.status(404).json({ message: 'Salon photo not found' });
+		}
+
+		await db.query('START TRANSACTION');
+
+		const deleteSalonPhotoQuery = `
+			DELETE FROM salon_photos WHERE salon_id = (SELECT salon_id FROM salons WHERE owner_user_id = ?);
+		`;
+		const [deleteSalonPhotoResults] = await db.execute(deleteSalonPhotoQuery, [owner_user_id]);
+
+		if (process.env.UTC_DEBUG === '1') {
+			console.log(deleteSalonPhotoResults);
+		}
+
+		if (deleteSalonPhotoResults.affectedRows === 0) {
+			await db.query('ROLLBACK');
+			return res.status(404).json({ 
+				error: "Failed to delete booking photo." 
+			});
+		}
+
+		const deletePhotoQuery = `
+			DELETE FROM pictures WHERE picture_id = ?;
+		`;
+		const [deletePhotoResults] = await db.execute(deletePhotoQuery, [salonPhotoRows[0].picture_id]);
+
+		if (deletePhotoResults.affectedRows === 0) {
+			await db.query('ROLLBACK');
+			return res.status(404).json({ 
+				error: "Failed to delete photo." 
+			});
+		}
+
+		const result = await deleteFile(salonPhotoRows[0].s3_key);
+
+		if (result.error === 'Missing key') {
+			await db.query('ROLLBACK');
+			return res.status(400).json({ 
+				error: "Missing key." 
+			});
+		}
+
+		await db.query('COMMIT');
+
+		if (result.message === 'Missing key') {
+			return res.status(400).json({ 
+				error: "Missing key." 
+			});
+		}
+
+
+		res.status(200).json({ 
+			error: "File deleted successfully." 
+		});
+
+	} catch (error) {
+		console.error("Delete File Error:", error);
+		res.status(500).json({ 
+			error: "Failed to Delete file." 
+		});
 	}
 };
