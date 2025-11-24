@@ -420,3 +420,98 @@ exports.getSalonGallery = async (req, res) => {
 
 	
   }
+
+
+// UAR 1.3 Upload Salon Photo
+exports.uploadSalonPhoto = async (req, res) => {
+	const db = connection.promise();
+
+	try {
+		const owner_user_id = req.user?.user_id;
+
+		if (!req.file) {
+			if (process.env.UTC_DEBUG === '1') {
+				console.log("No file attched.");
+			}
+			return res.status(400).json({ 
+				error: "No file uploaded." 
+			});
+		}
+
+		const checkPhotoAttachedQuery = `SELECT * FROM salon_photos WHERE salon_id = (SELECT salon_id FROM salons WHERE owner_user_id = ?);`;
+
+		const [checkPhotoAttachedResults] = await db.execute(checkPhotoAttachedQuery, [owner_user_id]);
+
+		if (checkPhotoAttachedResults.length > 0) {
+			return res.status(400).json({ 
+				error: "Photo already attached." 
+			});
+		}
+
+		const { buffer, mimetype } = req.file;
+
+		const result = await uploadUniqueFile(buffer, mimetype);
+		if (result.message === 'File already exists') {
+			return res.status(409).json({ 
+				error: "File already exists." 
+			});
+		}
+
+		const nowUtc = toMySQLUtc(DateTime.utc());
+		const addPhotoToSalonQuery = `
+			INSERT INTO salon_photos (salon_id, picture_id, created_at, updated_at) VALUES ((SELECT salon_id FROM salons WHERE owner_user_id = ?), ?, ?, ?)
+		`;
+		const [addPhotoToSalonResults] = await db.execute(addPhotoToSalonQuery, [owner_user_id, result.picture_id, nowUtc, nowUtc]);
+
+		if (addPhotoToSalonResults.affectedRows === 0) {
+			return res.status(500).json({ 
+				error: "Failed to add photo to booking service." 
+			});
+		}
+				
+		res.status(200).json({
+			message: "File uploaded successfully.",
+			salon_photo_id: addPhotoToSalonResults.insertId
+		});
+
+	} catch (error) {
+		console.error("Upload Error:", error);
+		res.status(500).json({ 
+			error: "Failed to upload file." 
+		});
+	}
+};
+
+// UAR 1.3 Get Salon Photo
+exports.getSalonPhoto = async (req, res) => {
+	const db = connection.promise();
+  
+	try {
+		const { salon_id } = req.query;
+  
+	  	if (!salon_id) {
+			return res.status(400).json({
+				error: "Booking ID are required."
+			});
+		}
+		
+		const getSalonPhotoQuery = `SELECT p.s3_key FROM pictures p JOIN salon_photos sp ON p.picture_id = sp.picture_id WHERE sp.salon_id = ? LIMIT 1;`;
+		const [rows] = await db.execute(getSalonPhotoQuery, [salon_id]);
+
+		if (rows.length === 0) {
+			return res.status(404).json({ message: "No photo found for this booking/type." });
+		}
+
+		const { url, error } = await getFilePresigned(rows[0].s3_key);
+		if (error) {
+			return res.status(500).json({ error: "Failed to generate S3 pre-signed URL." });
+		}
+
+		return res.status(200).json({ url });
+	} catch (err) {
+	  console.error("getSalonPhoto error:", err);
+	  return res.status(500).json({
+		message: "Internal server error retrieving photo."
+	  });
+	}
+};

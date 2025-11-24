@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const multer = require('multer');
-const { uploadBeforePhoto, uploadAfterPhoto, deletePhoto, getPhoto, checkIfPhotoAttached, getSalonGallery } = require('../controllers/fileController');
+const { uploadBeforePhoto, uploadAfterPhoto, deletePhoto, getPhoto, checkIfPhotoAttached, getSalonGallery, uploadSalonPhoto, getSalonPhoto } = require('../controllers/fileController');
 const { authenticateToken, roleAuthorization } = require('../middleware/auth.middleware');
 
 
@@ -35,5 +35,10 @@ router.get('/check-if-photo-attached', authenticateToken, roleAuthorization(['CU
 
 // UPH 1.6 Get Salon Gallery
 router.get('/get-salon-gallery', authenticateToken, roleAuthorization(['CUSTOMER','EMPLOYEE','OWNER']), getSalonGallery);
+
+
+// UAR 1.3 Upload Salon Photo
+router.post('/upload-salon-photo', authenticateToken, roleAuthorization(['OWNER']), upload.single("file"), uploadSalonPhoto);
+router.get('/get-salon-photo', authenticateToken, roleAuthorization(['CUSTOMER','EMPLOYEE','OWNER','ADMIN']), getSalonPhoto);
 
 module.exports = router;

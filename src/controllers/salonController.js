@@ -1,6 +1,7 @@
 const connection = require('../config/databaseConnection'); //db connection
 const { validateEmail, toMySQLUtc, formatDateTime, logUtcDebug, localAvailabilityToUtc, luxonWeekdayToDb } = require('../utils/utilies');
 const { DateTime } = require('luxon');
+const { getFilePresigned } = require('../utils/s3.js');
 
 //allowed salon categories
 const ALLOWED_CATEGORIES = new Set([
@@ -267,10 +268,27 @@ exports.browseSalons = async (req, res) => {
         }
       });
     }
+
+    // fetch salon photo signed URL per salon
+    const salonPhotoUrlById = {};
+    for (const id of salonIds) {
+      const getSalonPhotoQuery = `SELECT p.s3_key FROM pictures p JOIN salon_photos sp ON p.picture_id = sp.picture_id WHERE sp.salon_id = ? LIMIT 1;`;
+      const [salonPhotoRows] = await db.execute(getSalonPhotoQuery, [id]);
+      const key = salonPhotoRows[0]?.s3_key;
+      if (key) {
+        const { url } = await getFilePresigned(key);
+        if (url) {
+          salonPhotoUrlById[id] = url;
+        }
+      }
+    }
+    
+    
       
     const rowsWithHours = rows.map(row => ({
       ...row,
-      weekly_hours: salonHours[row.salon_id] || {}
+      weekly_hours: salonHours[row.salon_id] || {},
+      photo_url: salonPhotoUrlById[row.salon_id] || null
     }));
     
     //returning salons
@@ -2515,3 +2533,4 @@ exports.getTopSalonMetrics = async (req, res) => {
     return res.status(500).json({ message: 'Internal Server Error' });
   }
 };
+

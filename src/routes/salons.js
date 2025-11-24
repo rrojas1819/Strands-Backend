@@ -7,6 +7,7 @@ const {authenticateToken, roleAuthorization} = require('../middleware/auth.middl
 router.get('/check', authenticateToken, roleAuthorization(['OWNER']), salonController.checkOwnerHasSalon);
 router.post('/create', authenticateToken, roleAuthorization(['OWNER']), salonController.createSalon);
 
+
 // UAR 1.5 salon approval
 router.patch('/approve', authenticateToken, roleAuthorization(['ADMIN']), salonController.approveSalon);
 
