@@ -15,17 +15,56 @@ exports.getNotifications = async (req, res) => {
         }
 
         // Pagination parameters
-        let { page = 1, limit = 10 } = req.query;
+        let { page = 1, limit = 10, filter = 'all' } = req.query;
         page = Math.max(1, parseInt(page, 10) || 1);
         limit = Math.max(1, Math.min(parseInt(limit, 10) || 10, 20)); // Max 100 per page
         const offset = (page - 1) * limit;
+
+        const categoryFilters = {
+            'bookings': [
+                'BOOKING_CREATED',
+                'BOOKING_RESCHEDULED',
+                'BOOKING_CANCELED',
+                'PHOTO_UPLOADED',
+                'MANUAL_REMINDER'
+            ],
+            'rewards': [
+                'PROMO_REDEEMED',
+                'LOYALTY_REWARD_REDEEMED',
+                'UNUSED_OFFERS_REMINDER'
+            ],
+            'products': [
+                'PRODUCT_ADDED',
+                'PRODUCT_DELETED',
+                'PRODUCT_RESTOCKED',
+                'PRODUCT_PURCHASED'
+            ],
+            'reviews': [
+                'REVIEW_CREATED',
+                'REVIEW_UPDATED',
+                'REVIEW_DELETED',
+                'REVIEW_REPLY_CREATED',
+                'REVIEW_REPLY_UPDATED',
+                'REVIEW_REPLY_DELETED'
+            ]
+        };
+
+        let whereClause = 'WHERE user_id = ?';
+        const queryParams = [user_id];
+
+        if (filter && filter !== 'all' && categoryFilters[filter.toLowerCase()]) {
+            const typeCodes = categoryFilters[filter.toLowerCase()];
+            const placeholders = typeCodes.map(() => '?').join(',');
+            whereClause += ` AND type_code IN (${placeholders})`;
+            queryParams.push(...typeCodes);
+        }
 
         // Get total count
         const [countResult] = await db.execute(
             `SELECT COUNT(*) as total 
              FROM notifications_inbox 
-             WHERE user_id = ?`,
-            [user_id]
+             ${whereClause}`,
+            queryParams
         );
         const total = countResult[0]?.total || 0;
 
@@ -48,10 +87,10 @@ exports.getNotifications = async (req, res) => {
                 DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') AS created_at,
                 DATE_FORMAT(read_at, '%Y-%m-%d %H:%i:%s') AS read_at
              FROM notifications_inbox
-             WHERE user_id = ?
+             ${whereClause}
              ORDER BY notifications_inbox.created_at DESC
              LIMIT ${limit} OFFSET ${offset}`,
-            [user_id]
+            queryParams
         );
 
         // Format notifications
@@ -119,10 +158,18 @@ exports.getNotifications = async (req, res) => {
         const totalPages = Math.ceil(total / limit);
         const hasMore = page < totalPages;
 
+        const activeFilter = filter && filter !== 'all' && categoryFilters[filter.toLowerCase()] 
+            ? filter.toLowerCase() 
+            : 'all';
+
         return res.status(200).json({
             message: 'Notifications retrieved successfully',
             data: {
                 notifications: formattedNotifications,
+                filter: {
+                    active: activeFilter,
+                    available: ['all', 'bookings', 'rewards', 'products', 'reviews']
+                },
                 pagination: {
                     page,
                     limit,
@@ -462,6 +509,80 @@ exports.deleteNotification = async (req, res) => {
 
     } catch (error) {
         console.error('deleteNotification error:', error);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
+// Mark all notifications as read for a user
+exports.markAllAsRead = async (req, res) => {
+    const db = connection.promise();
+
+    try {
+        const user_id = req.user?.user_id;
+
+        if (!user_id) {
+            return res.status(401).json({ message: 'Unauthorized' });
+        }
+
+        const now = toMySQLUtc(DateTime.utc());
+
+        const [result] = await db.execute(
+            `UPDATE notifications_inbox 
+             SET status = 'READ', read_at = ?
+             WHERE user_id = ? AND status = 'UNREAD'`,
+            [now, user_id]
+        );
+
+        return res.status(200).json({
+            message: 'All notifications marked as read',
+            data: {
+                notifications_updated: result.affectedRows,
+                read_at: formatDateTime(now)
+            }
+        });
+
+    } catch (error) {
+        console.error('markAllAsRead error:', error);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
+// Delete all notifications for a user
+exports.deleteAllNotifications = async (req, res) => {
+    const db = connection.promise();
+
+    try {
+        const user_id = req.user?.user_id;
+
+        if (!user_id) {
+            return res.status(401).json({ message: 'Unauthorized' });
+        }
+
+        // Get count before deletion
+        const [countResult] = await db.execute(
+            `SELECT COUNT(*) as total 
+             FROM notifications_inbox 
+             WHERE user_id = ?`,
+            [user_id]
+        );
+        const totalBefore = countResult[0]?.total || 0;
+
+        const [result] = await db.execute(
+            `DELETE FROM notifications_inbox 
+             WHERE user_id = ?`,
+            [user_id]
+        );
+
+        return res.status(200).json({
+            message: 'All notifications deleted successfully',
+            data: {
+                notifications_deleted: result.affectedRows,
+                total_before: totalBefore
+            }
+        });
+
+    } catch (error) {
+        console.error('deleteAllNotifications error:', error);
         return res.status(500).json({ message: 'Internal server error' });
     }
 };

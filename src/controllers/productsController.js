@@ -1,6 +1,7 @@
 const connection = require('../config/databaseConnection');
 const { DateTime } = require('luxon');
 const { toMySQLUtc } = require('../utils/utilies');
+const { createNotification } = require('./notificationsController');
 
 // SF 1.1 Add Product
 exports.addProduct = async (req, res) => {
@@ -24,6 +25,30 @@ exports.addProduct = async (req, res) => {
 
         if (results.affectedRows === 0) {
             return res.status(404).json({ message: 'Failed to add product' });
+        }
+
+        const [[ownerInfo]] = await db.execute(
+            `SELECT u.user_id, u.email, s.salon_id, s.name as salon_name
+             FROM salons s
+             JOIN users u ON s.owner_user_id = u.user_id
+             WHERE s.owner_user_id = ?`,
+            [owner_user_id]
+        );
+
+        if (ownerInfo) {
+            try {
+                await createNotification(db, {
+                    user_id: ownerInfo.user_id,
+                    salon_id: ownerInfo.salon_id,
+                    product_id: results.insertId,
+                    email: ownerInfo.email,
+                    type_code: 'PRODUCT_ADDED',
+                    message: `Product "${name}" has been successfully added to ${ownerInfo.salon_name}.`,
+                    sender_email: 'SYSTEM'
+                });
+            } catch (notifError) {
+                console.error('Failed to send product added notification:', notifError);
+            }
         }
 
         res.status(200).json({
@@ -86,6 +111,15 @@ exports.deleteProduct = async (req, res) => {
             return res.status(400).json({ message: 'Product ID is required' });
         }
 
+        const [[productInfo]] = await db.execute(
+            `SELECT p.name, p.salon_id, s.owner_user_id, u.email, s.name as salon_name
+             FROM products p
+             JOIN salons s ON p.salon_id = s.salon_id
+             JOIN users u ON s.owner_user_id = u.user_id
+             WHERE p.product_id = ? AND s.owner_user_id = ?`,
+            [product_id, owner_user_id]
+        );
+
         const deleteProductQuery = 
         `DELETE FROM products WHERE product_id = ? AND salon_id = (SELECT salon_id FROM salons WHERE owner_user_id = ?);`;
 
@@ -93,6 +127,22 @@ exports.deleteProduct = async (req, res) => {
 
         if (results.affectedRows === 0) {
             return res.status(404).json({ message: 'Product not found' });
+        }
+
+        if (productInfo) {
+            try {
+                await createNotification(db, {
+                    user_id: productInfo.owner_user_id,
+                    salon_id: productInfo.salon_id,
+                    product_id: product_id,
+                    email: productInfo.email,
+                    type_code: 'PRODUCT_DELETED',
+                    message: `Product "${productInfo.name}" has been deleted from ${productInfo.salon_name}.`,
+                    sender_email: 'SYSTEM'
+                });
+            } catch (notifError) {
+                console.error('Failed to send product deleted notification:', notifError);
+            }
         }
 
         res.status(200).json({
@@ -119,12 +169,45 @@ exports.updateProduct = async (req, res) => {
             return res.status(400).json({ message: 'Missing required fields' });
         }
 
+        const [[oldProduct]] = await db.execute(
+            `SELECT stock_qty, salon_id FROM products WHERE product_id = ? AND salon_id = (SELECT salon_id FROM salons WHERE owner_user_id = ?)`,
+            [product_id, owner_user_id]
+        );
+
+        if (!oldProduct) {
+            return res.status(404).json({ message: 'Product not found' });
+        }
+
         const updateProductQuery = 
         `UPDATE products SET name = ?, description = ?, sku = ?, price = ?, category = ?, stock_qty = ? WHERE product_id = ? AND salon_id = (SELECT salon_id FROM salons WHERE owner_user_id = ?);`;
         const [results] = await db.execute(updateProductQuery, [name, description, sku, price, category, stock_qty, product_id, owner_user_id]);
 
         if (results.affectedRows === 0) {
             return res.status(404).json({ message: 'Product not found or SKU already exists.' });
+        }
+
+        const [[ownerInfo]] = await db.execute(
+            `SELECT u.user_id, u.email, s.name as salon_name
+             FROM salons s
+             JOIN users u ON s.owner_user_id = u.user_id
+             WHERE s.owner_user_id = ?`,
+            [owner_user_id]
+        );
+
+        if (ownerInfo && stock_qty > oldProduct.stock_qty) {
+            try {
+                await createNotification(db, {
+                    user_id: ownerInfo.user_id,
+                    salon_id: oldProduct.salon_id,
+                    product_id: product_id,
+                    email: ownerInfo.email,
+                    type_code: 'PRODUCT_RESTOCKED',
+                    message: `Product "${name}" has been restocked. Stock updated from ${oldProduct.stock_qty} to ${stock_qty} units at ${ownerInfo.salon_name}.`,
+                    sender_email: 'SYSTEM'
+                });
+            } catch (notifError) {
+                console.error('Failed to send product restocked notification:', notifError);
+            }
         }
 
         res.status(200).json({
@@ -429,12 +512,45 @@ exports.checkout = async (req, res) => {
 
             const [paymentResults] = await db.execute(insertPaymentQuery, [credit_card_id, billing_address_id, cartRows[0].amount_due, null, copyResults.insertId, nowUtc, nowUtc]);
 
-
-
             // Failed to process payment
             if (paymentResults.affectedRows === 0) {
                 await db.query('ROLLBACK');
                 return res.status(500).json({ message: 'Failed to process payment' });
+            }
+
+            const [orderItems] = await db.execute(
+                `SELECT p.name, oi.quantity, oi.purchase_price
+                 FROM order_items oi
+                 JOIN products p ON oi.product_id = p.product_id
+                 WHERE oi.order_id = ?`,
+                [copyResults.insertId]
+            );
+
+            const [[customerInfo]] = await db.execute(
+                `SELECT u.user_id, u.email, u.full_name, s.name as salon_name, o.salon_id
+                 FROM orders o
+                 JOIN users u ON o.user_id = u.user_id
+                 JOIN salons s ON o.salon_id = s.salon_id
+                 WHERE o.order_id = ?`,
+                [copyResults.insertId]
+            );
+
+            if (customerInfo && orderItems.length > 0) {
+                const itemsList = orderItems.map(item => `${item.name} (x${item.quantity})`).join(', ');
+                const totalAmount = orderItems.reduce((sum, item) => sum + (item.purchase_price * item.quantity), 0);
+                try {
+                    await createNotification(db, {
+                        user_id: customerInfo.user_id,
+                        salon_id: customerInfo.salon_id,
+                        payment_id: paymentResults.insertId,
+                        email: customerInfo.email,
+                        type_code: 'PRODUCT_PURCHASED',
+                        message: `Your order from ${customerInfo.salon_name} has been confirmed! Items: ${itemsList}. Total: $${totalAmount.toFixed(2)}.`,
+                        sender_email: 'SYSTEM'
+                    });
+                } catch (notifError) {
+                    console.error('Failed to send product purchase notification:', notifError);
+                }
             }
 
             //Copy cart items 
