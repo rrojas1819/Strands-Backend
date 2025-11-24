@@ -1,7 +1,4 @@
-const express = require('express');
-const cors = require('cors');
-require('dotenv').config();
-
+const app = require('./app');
 
 process.on('unhandledRejection', (err, promise) => {
     console.error('Unhandled Promise Rejection at:', promise, 'reason:', err);
@@ -12,60 +9,6 @@ process.on('uncaughtException', (err) => {
     process.exit(1);
 });
 
-
-// Get Routes
-const healthRoutes = require('./routes/health');
-const userRoutes = require('./routes/user');
-const salonsRoutes = require('./routes/salons');
-const analyticsRoutes = require('./routes/analytics');
-const unavailabilityRoutes = require('./routes/unavailability');
-const bookingsRoutes = require('./routes/bookings');
-const productsRoutes = require('./routes/products');
-const paymentsRoutes = require('./routes/payments');
-const reviewRoutes = require('./routes/reviews');
-const staffReviewsRoutes = require('./routes/staffReviews');
-const appointmentNotesRoutes = require('./routes/appointmentNotes');
-const promotionsRoutes = require('./routes/promotions');
-const fileUploadRoutes = require('./routes/fileUpload');
-const notificationsRoutes = require('./routes/notifications');
-
-// Database Connection
-const db = require('./config/databaseConnection');
-
-// Get utilities and get start Token Cleanup
-const { startTokenCleanup, startBookingsAutoComplete, startLoyaltySeenUpdate, startAppointmentReminders, startUnusedOffersReminders, startExpirePromoCodes, startTempCreditCardCleanup } = require('./utils/utilies');
-
-// Set up Express and CORS
-const app = express();
-
-startTokenCleanup(db);
-startBookingsAutoComplete(db);
-startLoyaltySeenUpdate(db);
-startAppointmentReminders(db);
-startUnusedOffersReminders(db);
-startExpirePromoCodes(db);
-startTempCreditCardCleanup(db);
-app.use(cors());
-app.use(express.json());
-
-
-//Use Routes
-app.use('/api', healthRoutes);
-app.use('/api/user', userRoutes);
-app.use('/api/salons', salonsRoutes);
-app.use('/api/file', fileUploadRoutes);
-app.use('/api/admin/analytics', analyticsRoutes);
-app.use('/api/unavailability', unavailabilityRoutes);
-app.use('/api/bookings', bookingsRoutes);
-app.use('/api/products', productsRoutes);
-app.use('/api/payments', paymentsRoutes);
-app.use('/api/reviews', reviewRoutes);
-app.use('/api/staff-reviews', staffReviewsRoutes);
-app.use('/api/appointment-notes', appointmentNotesRoutes);
-app.use('/api/notifications', notificationsRoutes);
-app.use('/api/promotions', promotionsRoutes);
-
-// Start Server
 const PORT = process.env.PORT || 3000;
 const server = app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
@@ -74,3 +17,5 @@ const server = app.listen(PORT, () => console.log(`Server running on port ${PORT
 server.on('error', (err) => {
     console.error('Server error:', err);
 });
+
+module.exports = server;
