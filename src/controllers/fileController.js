@@ -2,6 +2,7 @@ const { uploadUniqueFile, deleteFile, getFilePresigned } = require('../utils/s3.
 const connection = require('../config/databaseConnection');
 const { DateTime } = require('luxon');
 const { toMySQLUtc } = require('../utils/utilies');
+const { createNotification } = require('./notificationsController');
 
 // UPH 1.6 Upload After Photo
 exports.uploadAfterPhoto = async (req, res) => {
@@ -54,6 +55,31 @@ exports.uploadAfterPhoto = async (req, res) => {
 			return res.status(500).json({ 
 				error: "Failed to add photo to booking service." 
 			});
+		}
+
+		const [[bookingInfo]] = await db.execute(
+			`SELECT b.customer_user_id, b.salon_id, u.email, u.full_name, s.name as salon_name
+			 FROM bookings b
+			 JOIN users u ON b.customer_user_id = u.user_id
+			 JOIN salons s ON b.salon_id = s.salon_id
+			 WHERE b.booking_id = ?`,
+			[booking_id]
+		);
+
+		if (bookingInfo) {
+			try {
+				await createNotification(db, {
+					user_id: bookingInfo.customer_user_id,
+					salon_id: bookingInfo.salon_id,
+					booking_id: booking_id,
+					email: bookingInfo.email,
+					type_code: 'PHOTO_UPLOADED',
+					message: `An "after" photo has been uploaded for your appointment at ${bookingInfo.salon_name}.`,
+					sender_email: 'SYSTEM'
+				});
+			} catch (notifError) {
+				console.error('Failed to send photo uploaded notification:', notifError);
+			}
 		}
 				
 		res.status(200).json({
@@ -120,6 +146,31 @@ exports.uploadBeforePhoto = async (req, res) => {
 			return res.status(500).json({ 
 				error: "Failed to add photo to booking service." 
 			});
+		}
+
+		const [[bookingInfo]] = await db.execute(
+			`SELECT b.customer_user_id, b.salon_id, u.email, u.full_name, s.name as salon_name
+			 FROM bookings b
+			 JOIN users u ON b.customer_user_id = u.user_id
+			 JOIN salons s ON b.salon_id = s.salon_id
+			 WHERE b.booking_id = ?`,
+			[booking_id]
+		);
+
+		if (bookingInfo) {
+			try {
+				await createNotification(db, {
+					user_id: bookingInfo.customer_user_id,
+					salon_id: bookingInfo.salon_id,
+					booking_id: booking_id,
+					email: bookingInfo.email,
+					type_code: 'PHOTO_UPLOADED',
+					message: `A "before" photo has been uploaded for your appointment at ${bookingInfo.salon_name}.`,
+					sender_email: 'SYSTEM'
+				});
+			} catch (notifError) {
+				console.error('Failed to send photo uploaded notification:', notifError);
+			}
 		}
 				
 		res.status(200).json({

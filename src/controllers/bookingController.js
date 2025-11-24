@@ -1,6 +1,7 @@
 const connection = require('../config/databaseConnection'); //db connection
 const { toMySQLUtc, formatDateTime, logUtcDebug, localAvailabilityToUtc, utcToLocalDateString, luxonWeekdayToDb } = require('../utils/utilies');
 const { DateTime } = require('luxon');
+const { createNotification } = require('./notificationsController');
 
 // Customer views their appointments
 exports.getMyAppointments = async (req, res) => {
@@ -496,6 +497,66 @@ exports.rescheduleBooking = async (req, res) => {
 
             await db.commit(); //commiting db changes
 
+            const [customerInfo] = await db.execute(
+              'SELECT user_id, email, full_name FROM users WHERE user_id = ?',
+              [authUserId]
+            );
+
+            const [salonTimezoneResult] = await db.execute(
+              'SELECT timezone FROM salons WHERE salon_id = ?',
+              [salon_id]
+            );
+            const salonTimezone = salonTimezoneResult[0]?.timezone || 'America/New_York';
+
+            const employeeIds = [...new Set(servicesRows.map(r => r.employee_id))];
+            const [stylistsInfo] = await db.execute(
+              `SELECT DISTINCT e.employee_id, e.user_id, u.email, u.full_name, s.name as salon_name 
+               FROM employees e 
+               JOIN users u ON e.user_id = u.user_id 
+               JOIN salons s ON e.salon_id = s.salon_id 
+               WHERE e.employee_id IN (${employeeIds.map(() => '?').join(',')})`,
+              employeeIds
+            );
+
+            const oldBookingDateLocal = oldBookingDate.setZone(salonTimezone);
+            const newBookingDateLocal = startDate.setZone(salonTimezone);
+            const oldBookingDateStr = oldBookingDateLocal.toFormat('EEE, MMM d, yyyy h:mm a');
+            const newBookingDateStr = newBookingDateLocal.toFormat('EEE, MMM d, yyyy h:mm a');
+
+            if (customerInfo.length > 0) {
+              try {
+                await createNotification(db, {
+                  user_id: customerInfo[0].user_id,
+                  salon_id: salon_id,
+                  booking_id: newBookingId,
+                  email: customerInfo[0].email,
+                  type_code: 'BOOKING_RESCHEDULED',
+                  message: `Your appointment has been rescheduled from ${oldBookingDateStr} to ${newBookingDateStr}.`,
+                  sender_email: 'SYSTEM'
+                });
+              } catch (notifError) {
+                console.error('Failed to send booking rescheduled notification to customer:', notifError);
+              }
+            }
+
+            // Send notification to all stylists involved
+            for (const stylist of stylistsInfo) {
+              try {
+                await createNotification(db, {
+                  user_id: stylist.user_id,
+                  salon_id: salon_id,
+                  employee_id: stylist.employee_id,
+                  booking_id: newBookingId,
+                  email: stylist.email,
+                  type_code: 'BOOKING_RESCHEDULED',
+                  message: `Appointment with ${customerInfo[0]?.full_name || 'Customer'} has been rescheduled from ${oldBookingDateStr} to ${newBookingDateStr}.`,
+                  sender_email: customerInfo[0]?.email || 'SYSTEM'
+                });
+              } catch (notifError) {
+                console.error('Failed to send booking rescheduled notification to stylist:', notifError);
+              }
+            }
+
             return res.status(201).json({
                 message: 'Appointment rescheduled successfully (old booking canceled, new booking created)',
                 data: {
@@ -595,6 +656,79 @@ exports.cancelBooking = async (req, res) => {
         //commit all db changes only if this point is reached, if a rollback is triggered then all changes do not take affect to keep synergy in db
         await db.commit();
 
+        // Get booking details for notifications
+        const [bookingDetails] = await db.execute(
+          `SELECT b.salon_id, b.customer_user_id, 
+           DATE_FORMAT(b.scheduled_start, '%Y-%m-%d %H:%i:%s') AS scheduled_start,
+           bs.employee_id
+           FROM bookings b
+           JOIN booking_services bs ON b.booking_id = bs.booking_id
+           WHERE b.booking_id = ?`,
+          [bookingId]
+        );
+
+        if (bookingDetails.length > 0) {
+          const bookingDetail = bookingDetails[0];
+          
+          const [salonTimezoneResult] = await db.execute(
+            'SELECT timezone FROM salons WHERE salon_id = ?',
+            [bookingDetail.salon_id]
+          );
+          const salonTimezone = salonTimezoneResult[0]?.timezone || 'America/New_York';
+          
+          const bookingDate = DateTime.fromSQL(bookingDetail.scheduled_start, { zone: 'utc' });
+          const bookingDateLocal = bookingDate.setZone(salonTimezone);
+          const bookingDateStr = bookingDateLocal.toFormat('EEE, MMM d, yyyy h:mm a');
+
+          const [customerInfo] = await db.execute(
+            'SELECT user_id, email, full_name FROM users WHERE user_id = ?',
+            [bookingDetail.customer_user_id]
+          );
+
+          const employeeIds = [...new Set(bookingDetails.map(bd => bd.employee_id))];
+          const [stylistsInfo] = await db.execute(
+            `SELECT DISTINCT e.employee_id, e.user_id, u.email, u.full_name 
+             FROM employees e 
+             JOIN users u ON e.user_id = u.user_id 
+             WHERE e.employee_id IN (${employeeIds.map(() => '?').join(',')})`,
+            employeeIds
+          );
+
+          if (customerInfo.length > 0) {
+            try {
+              await createNotification(db, {
+                user_id: customerInfo[0].user_id,
+                salon_id: bookingDetail.salon_id,
+                booking_id: bookingId,
+                email: customerInfo[0].email,
+                type_code: 'BOOKING_CANCELED',
+                message: `Your appointment scheduled for ${bookingDateStr} has been canceled.`,
+                sender_email: 'SYSTEM'
+              });
+            } catch (notifError) {
+              console.error('Failed to send booking canceled notification to customer:', notifError);
+            }
+          }
+
+          // Send notification to all stylists involved
+          for (const stylist of stylistsInfo) {
+            try {
+              await createNotification(db, {
+                user_id: stylist.user_id,
+                salon_id: bookingDetail.salon_id,
+                employee_id: stylist.employee_id,
+                booking_id: bookingId,
+                email: stylist.email,
+                type_code: 'BOOKING_CANCELED',
+                message: `Appointment with ${customerInfo[0]?.full_name || 'Customer'} scheduled for ${bookingDateStr} has been canceled.`,
+                sender_email: customerInfo[0]?.email || 'SYSTEM'
+              });
+            } catch (notifError) {
+              console.error('Failed to send booking canceled notification to stylist:', notifError);
+            }
+          }
+        }
+
         return res.status(200).json({
             message: 'Booking canceled',
             data: {
@@ -605,6 +739,7 @@ exports.cancelBooking = async (req, res) => {
             }
         });
     } catch (err) {
+        console.error('cancelBooking error:', err);
         try { await connection.promise().rollback(); } catch (_) { }
         return res.status(500).json({ message: 'Internal server error' });
     }
@@ -662,6 +797,57 @@ exports.cancelBookingAsStylist = async (req, res) => {
         );
 
         await db.commit();
+
+        // Get booking details for notifications
+        const [bookingDetails] = await db.execute(
+          `SELECT b.salon_id, b.customer_user_id, 
+           DATE_FORMAT(b.scheduled_start, '%Y-%m-%d %H:%i:%s') AS scheduled_start
+           FROM bookings b
+           WHERE b.booking_id = ?`,
+          [bookingId]
+        );
+
+        if (bookingDetails.length > 0) {
+          const bookingDetail = bookingDetails[0];
+          
+          // Get salon timezone for proper date formatting
+          const [salonTimezoneResult] = await db.execute(
+            'SELECT timezone FROM salons WHERE salon_id = ?',
+            [bookingDetail.salon_id]
+          );
+          const salonTimezone = salonTimezoneResult[0]?.timezone || 'America/New_York';
+          
+          const bookingDate = DateTime.fromSQL(bookingDetail.scheduled_start, { zone: 'utc' });
+          const bookingDateLocal = bookingDate.setZone(salonTimezone);
+          const bookingDateStr = bookingDateLocal.toFormat('EEE, MMM d, yyyy h:mm a');
+
+          // Get customer and stylist information
+          const [customerInfo] = await db.execute(
+            'SELECT user_id, email, full_name FROM users WHERE user_id = ?',
+            [bookingDetail.customer_user_id]
+          );
+
+          const [stylistInfo] = await db.execute(
+            'SELECT user_id, email, full_name FROM users WHERE user_id = ?',
+            [authUserId]
+          );
+
+          if (customerInfo.length > 0) {
+            try {
+              await createNotification(db, {
+                user_id: customerInfo[0].user_id,
+                salon_id: bookingDetail.salon_id,
+                booking_id: bookingId,
+                email: customerInfo[0].email,
+                type_code: 'BOOKING_CANCELED',
+                message: `Your appointment scheduled for ${bookingDateStr} has been canceled by ${stylistInfo[0]?.full_name || 'your stylist'}.`,
+                sender_email: stylistInfo[0]?.email || 'SYSTEM'
+              });
+            } catch (notifError) {
+              console.error('Failed to send booking canceled notification to customer:', notifError);
+            }
+          }
+        }
 
         return res.status(200).json({
             message: 'Booking canceled by stylist',

@@ -2,6 +2,7 @@ const connection = require('../config/databaseConnection'); //db connection
 const { validateEmail, toMySQLUtc, formatDateTime, logUtcDebug, localAvailabilityToUtc, luxonWeekdayToDb } = require('../utils/utilies');
 const { DateTime } = require('luxon');
 const { getFilePresigned } = require('../utils/s3.js');
+const { createNotification } = require('./notificationsController');
 
 //allowed salon categories
 const ALLOWED_CATEGORIES = new Set([
@@ -111,10 +112,37 @@ exports.createSalon = async (req, res) => {
 
     //insert
     const [result] = await db.execute(insertSql, params);
+    const salon_id = result.insertId;
+    
     //retrieve
     const [rows] = await db.execute(
-      'SELECT * FROM salons WHERE salon_id = ?', [result.insertId]
+      'SELECT * FROM salons WHERE salon_id = ?', [salon_id]
     );
+
+    const [ownerInfo] = await db.execute(
+      'SELECT full_name, email FROM users WHERE user_id = ?',
+      [owner_user_id]
+    );
+
+    try {
+      const [admins] = await db.execute(
+        'SELECT user_id, email, full_name FROM users WHERE role = ?',
+        ['ADMIN']
+      );
+
+      for (const admin of admins) {
+        await createNotification(db, {
+          user_id: admin.user_id,
+          salon_id: salon_id,
+          email: admin.email,
+          type_code: 'SALON_REGISTRATION',
+          message: `New salon registration pending review: "${name}" (${category}) by ${ownerInfo[0]?.full_name || 'Owner'}. Please review and approve or reject the salon registration.`,
+          sender_email: ownerInfo[0]?.email || 'SYSTEM'
+        });
+      }
+    } catch (notifError) {
+      console.error('Failed to send salon registration notification to admins:', notifError);
+    }
 
     //now we wait for an admin to verify it
     return res.status(201).json({
@@ -155,12 +183,41 @@ exports.approveSalon = async (req, res) => {
       return res.status(404).json({ message: 'Salon not found' });
     }
 
+    // Get salon and owner information for notification
+    const [salonInfo] = await db.execute(
+      `SELECT s.name, s.owner_user_id, u.email, u.full_name 
+       FROM salons s 
+       JOIN users u ON s.owner_user_id = u.user_id 
+       WHERE s.salon_id = ?`,
+      [salon_id]
+    );
+
+    if (salonInfo.length > 0) {
+      const salon = salonInfo[0];
+      const statusMessage = status === 'APPROVED' 
+        ? `Congratulations! Your salon "${salon.name}" has been approved and is now live on Strands. You can now start managing your salon, adding employees, and accepting bookings.`
+        : `We regret to inform you that your salon registration for "${salon.name}" has been rejected. Please review your salon information and contact support if you have any questions.`;
+
+      try {
+        await createNotification(db, {
+          user_id: salon.owner_user_id,
+          salon_id: salon_id,
+          email: salon.email,
+          type_code: status === 'APPROVED' ? 'SALON_APPROVED' : 'SALON_REJECTED',
+          message: statusMessage,
+          sender_email: 'SYSTEM'
+        });
+      } catch (notifError) {
+        console.error('Failed to send salon approval/rejection notification:', notifError);
+      }
+    }
+
     res.status(200).json({
       message: `Salon ${salon_id} has been ${status.toLowerCase()}.`
     });
 
   } catch (err) {
-    console.error(err);
+    console.error('approveSalon error:', err);
     res.status(500).json({ message: 'Internal Server Error' });
   }
 };
@@ -338,6 +395,38 @@ exports.addEmployee = async (req, res) => {
       return res.status(404).json({ message: 'Salon not found' });
     }
 
+    // Get salon and employee information for notification
+    const [salonInfo] = await db.execute(
+      `SELECT s.salon_id, s.name, u.full_name as owner_name 
+       FROM salons s 
+       JOIN users u ON s.owner_user_id = u.user_id 
+       WHERE s.owner_user_id = ?`,
+      [owner_user_id]
+    );
+
+    const [employeeInfo] = await db.execute(
+      `SELECT user_id, full_name, email 
+       FROM users 
+       WHERE email = ?`,
+      [email]
+    );
+
+    if (salonInfo.length > 0 && employeeInfo.length > 0) {
+      try {
+        await createNotification(db, {
+          user_id: employeeInfo[0].user_id,
+          salon_id: salonInfo[0].salon_id,
+          employee_id: result.insertId,
+          email: employeeInfo[0].email,
+          type_code: 'EMPLOYEE_ADDED',
+          message: `Congratulations! You have been added as a ${title} to ${salonInfo[0].name}. You can now set your availability and start accepting bookings.`,
+          sender_email: salonInfo[0].owner_name || 'SYSTEM'
+        });
+      } catch (notifError) {
+        console.error('Failed to send employee added notification:', notifError);
+      }
+    }
+
     res.status(200).json({
       message: `Employee ${email} has been added to salon.`
     });
@@ -512,6 +601,7 @@ exports.updateLoyaltyProgram = async (req, res) => {
     });
 
   } catch (err) {
+    console.error('updateLoyaltyProgram error:', err);
     return res.status(500).json({ message: 'Internal Server Error' });
   }
 };
@@ -706,28 +796,41 @@ exports.setSalonHours = async (req, res) => {
               
                const weekdayNumber = WEEKDAY_TO_NUMBER[weekday.toUpperCase()];
                const checkExistingQuery = `
-                   SELECT salon_availability_id FROM salon_availability 
+                   SELECT salon_availability_id, start_time, end_time 
+                   FROM salon_availability 
                    WHERE salon_id = ? AND weekday = ?
                `;
                const [existingResult] = await db.execute(checkExistingQuery, [salon_id, weekdayNumber]);
               
-               //if the day already exists, update it
+               //if the day already exists, check if times actually changed
               if (existingResult.length > 0) {
-                  const nowUtc = toMySQLUtc(DateTime.utc());
-                  const updateQuery = `
-                      UPDATE salon_availability 
-                      SET start_time = ?, end_time = ?, updated_at = ?
-                      WHERE salon_availability_id = ?
-                  `;
-                  await db.execute(updateQuery, [normalizedStartTime, normalizedEndTime, nowUtc, existingResult[0].salon_availability_id]);
-                  results.push({ 
-                      weekday: weekday.toUpperCase(), 
-                      action: 'updated',
-                      start_time: normalizedStartTime,
-                      end_time: normalizedEndTime
-                  });
+                  const existingStartTime = existingResult[0].start_time;
+                  const existingEndTime = existingResult[0].end_time;
+                  
+                  // Check if times actually changed
+                  const timesChanged = existingStartTime !== normalizedStartTime || 
+                                     existingEndTime !== normalizedEndTime;
+                  
+                  if (timesChanged) {
+                      const nowUtc = toMySQLUtc(DateTime.utc());
+                      const updateQuery = `
+                          UPDATE salon_availability 
+                          SET start_time = ?, end_time = ?, updated_at = ?
+                          WHERE salon_availability_id = ?
+                      `;
+                      await db.execute(updateQuery, [normalizedStartTime, normalizedEndTime, nowUtc, existingResult[0].salon_availability_id]);
+                      results.push({ 
+                          weekday: weekday.toUpperCase(), 
+                          action: 'updated',
+                          start_time: normalizedStartTime,
+                          end_time: normalizedEndTime,
+                          old_start_time: existingStartTime,
+                          old_end_time: existingEndTime
+                      });
+                  }
+                  // If times didn't change, don't add to results (no notification needed)
                } 
-               //if the day doesn't exist, create it
+               //if the day doesn't exist, create it (this is a new day, so always notify)
                else {
                    const nowUtc = toMySQLUtc(DateTime.utc());
                    const insertQuery = `
@@ -752,6 +855,71 @@ exports.setSalonHours = async (req, res) => {
            return res.status(400).json({
                message: 'Salon hours update failed'
            });
+       }
+
+       // Get salon name for notification
+       const [salonNameResult] = await db.execute(
+         'SELECT name FROM salons WHERE salon_id = ?',
+         [salon_id]
+       );
+       const salonName = salonNameResult[0]?.name || 'the salon';
+
+       // Get all active employees for this salon
+       const [employees] = await db.execute(
+         `SELECT e.employee_id, e.user_id, u.email, u.full_name 
+          FROM employees e 
+          JOIN users u ON e.user_id = u.user_id 
+          WHERE e.salon_id = ? AND e.active = 1`,
+         [salon_id]
+       );
+
+       // Send notification to all employees about salon hours change
+       if (employees.length > 0) {
+         const changedDays = results.filter(r => 
+           (r.action === 'updated' || r.action === 'created') && 
+           r.start_time && r.end_time
+         );
+         
+         if (changedDays.length > 0) {
+           // Format times using Luxon and create separate lines for each day
+           const daysList = changedDays.map(r => {
+             // Parse time strings (HH:MM:SS format) and format them
+             const today = DateTime.now().toFormat('yyyy-MM-dd');
+             const startDt = DateTime.fromISO(`${today}T${r.start_time}`);
+             const endDt = DateTime.fromISO(`${today}T${r.end_time}`);
+             
+             const startTimeFormatted = startDt.toFormat('h:mm a');
+             const endTimeFormatted = endDt.toFormat('h:mm a');
+             
+             if (r.action === 'updated' && r.old_start_time && r.old_end_time) {
+               const oldStartDt = DateTime.fromISO(`${today}T${r.old_start_time}`);
+               const oldEndDt = DateTime.fromISO(`${today}T${r.old_end_time}`);
+               
+               const oldStartTimeFormatted = oldStartDt.toFormat('h:mm a');
+               const oldEndTimeFormatted = oldEndDt.toFormat('h:mm a');
+               
+               return `${r.weekday} (${oldStartTimeFormatted} - ${oldEndTimeFormatted} → ${startTimeFormatted} - ${endTimeFormatted})`;
+             } else {
+               return `${r.weekday} (${startTimeFormatted} - ${endTimeFormatted})`;
+             }
+           }).join('\n');
+           
+           try {
+             for (const employee of employees) {
+               await createNotification(db, {
+                 user_id: employee.user_id,
+                 salon_id: salon_id,
+                 employee_id: employee.employee_id,
+                 email: employee.email,
+                 type_code: 'SALON_HOURS_CHANGED',
+                 message: `The operating hours for ${salonName} have been updated. Changes made to:\n${daysList}\n\nPlease review your availability to ensure it aligns with the new salon hours.`,
+                 sender_email: 'SYSTEM'
+               });
+             }
+           } catch (notifError) {
+             console.error('Failed to send salon hours change notifications:', notifError);
+           }
+         }
        }
        
        return res.status(200).json({
@@ -911,36 +1079,51 @@ exports.setEmployeeAvailability = async (req, res) => {
               
               const weekdayNumber = WEEKDAY_TO_NUMBER[weekday.toUpperCase()];
               const checkExistingQuery = `
-                  SELECT availability_id FROM employee_availability 
+                  SELECT availability_id, start_time, end_time, slot_interval_minutes 
+                  FROM employee_availability 
                   WHERE employee_id = ? AND weekday = ?
               `;
               const [existingResult] = await db.execute(checkExistingQuery, [employeeId, weekdayNumber]);
               
-              // If the day already exists, update it
+              // If the day already exists, check if times actually changed
               if (existingResult.length > 0) {
-                  const nowUtc = toMySQLUtc(DateTime.utc());
-                  const updateQuery = `
-                      UPDATE employee_availability 
-                      SET start_time = ?, end_time = ?, slot_interval_minutes = ?, updated_at = ?
-                      WHERE availability_id = ?
-                  `;
-                  await db.execute(updateQuery, [
-                      normalizedStartTime, 
-                      normalizedEndTime, 
-                      availability.slot_interval_minutes || 30,
-                      nowUtc,
-                      existingResult[0].availability_id
-                  ]);
+                  const existingStartTime = existingResult[0].start_time;
+                  const existingEndTime = existingResult[0].end_time;
+                  const existingSlotInterval = existingResult[0].slot_interval_minutes || 30;
+                  const newSlotInterval = availability.slot_interval_minutes || 30;
                   
-                  results.push({ 
-                      weekday: weekday.toUpperCase(), 
-                      action: 'updated',
-                      start_time: normalizedStartTime,
-                      end_time: normalizedEndTime,
-                      slot_interval_minutes: availability.slot_interval_minutes || 30
-                  });
+                  // Check if times actually changed
+                  const timesChanged = existingStartTime !== normalizedStartTime || 
+                                     existingEndTime !== normalizedEndTime ||
+                                     existingSlotInterval !== newSlotInterval;
+                  
+                  if (timesChanged) {
+                      const nowUtc = toMySQLUtc(DateTime.utc());
+                      const updateQuery = `
+                          UPDATE employee_availability 
+                          SET start_time = ?, end_time = ?, slot_interval_minutes = ?, updated_at = ?
+                          WHERE availability_id = ?
+                      `;
+                      await db.execute(updateQuery, [
+                          normalizedStartTime, 
+                          normalizedEndTime, 
+                          newSlotInterval,
+                          nowUtc,
+                          existingResult[0].availability_id
+                      ]);
+                      
+                      results.push({ 
+                          weekday: weekday.toUpperCase(), 
+                          action: 'updated',
+                          start_time: normalizedStartTime,
+                          end_time: normalizedEndTime,
+                          old_start_time: existingStartTime,
+                          old_end_time: existingEndTime,
+                          slot_interval_minutes: newSlotInterval
+                      });
+                  }
               } 
-              // If the day doesn't exist, create it
+              // If the day doesn't exist, create it (this is a new day, so always notify)
               else {
                   const nowUtc = toMySQLUtc(DateTime.utc());
                   const insertQuery = `
@@ -975,6 +1158,64 @@ exports.setEmployeeAvailability = async (req, res) => {
               message: 'Employee availability update failed',
               errors: errors
           });
+      }
+
+      // Get employee and salon information for notification
+      const [employeeInfo] = await db.execute(
+        `SELECT e.employee_id, e.user_id, u.email, u.full_name, s.name as salon_name 
+         FROM employees e 
+         JOIN users u ON e.user_id = u.user_id 
+         JOIN salons s ON e.salon_id = s.salon_id 
+         WHERE e.employee_id = ?`,
+        [employeeId]
+      );
+
+      // Send notification to employee about availability change
+      if (employeeInfo.length > 0) {
+        const changedDays = results.filter(r => 
+          (r.action === 'updated' || r.action === 'created') && 
+          r.start_time && r.end_time
+        );
+        
+        if (changedDays.length > 0) {
+          // Format times using Luxon and create separate lines for each day
+          const daysList = changedDays.map(r => {
+            // Parse time strings (HH:MM:SS format) and format them
+            const today = DateTime.now().toFormat('yyyy-MM-dd');
+            const startDt = DateTime.fromISO(`${today}T${r.start_time}`);
+            const endDt = DateTime.fromISO(`${today}T${r.end_time}`);
+            
+            const startTimeFormatted = startDt.toFormat('h:mm a');
+            const endTimeFormatted = endDt.toFormat('h:mm a');
+            
+            // If this is an update (has old times), show old → new format
+            if (r.action === 'updated' && r.old_start_time && r.old_end_time) {
+              const oldStartDt = DateTime.fromISO(`${today}T${r.old_start_time}`);
+              const oldEndDt = DateTime.fromISO(`${today}T${r.old_end_time}`);
+              
+              const oldStartTimeFormatted = oldStartDt.toFormat('h:mm a');
+              const oldEndTimeFormatted = oldEndDt.toFormat('h:mm a');
+              
+              return `${r.weekday} (${oldStartTimeFormatted} - ${oldEndTimeFormatted} → ${startTimeFormatted} - ${endTimeFormatted})`;
+            } else {
+              return `${r.weekday} (${startTimeFormatted} - ${endTimeFormatted})`;
+            }
+          }).join('\n');
+          
+          try {
+            await createNotification(db, {
+              user_id: employeeInfo[0].user_id,
+              salon_id: salon_id,
+              employee_id: employeeInfo[0].employee_id,
+              email: employeeInfo[0].email,
+              type_code: 'EMPLOYEE_AVAILABILITY_CHANGED',
+              message: `Your availability at ${employeeInfo[0].salon_name} has been updated. Changes made to:\n${daysList}`,
+              sender_email: 'SYSTEM'
+            });
+          } catch (notifError) {
+            console.error('Failed to send employee availability change notification:', notifError);
+          }
+        }
       }
       
        return res.status(200).json({
