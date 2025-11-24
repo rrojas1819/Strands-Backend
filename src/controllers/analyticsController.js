@@ -1,4 +1,3 @@
-require('dotenv').config();
 const connection = require('../config/databaseConnection');
 const { DateTime } = require('luxon');
 const { toMySQLUtc } = require('../utils/utilies');

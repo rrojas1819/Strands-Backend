@@ -1,12 +1,9 @@
-require('dotenv').config();
 const bcrypt = require('bcrypt');
 const connection = require('../config/databaseConnection');
 const { generateToken } = require('../middleware/auth.middleware');
 const { validateEmail, toMySQLUtc, formatDateTime, logUtcDebug, luxonWeekdayToDb } = require('../utils/utilies');
 const { DateTime } = require('luxon');
-
-// Global constants
-const DAYS_OF_WEEK = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'];
+const { createNotification } = require('./notificationsController');
 
 // User Sign Up
 exports.signUp = async (req, res) => {
@@ -78,12 +75,47 @@ exports.signUp = async (req, res) => {
   
         await db.commit();
 
+        // Send "Signed Up Successfully" notification with role-specific message
+        try {
+            const roleUpper = role.toUpperCase();
+            let roleMessage = '';
+            
+            switch (roleUpper) {
+                case 'CUSTOMER':
+                    roleMessage = 'You can now log in and start booking appointments.';
+                    break;
+                case 'OWNER':
+                    roleMessage = 'You can now log in and register your salon.';
+                    break;
+                case 'EMPLOYEE':
+                    roleMessage = 'You can now log in and wait for a salon owner to add you to their team.';
+                    break;
+                case 'ADMIN':
+                    roleMessage = 'You can now log in and manage salon registrations and system settings.';
+                    break;
+                default:
+                    roleMessage = 'You can now log in to your account.';
+            }
+
+            await createNotification(db, {
+                user_id: userId,
+                email: email,
+                type_code: 'SIGNUP_SUCCESS',
+                message: `Welcome to Strands! Your account has been created successfully. ${roleMessage}`,
+                sender_email: 'SYSTEM'
+            });
+        } catch (notifError) {
+            // Log error but don't fail the signup
+            console.error('Failed to send signup notification:', notifError);
+        }
+
         // Return success response without token
         res.status(201).json({
             message: "User signed up successfully",
         });
 
     } catch (error) {
+        console.error('signUp error:', error);
         res.status(500).json({
             message: "Internal server error"
         });
@@ -159,6 +191,19 @@ exports.login = async (req, res) => {
         const trackLoginQuery = 'INSERT INTO logins (user_id, login_date) VALUES (?, ?)';
         await db.execute(trackLoginQuery, [existingUsers[0].user_id, nowUtc]);
 
+        // Send "Logging in" notification
+        try {
+            await createNotification(db, {
+                user_id: existingUsers[0].user_id,
+                email: email,
+                type_code: 'LOGIN_SUCCESS',
+                message: `You have successfully logged in to your Strands account. Welcome back, ${existingUsers[0].full_name}!`,
+                sender_email: 'SYSTEM'
+            });
+        } catch (notifError) {
+            console.error('Failed to send login notification:', notifError);
+        }
+
         res.status(200).json({
             message: "Login successful",
             data: {
@@ -170,6 +215,7 @@ exports.login = async (req, res) => {
         });
         
     } catch (error) {
+        console.error('login error:', error);
         res.status(500).json({
             message: "Internal server error"
         });
@@ -207,6 +253,7 @@ exports.logout = async (req, res) => {
         });
         
     } catch (error) {
+        console.error('logout error:', error);
         res.status(500).json({
             message: "Internal server error"
         });
@@ -263,7 +310,7 @@ exports.getStylistSalon = async (req, res) => {
       });
   
     } catch (err) {
-        //console.error('getStylistSalon error:', err);
+        console.error('getStylistSalon error:', err);
       return res.status(500).json({ message: 'Internal Server Error' });
     }
   };
@@ -718,6 +765,7 @@ exports.viewLoyaltyProgram = async (req, res) => {
       }); 
 
   } catch (err) {
+    console.error('viewLoyaltyProgram error:', err);
     return res.status(500).json({ message: 'Internal Server Error' });
   }
 };

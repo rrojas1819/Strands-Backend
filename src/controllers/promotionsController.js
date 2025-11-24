@@ -1,4 +1,3 @@
-require('dotenv').config();
 const connection = require('../config/databaseConnection');
 const { DateTime } = require('luxon');
 const { toMySQLUtc, formatDateTime } = require('../utils/utilies');
@@ -173,6 +172,7 @@ GROUP BY users.user_id, users.full_name`,
                 }
             });
         } catch (txError) {
+            console.error('sendPromotionToCustomer transaction error:', txError);
             await db.rollback();
             throw txError;
         }
@@ -307,6 +307,7 @@ exports.issueLoyalCustomerPromotions = async (req, res) => {
 
             await db.commit();
         } catch (txError) {
+            console.error('issueLoyalCustomerPromotions transaction error:', txError);
             await db.rollback();
             throw txError;
         }

@@ -1,7 +1,7 @@
-require('dotenv').config();
 const connection = require('../config/databaseConnection');
 const { formatDateTime, toMySQLUtc, validateEmail } = require('../utils/utilies');
 const { DateTime } = require('luxon');
+const notificationSecurity = require('../utils/notificationsSecurity');
 
 // NC 1.1 - Get user's notifications with pagination
 exports.getNotifications = async (req, res) => {
@@ -15,17 +15,56 @@ exports.getNotifications = async (req, res) => {
         }
 
         // Pagination parameters
-        let { page = 1, limit = 10 } = req.query;
+        let { page = 1, limit = 10, filter = 'all' } = req.query;
         page = Math.max(1, parseInt(page, 10) || 1);
         limit = Math.max(1, Math.min(parseInt(limit, 10) || 10, 20)); // Max 100 per page
         const offset = (page - 1) * limit;
+
+        const categoryFilters = {
+            'bookings': [
+                'BOOKING_CREATED',
+                'BOOKING_RESCHEDULED',
+                'BOOKING_CANCELED',
+                'PHOTO_UPLOADED',
+                'MANUAL_REMINDER'
+            ],
+            'rewards': [
+                'PROMO_REDEEMED',
+                'LOYALTY_REWARD_REDEEMED',
+                'UNUSED_OFFERS_REMINDER'
+            ],
+            'products': [
+                'PRODUCT_ADDED',
+                'PRODUCT_DELETED',
+                'PRODUCT_RESTOCKED',
+                'PRODUCT_PURCHASED'
+            ],
+            'reviews': [
+                'REVIEW_CREATED',
+                'REVIEW_UPDATED',
+                'REVIEW_DELETED',
+                'REVIEW_REPLY_CREATED',
+                'REVIEW_REPLY_UPDATED',
+                'REVIEW_REPLY_DELETED'
+            ]
+        };
+
+        let whereClause = 'WHERE user_id = ?';
+        const queryParams = [user_id];
+
+        if (filter && filter !== 'all' && categoryFilters[filter.toLowerCase()]) {
+            const typeCodes = categoryFilters[filter.toLowerCase()];
+            const placeholders = typeCodes.map(() => '?').join(',');
+            whereClause += ` AND type_code IN (${placeholders})`;
+            queryParams.push(...typeCodes);
+        }
 
         // Get total count
         const [countResult] = await db.execute(
             `SELECT COUNT(*) as total 
              FROM notifications_inbox 
-             WHERE user_id = ?`,
-            [user_id]
+             ${whereClause}`,
+            queryParams
         );
         const total = countResult[0]?.total || 0;
 
@@ -48,10 +87,10 @@ exports.getNotifications = async (req, res) => {
                 DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') AS created_at,
                 DATE_FORMAT(read_at, '%Y-%m-%d %H:%i:%s') AS read_at
              FROM notifications_inbox
-             WHERE user_id = ?
+             ${whereClause}
              ORDER BY notifications_inbox.created_at DESC
              LIMIT ${limit} OFFSET ${offset}`,
-            [user_id]
+            queryParams
         );
 
         // Format notifications
@@ -82,6 +121,15 @@ exports.getNotifications = async (req, res) => {
                 }
             }
 
+            // Decrypt the message when retrieving
+            let decryptedMessage = notif.message;
+            try {
+                decryptedMessage = notificationSecurity.decryptMessage(notif.message);
+            } catch (decryptError) {
+                console.error('Failed to decrypt notification message:', decryptError);
+                decryptedMessage = '[Unable to decrypt message]';
+            }
+
             return {
                 notification_id: notif.notification_id,
                 user_id: notif.user_id,
@@ -94,7 +142,7 @@ exports.getNotifications = async (req, res) => {
                 review_id: notif.review_id,
                 type_code: notif.type_code,
                 status: notif.status,
-                message: notif.message,
+                message: decryptedMessage,
                 sender_email: notif.sender_email,
                 created_at: formatDateTime(notif.created_at),
                 sent: created_at_dt && created_at_dt.isValid 
@@ -110,10 +158,18 @@ exports.getNotifications = async (req, res) => {
         const totalPages = Math.ceil(total / limit);
         const hasMore = page < totalPages;
 
+        const activeFilter = filter && filter !== 'all' && categoryFilters[filter.toLowerCase()] 
+            ? filter.toLowerCase() 
+            : 'all';
+
         return res.status(200).json({
             message: 'Notifications retrieved successfully',
             data: {
                 notifications: formattedNotifications,
+                filter: {
+                    active: activeFilter,
+                    available: ['all', 'bookings', 'rewards', 'products', 'reviews']
+                },
                 pagination: {
                     page,
                     limit,
@@ -358,25 +414,19 @@ exports.stylistSendReminder = async (req, res) => {
 
                 const firstBookingId = customerBookings[0].booking_id;
 
-                const [result] = await db.execute(
-                    `INSERT INTO notifications_inbox 
-                     (user_id, salon_id, employee_id, email, booking_id, type_code, status, message, sender_email, created_at)
-                     VALUES (?, ?, ?, ?, ?, ?, 'UNREAD', ?, ?, ?)`,
-                    [
-                        customer.user_id,
-                        salon_id,
-                        employee_id,
-                        customer.email,
-                        firstBookingId, // Reference to first booking
-                        type_code,
-                        message.trim(),
-                        stylist_email,
-                        nowUtc
-                    ]
-                );
+                const notificationResult = await exports.createNotification(db, {
+                    user_id: customer.user_id,
+                    salon_id: salon_id,
+                    employee_id: employee_id,
+                    email: customer.email,
+                    booking_id: firstBookingId, // Reference to first booking
+                    type_code: type_code,
+                    message: message.trim(),
+                    sender_email: stylist_email
+                });
 
                 notificationsCreated.push({
-                    notification_id: result.insertId,
+                    notification_id: notificationResult.notification_id,
                     user_id: customer.user_id,
                     email: customer.email,
                     full_name: customer.full_name,
@@ -459,6 +509,80 @@ exports.deleteNotification = async (req, res) => {
 
     } catch (error) {
         console.error('deleteNotification error:', error);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
+// Mark all notifications as read for a user
+exports.markAllAsRead = async (req, res) => {
+    const db = connection.promise();
+
+    try {
+        const user_id = req.user?.user_id;
+
+        if (!user_id) {
+            return res.status(401).json({ message: 'Unauthorized' });
+        }
+
+        const now = toMySQLUtc(DateTime.utc());
+
+        const [result] = await db.execute(
+            `UPDATE notifications_inbox 
+             SET status = 'READ', read_at = ?
+             WHERE user_id = ? AND status = 'UNREAD'`,
+            [now, user_id]
+        );
+
+        return res.status(200).json({
+            message: 'All notifications marked as read',
+            data: {
+                notifications_updated: result.affectedRows,
+                read_at: formatDateTime(now)
+            }
+        });
+
+    } catch (error) {
+        console.error('markAllAsRead error:', error);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
+// Delete all notifications for a user
+exports.deleteAllNotifications = async (req, res) => {
+    const db = connection.promise();
+
+    try {
+        const user_id = req.user?.user_id;
+
+        if (!user_id) {
+            return res.status(401).json({ message: 'Unauthorized' });
+        }
+
+        // Get count before deletion
+        const [countResult] = await db.execute(
+            `SELECT COUNT(*) as total 
+             FROM notifications_inbox 
+             WHERE user_id = ?`,
+            [user_id]
+        );
+        const totalBefore = countResult[0]?.total || 0;
+
+        const [result] = await db.execute(
+            `DELETE FROM notifications_inbox 
+             WHERE user_id = ?`,
+            [user_id]
+        );
+
+        return res.status(200).json({
+            message: 'All notifications deleted successfully',
+            data: {
+                notifications_deleted: result.affectedRows,
+                total_before: totalBefore
+            }
+        });
+
+    } catch (error) {
+        console.error('deleteAllNotifications error:', error);
         return res.status(500).json({ message: 'Internal server error' });
     }
 };
@@ -709,22 +833,17 @@ const sendUnusedOffersNotifications = async (db = null, salon_id = null) => {
                         const promoChunks = createNotificationChunks(promoMessage);
                             
                             for (let i = 0; i < promoChunks.length; i++) {
-                                const [result] = await db.execute(
-                                    `INSERT INTO notifications_inbox 
-                                     (user_id, salon_id, email, type_code, status, message, sender_email, created_at)
-                                     VALUES (?, ?, ?, ?, 'UNREAD', ?, 'SYSTEM', ?)`,
-                                    [
-                                        userData.user_id,
-                                        userData.salon_id,
-                                        userData.email,
-                                        type_code,
-                                        promoChunks[i],
-                                        nowUtc
-                                    ]
-                                );
+                                const notificationResult = await exports.createNotification(db, {
+                                    user_id: userData.user_id,
+                                    salon_id: userData.salon_id,
+                                    email: userData.email,
+                                    type_code: type_code,
+                                    message: promoChunks[i],
+                                    sender_email: 'SYSTEM'
+                                });
 
                                 notificationsCreated.push({
-                                    notification_id: result.insertId,
+                                    notification_id: notificationResult.notification_id,
                                     user_id: userData.user_id,
                                     email: userData.email,
                                     salon_id: userData.salon_id,
@@ -752,22 +871,18 @@ const sendUnusedOffersNotifications = async (db = null, salon_id = null) => {
                         const rewardChunks = createNotificationChunks(rewardMessage);
                             
                             for (let i = 0; i < rewardChunks.length; i++) {
-                                const [result] = await db.execute(
-                                    `INSERT INTO notifications_inbox 
-                                     (user_id, salon_id, email, type_code, status, message, sender_email, created_at)
-                                     VALUES (?, ?, ?, ?, 'UNREAD', ?, 'SYSTEM', ?)`,
-                                    [
-                                        userData.user_id,
-                                        userData.salon_id,
-                                        userData.email,
-                                        type_code,
-                                        rewardChunks[i],
-                                        nowUtc
-                                    ]
-                                );
+                                // Use createNotification helper to ensure encryption
+                                const notificationResult = await exports.createNotification(db, {
+                                    user_id: userData.user_id,
+                                    salon_id: userData.salon_id,
+                                    email: userData.email,
+                                    type_code: type_code,
+                                    message: rewardChunks[i],
+                                    sender_email: 'SYSTEM'
+                                });
 
                                 notificationsCreated.push({
-                                    notification_id: result.insertId,
+                                    notification_id: notificationResult.notification_id,
                                     user_id: userData.user_id,
                                     email: userData.email,
                                     salon_id: userData.salon_id,
@@ -869,6 +984,68 @@ exports.ownerSendUnusedOffersNotifications = async (req, res) => {
     } catch (error) {
         console.error('ownerSendUnusedOffersNotifications error:', error);
         return res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
+// Helper function to create and send a notification, can be used by other controllers to send notifications
+exports.createNotification = async (db, notificationData) => {
+    try {
+        const {
+            user_id,
+            salon_id = null,
+            employee_id = null,
+            email,
+            booking_id = null,
+            payment_id = null,
+            product_id = null,
+            review_id = null,
+            type_code,
+            message,
+            sender_email = 'SYSTEM'
+        } = notificationData;
+
+        if (!user_id || !email || !type_code || !message) {
+            throw new Error('Missing required notification fields');
+        }
+
+        const nowUtc = toMySQLUtc(DateTime.utc());
+
+        let encryptedMessage;
+        try {
+            encryptedMessage = notificationSecurity.encryptMessage(message.trim());
+        } catch (encryptError) {
+            console.error('Failed to encrypt notification message:', encryptError);
+            throw new Error('Failed to encrypt notification message');
+        }
+
+        const [result] = await db.execute(
+            `INSERT INTO notifications_inbox 
+             (user_id, salon_id, employee_id, email, booking_id, payment_id, product_id, review_id, type_code, status, message, sender_email, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'UNREAD', ?, ?, ?)`,
+            [
+                user_id,
+                salon_id,
+                employee_id,
+                email,
+                booking_id,
+                payment_id,
+                product_id,
+                review_id,
+                type_code,
+                encryptedMessage,
+                sender_email,
+                nowUtc
+            ]
+        );
+
+        return {
+            success: true,
+            notification_id: result.insertId,
+            created_at: nowUtc
+        };
+    } catch (error) {
+        console.error('createNotification error:', error);
+        throw error;
     }
 };
 

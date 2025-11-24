@@ -1,8 +1,8 @@
-require('dotenv').config();
 const connection = require('../config/databaseConnection');
 const paymentSecurity = require('../utils/paymentSecurity');
 const { toMySQLUtc, formatDateTime } = require('../utils/utilies');
 const { DateTime } = require('luxon');
+const { createNotification } = require('./notificationsController');
 
 // PLR 1.5 Get available rewards for a salon
 exports.getAvailableRewards = async (req, res) => {
@@ -305,6 +305,15 @@ exports.processPayment = async (req, res) => {
             }
 
             if (booking_id && use_loyalty_discount && loyaltyEligible && rewardId) {
+                // Get reward details before redeeming for notification
+                const [rewardDetails] = await db.execute(
+                    `SELECT discount_percentage, note, s.name as salon_name
+                     FROM available_rewards ar
+                     JOIN salons s ON ar.salon_id = s.salon_id
+                     WHERE ar.reward_id = ? AND ar.user_id = ? AND ar.salon_id = ?`,
+                    [rewardId, user_id, salon_id]
+                );
+                
                 const redeemedAt = toMySQLUtc(DateTime.utc());
                 const [updateRewardResult] = await db.execute(
                     `UPDATE available_rewards
@@ -327,6 +336,34 @@ exports.processPayment = async (req, res) => {
                     return res.status(400).json({ 
                         message: 'Cannot redeem loyalty discount: reward no longer available' 
                     });
+                }
+                
+                if (rewardDetails.length > 0) {
+                    const reward = rewardDetails[0];
+                    const [userInfo] = await db.execute(
+                        'SELECT email FROM users WHERE user_id = ?',
+                        [user_id]
+                    );
+                    
+                    if (userInfo.length > 0) {
+                        try {
+                            const rewardMessage = reward.note 
+                                ? `You have successfully redeemed your ${reward.discount_percentage}% loyalty reward at ${reward.salon_name}. ${reward.note}`
+                                : `You have successfully redeemed your ${reward.discount_percentage}% loyalty reward at ${reward.salon_name}. Thank you for your loyalty!`;
+                            
+                            await createNotification(db, {
+                                user_id: user_id,
+                                salon_id: salon_id,
+                                payment_id: paymentResults.insertId,
+                                email: userInfo[0].email,
+                                type_code: 'LOYALTY_REWARD_REDEEMED',
+                                message: rewardMessage,
+                                sender_email: 'SYSTEM'
+                            });
+                        } catch (notifError) {
+                            console.error('Failed to send loyalty reward redeemed notification:', notifError);
+                        }
+                    }
                 }
             }
 
@@ -478,6 +515,88 @@ exports.processPayment = async (req, res) => {
                         message: 'Payment created but failed to update booking status' 
                     });
                 }
+
+                const [bookingDetails] = await db.execute(
+                  `SELECT b.salon_id, b.customer_user_id, 
+                   DATE_FORMAT(b.scheduled_start, '%Y-%m-%d %H:%i:%s') AS scheduled_start,
+                   DATE_FORMAT(b.scheduled_end, '%Y-%m-%d %H:%i:%s') AS scheduled_end,
+                   s.timezone, s.name as salon_name
+                   FROM bookings b
+                   JOIN salons s ON b.salon_id = s.salon_id
+                   WHERE b.booking_id = ?`,
+                  [booking_id]
+                );
+
+                if (bookingDetails.length > 0) {
+                  const bookingDetail = bookingDetails[0];
+                  const salonTimezone = bookingDetail.timezone || 'America/New_York';
+                  
+                  const bookingStart = DateTime.fromSQL(bookingDetail.scheduled_start, { zone: 'utc' });
+                  const bookingStartLocal = bookingStart.setZone(salonTimezone);
+                  const bookingDateStr = bookingStartLocal.toFormat('EEE, MMM d, yyyy h:mm a');
+                  
+                  // Get customer and stylist information
+                  const [customerInfo] = await db.execute(
+                    'SELECT user_id, email, full_name FROM users WHERE user_id = ?',
+                    [bookingDetail.customer_user_id]
+                  );
+
+                  // Get services and stylist information
+                  const [bookingServices] = await db.execute(
+                    `SELECT bs.employee_id, bs.service_id, s.name as service_name
+                     FROM booking_services bs
+                     JOIN services s ON bs.service_id = s.service_id
+                     WHERE bs.booking_id = ?`,
+                    [booking_id]
+                  );
+
+                  const employeeIds = [...new Set(bookingServices.map(bs => bs.employee_id))];
+                  const servicesList = bookingServices.map(bs => bs.service_name).join(', ');
+
+                  const [stylistsInfo] = await db.execute(
+                    `SELECT DISTINCT e.employee_id, e.user_id, u.email, u.full_name 
+                     FROM employees e 
+                     JOIN users u ON e.user_id = u.user_id 
+                     WHERE e.employee_id IN (${employeeIds.map(() => '?').join(',')})`,
+                    employeeIds
+                  );
+
+                  if (customerInfo.length > 0 && stylistsInfo.length > 0) {
+                    try {
+                      await createNotification(db, {
+                        user_id: customerInfo[0].user_id,
+                        salon_id: bookingDetail.salon_id,
+                        employee_id: stylistsInfo[0].employee_id,
+                        booking_id: booking_id,
+                        payment_id: paymentResults.insertId,
+                        email: customerInfo[0].email,
+                        type_code: 'BOOKING_CREATED',
+                        message: `Your appointment has been booked with ${stylistsInfo[0].full_name} at ${bookingDetail.salon_name} on ${bookingDateStr}. Services: ${servicesList}.`,
+                        sender_email: stylistsInfo[0].email || 'SYSTEM'
+                      });
+                    } catch (notifError) {
+                      console.error('Failed to send booking created notification to customer:', notifError);
+                    }
+                  }
+
+                  for (const stylist of stylistsInfo) {
+                    try {
+                      await createNotification(db, {
+                        user_id: stylist.user_id,
+                        salon_id: bookingDetail.salon_id,
+                        employee_id: stylist.employee_id,
+                        booking_id: booking_id,
+                        payment_id: paymentResults.insertId,
+                        email: stylist.email,
+                        type_code: 'BOOKING_CREATED',
+                        message: `New appointment booked: ${customerInfo[0]?.full_name || 'Customer'} on ${bookingDateStr}. Services: ${servicesList}.`,
+                        sender_email: customerInfo[0]?.email || 'SYSTEM'
+                      });
+                    } catch (notifError) {
+                      console.error('Failed to send booking created notification to stylist:', notifError);
+                    }
+                  }
+                }
             }
 
             await db.query('COMMIT');
@@ -496,6 +615,7 @@ exports.processPayment = async (req, res) => {
             });
 
         } catch (transactionError) {
+            console.error('processPayment transaction error:', transactionError);
             await db.query('ROLLBACK');
             if (booking_id) {
                 try {
@@ -504,7 +624,9 @@ exports.processPayment = async (req, res) => {
                          WHERE booking_id = ? AND customer_user_id = ? AND status = 'PENDING'`,
                         [booking_id, user_id]
                     );
-                } catch (_) {}
+                } catch (cleanupError) {
+                    console.error('processPayment cleanup error:', cleanupError);
+                }
             }
             throw transactionError;
         }
@@ -596,6 +718,25 @@ exports.saveCreditCard = async (req, res) => {
                     [existingCard[0].credit_card_id]
                 );
                 
+                const [userInfo] = await db.execute(
+                    'SELECT email, full_name FROM users WHERE user_id = ?',
+                    [user_id]
+                );
+                
+                if (userInfo.length > 0) {
+                    try {
+                        await createNotification(db, {
+                            user_id: user_id,
+                            email: userInfo[0].email,
+                            type_code: 'PAYMENT_METHOD_SAVED',
+                            message: `Your ${updatedCard[0].brand} card ending in ${updatedCard[0].last4} has been saved successfully. You can use this card for future payments.`,
+                            sender_email: 'SYSTEM'
+                        });
+                    } catch (notifError) {
+                        console.error('Failed to send payment method saved notification:', notifError);
+                    }
+                }
+                
                 return res.status(200).json({
                     message: 'Credit card saved successfully',
                     data: {
@@ -659,6 +800,26 @@ exports.saveCreditCard = async (req, res) => {
 
         if (results.affectedRows === 0) {
             return res.status(500).json({ message: 'Failed to save credit card' });
+        }
+
+        // Get user email for notification
+        const [userInfo] = await db.execute(
+            'SELECT email, full_name FROM users WHERE user_id = ?',
+            [user_id]
+        );
+        
+        if (userInfo.length > 0) {
+            try {
+                await createNotification(db, {
+                    user_id: user_id,
+                    email: userInfo[0].email,
+                    type_code: 'PAYMENT_METHOD_SAVED',
+                    message: `Your ${detectedBrand} card ending in ${last4} has been saved successfully. You can use this card for future payments.`,
+                    sender_email: 'SYSTEM'
+                });
+            } catch (notifError) {
+                console.error('Failed to send payment method saved notification:', notifError);
+            }
         }
 
         res.status(200).json({

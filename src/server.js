@@ -33,7 +33,7 @@ const notificationsRoutes = require('./routes/notifications');
 const db = require('./config/databaseConnection');
 
 // Get utilities and get start Token Cleanup
-const { startTokenCleanup, startBookingsAutoComplete, startLoyaltySeenUpdate, startAppointmentReminders, startUnusedOffersReminders, startExpirePromoCodes } = require('./utils/utilies');
+const { startTokenCleanup, startBookingsAutoComplete, startLoyaltySeenUpdate, startAppointmentReminders, startUnusedOffersReminders, startExpirePromoCodes, startTempCreditCardCleanup } = require('./utils/utilies');
 
 // Set up Express and CORS
 const app = express();
@@ -44,6 +44,7 @@ startLoyaltySeenUpdate(db);
 startAppointmentReminders(db);
 startUnusedOffersReminders(db);
 startExpirePromoCodes(db);
+startTempCreditCardCleanup(db);
 app.use(cors());
 app.use(express.json());
 
