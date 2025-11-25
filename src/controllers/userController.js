@@ -863,3 +863,37 @@ exports.viewTotalRewards = async (req, res) => {
     return res.status(500).json({ message: 'Internal Server Error' });
   }
 };
+
+// PLR 1.2 All Rewards
+exports.getAllRewards = async (req, res) => {
+  const db = connection.promise();
+
+  try {
+    const user_id = req.user?.user_id;
+
+    if (!user_id) {
+      return res.status(401).json({ message: 'Invalid fields.' });
+    }
+
+    const getTotalRewardsQuery = 
+    `SELECT ar.reward_id, ar.discount_percentage, ar.note, ar.creationDate, s.name as salon_name
+    FROM available_rewards ar
+    JOIN salons s ON ar.salon_id = s.salon_id
+    WHERE ar.active = 1 AND ar.user_id = ?;`;
+    const [totalRewards] = await db.execute(getTotalRewardsQuery, [user_id]);
+
+    if (totalRewards.length === 0) {
+      res.status(200).json({
+        totalRewards: "You have no rewards."
+      });
+    }
+
+    res.status(200).json({
+      totalRewards: totalRewards
+    });
+    
+  } catch (err) {
+    console.error('getAllRewards error:', err);
+    return res.status(500).json({ message: 'Internal Server Error' });
+  }
+};
