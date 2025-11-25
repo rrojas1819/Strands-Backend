@@ -833,3 +833,33 @@ exports.viewStylistMetrics = async (req, res) => {
   }
 
 };
+
+// PLR 1.2 View Total Rewards
+exports.viewTotalRewards = async (req, res) => {
+  const db = connection.promise();
+
+  try {
+    const user_id = req.user?.user_id;
+
+    if (!user_id) {
+      return res.status(401).json({ message: 'Invalid fields.' });
+    }
+
+    const getTotalRewardsQuery = `SELECT COUNT(*) as total_rewards FROM available_rewards WHERE active = 1 AND user_id = ?;`;
+    const [totalRewards] = await db.execute(getTotalRewardsQuery, [user_id]);
+
+    if (totalRewards.length === 0) {
+      res.status(200).json({
+        totalRewards: "You have no rewards."
+      });
+    }
+
+    res.status(200).json({
+      totalRewards: totalRewards[0].total_rewards
+    });
+    
+  } catch (err) {
+    console.error('viewTotalRewards error:', err);
+    return res.status(500).json({ message: 'Internal Server Error' });
+  }
+};
