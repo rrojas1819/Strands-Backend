@@ -5,9 +5,16 @@ const { validateEmail, toMySQLUtc, formatDateTime, logUtcDebug, luxonWeekdayToDb
 const { DateTime } = require('luxon');
 const { createNotification } = require('./notificationsController');
 
+const useExternalTransactions = () => (
+    process.env.NODE_ENV === 'test' &&
+    process.env.TEST_USE_EXTERNAL_TRANSACTIONS === 'true'
+);
+
 // User Sign Up
 exports.signUp = async (req, res) => {
     const db = connection.promise();
+    const manageTransactionExternally = useExternalTransactions();
+    let transactionStarted = false;
     
     try {
         const { full_name, email, role, password } = req.body;
@@ -55,9 +62,11 @@ exports.signUp = async (req, res) => {
         const hashedPassword = await bcrypt.hash(password, Number(process.env.BCRYPT_SALT));
 
 
-        // Database Operations
-        await db.beginTransaction();
-        
+        if (!manageTransactionExternally) {
+            await db.beginTransaction();
+            transactionStarted = true;
+        }
+
         const nowUtc = toMySQLUtc(DateTime.utc());
         const insertUserQuery = `
             INSERT INTO users (full_name, email, phone, profile_picture_url, role, last_login_at, active, created_at, updated_at)
@@ -72,8 +81,10 @@ exports.signUp = async (req, res) => {
             VALUES (?, ?, ?, ?)
         `;
         await db.execute(insertAuthQuery, [userId, hashedPassword, nowUtc, nowUtc]);
-  
-        await db.commit();
+
+        if (!manageTransactionExternally) {
+            await db.commit();
+        }
 
         // Send "Signed Up Successfully" notification with role-specific message
         try {
@@ -115,6 +126,13 @@ exports.signUp = async (req, res) => {
         });
 
     } catch (error) {
+        if (!manageTransactionExternally && transactionStarted) {
+            try {
+                await db.rollback();
+            } catch (rollbackError) {
+                console.error('signUp rollback error:', rollbackError);
+            }
+        }
         console.error('signUp error:', error);
         res.status(500).json({
             message: "Internal server error"

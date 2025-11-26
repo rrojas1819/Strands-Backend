@@ -1,4 +1,3 @@
-require('dotenv').config();
 const crypto = require('crypto');
 
 const ENCRYPTION_KEY = process.env.NOTIFICATION_ENCRYPTION_KEY;
