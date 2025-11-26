@@ -16,6 +16,26 @@ jobs:
         run: npm install
 
       - name: Run unit tests
+        env:
+          PORT: ${{ secrets.PORT }}
+          UTC_DEBUG: ${{ secrets.UTC_DEBUG }}
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_PORT: ${{ secrets.DB_PORT }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          BCRYPT_SALT: ${{ secrets.BCRYPT_SALT }}
+          NOTIFICATION_ENCRYPTION_KEY: ${{ secrets.NOTIFICATION_ENCRYPTION_KEY }}
+          PAYMENT_ENCRYPTION_KEY: ${{ secrets.PAYMENT_ENCRYPTION_KEY }}
+          CVC_HMAC_SECRET: ${{ secrets.CVC_HMAC_SECRET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
+          AWS_S3_DEFAULT_PREFIX: ${{ secrets.AWS_S3_DEFAULT_PREFIX }}
+          UPLOAD_MAX_BYTES: ${{ secrets.UPLOAD_MAX_BYTES }}
+            
         run: npm test
 
       - name: Build project
@@ -33,6 +53,25 @@ jobs:
 
       - name: Restart PM2 on EC2
         uses: appleboy/ssh-action@v0.1.7
+        env:
+          PORT: ${{ secrets.PORT }}
+          UTC_DEBUG: ${{ secrets.UTC_DEBUG }}
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_PORT: ${{ secrets.DB_PORT }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          BCRYPT_SALT: ${{ secrets.BCRYPT_SALT }}
+          NOTIFICATION_ENCRYPTION_KEY: ${{ secrets.NOTIFICATION_ENCRYPTION_KEY }}
+          PAYMENT_ENCRYPTION_KEY: ${{ secrets.PAYMENT_ENCRYPTION_KEY }}
+          CVC_HMAC_SECRET: ${{ secrets.CVC_HMAC_SECRET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
+          AWS_S3_DEFAULT_PREFIX: ${{ secrets.AWS_S3_DEFAULT_PREFIX }}
+          UPLOAD_MAX_BYTES: ${{ secrets.UPLOAD_MAX_BYTES }}
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
