@@ -1,0 +1,44 @@
+name: Deploy to EC2
+
+on:
+  push:
+    branches: ["dev"]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run unit tests
+        run: npm test
+
+      - name: Build project
+        run: npm run build --if-present
+
+      - name: Copy files to EC2
+        uses: appleboy/scp-action@v0.1.4
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_KEY }}
+          source: "./"
+          target: "/home/ubuntu/Strands-Backend"
+          rm: true
+
+      - name: Restart PM2 on EC2
+        uses: appleboy/ssh-action@v0.1.7
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_KEY }}
+          script: |
+            cd /home/ubuntu/Strands-Backend
+            npm install --production
+            pm2 restart all || pm2 start server.js
+            pm2 save
