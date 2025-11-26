@@ -222,6 +222,7 @@ exports.approveSalon = async (req, res) => {
   }
 };
 
+
 //UAR 1.6 browse salons user/admin
 exports.browseSalons = async (req, res) => {
   const db = connection.promise();
@@ -234,7 +235,7 @@ exports.browseSalons = async (req, res) => {
     let {status = 'all', limit = 20, offset = 0, sort = 'recent'} = req.query;
 
     //pagination
-    limit  = Number.isFinite(+limit) ? +limit : 20;
+    limit  = Number.isFinite(+limit) ? +limit : 10;
     offset = Number.isFinite(+offset) ? +offset : 0;
 
     //dynamic filters
@@ -326,18 +327,38 @@ exports.browseSalons = async (req, res) => {
       });
     }
 
-    // fetch salon photo signed URL per salon
+    // fetch salon photo signed URL per salon (bulk)
     const salonPhotoUrlById = {};
-    for (const id of salonIds) {
-      const getSalonPhotoQuery = `SELECT p.s3_key FROM pictures p JOIN salon_photos sp ON p.picture_id = sp.picture_id WHERE sp.salon_id = ? LIMIT 1;`;
-      const [salonPhotoRows] = await db.execute(getSalonPhotoQuery, [id]);
-      const key = salonPhotoRows[0]?.s3_key;
-      if (key) {
-        const { url } = await getFilePresigned(key);
-        if (url) {
-          salonPhotoUrlById[id] = url;
+    if (salonIds.length > 0) {
+      const placeholders = salonIds.map(() => '?').join(',');
+      const getSalonPhotosQuery = `
+        SELECT sp.salon_id, p.s3_key
+        FROM salon_photos sp
+        JOIN pictures p ON p.picture_id = sp.picture_id
+        WHERE sp.salon_id IN (${placeholders})
+      `;
+      const [photoRows] = await db.execute(getSalonPhotosQuery, salonIds);
+
+      // Map one key per salon (first encountered)
+      const keyBySalonId = {};
+      for (const row of photoRows) {
+        const sid = row.salon_id;
+        const key = row.s3_key;
+        if (sid != null && key && !keyBySalonId[sid]) {
+          keyBySalonId[sid] = key;
         }
       }
+
+      const presignedEntries = await Promise.all(
+        Object.entries(keyBySalonId).map(async ([sid, s3Key]) => {
+          const { url } = await getFilePresigned(s3Key);
+          return [Number(sid), url || null];
+        })
+      );
+
+      presignedEntries.forEach(([sid, url]) => {
+        if (url) salonPhotoUrlById[sid] = url;
+      });
     }
     
     
