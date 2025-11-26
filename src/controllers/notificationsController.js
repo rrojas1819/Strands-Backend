@@ -68,6 +68,15 @@ exports.getNotifications = async (req, res) => {
         );
         const total = countResult[0]?.total || 0;
 
+        // Get unread count 
+        const [unreadCountResult] = await db.execute(
+            `SELECT COUNT(*) as unread_count 
+             FROM notifications_inbox 
+             ${whereClause} AND status = 'UNREAD'`,
+            queryParams
+        );
+        const unreadCount = unreadCountResult[0]?.unread_count || 0;
+
         // Get notifications ordered by created_at DESC (newest first)
         const [notifications] = await db.execute(
             `SELECT 
@@ -166,6 +175,7 @@ exports.getNotifications = async (req, res) => {
             message: 'Notifications retrieved successfully',
             data: {
                 notifications: formattedNotifications,
+                unread_count: unreadCount,
                 filter: {
                     active: activeFilter,
                     available: ['all', 'bookings', 'rewards', 'products', 'reviews']
