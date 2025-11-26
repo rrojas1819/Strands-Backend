@@ -293,7 +293,11 @@ exports.browseSalons = async (req, res) => {
         orderBy = "ORDER BY s.name DESC";
         break;
       case "rating":
-        orderBy = "ORDER BY sr.avg_rating IS NULL ASC, sr.avg_rating DESC";
+        if (!isAdmin) {
+          orderBy = "ORDER BY sr.avg_rating IS NULL ASC, sr.avg_rating DESC";
+        } else {
+          orderBy = "ORDER BY s.created_at DESC"; //for admin
+        }
         break;
       default:
         orderBy = "ORDER BY s.created_at DESC";
@@ -304,17 +308,17 @@ exports.browseSalons = async (req, res) => {
     const total = countRow.total || 0;
 
     //fetch salons
-    const listSql = `SELECT s.salon_id, s.name, s.description, s.category, s.phone,s.email, s.address, 
-                    s.city, s.state, s.postal_code, s.country, s.status, s.created_at, s.updated_at,
-                    sr.avg_rating AS avg_rating, sr.total_reviews AS total_reviews, p.s3_key AS photo_key
-                    ${isAdmin ? `, u.user_id AS owner_user_id, u.full_name AS owner_name, u.email AS owner_email, u.phone AS owner_phone` : ""}
-                    FROM salons s LEFT JOIN (SELECT salon_id, AVG(rating) AS avg_rating, COUNT(review_id) AS total_reviews FROM reviews
-                    GROUP BY salon_id) sr ON sr.salon_id = s.salon_id
+    const listSql = `SELECT s.salon_id, s.name, s.description, s.category, s.phone, s.email, s.address, s.city, s.state, 
+                    s.postal_code, s.country, s.status, s.created_at, s.updated_at, p.s3_key AS photo_key
+                    ${!isAdmin ? ", sr.avg_rating AS avg_rating, sr.total_reviews AS total_reviews" : ""}
+                    ${isAdmin ? ", u.user_id AS owner_user_id, u.full_name AS owner_name, u.email AS owner_email, u.phone AS owner_phone" : ""}
+                    FROM salons s
+                    ${!isAdmin ? `LEFT JOIN (SELECT salon_id, AVG(rating) AS avg_rating, COUNT(review_id) AS total_reviews FROM reviews 
+                    GROUP BY salon_id) sr ON sr.salon_id = s.salon_id` : ""}
                     LEFT JOIN (SELECT salon_id, MIN(picture_id) AS picture_id FROM salon_photos GROUP BY salon_id) sp ON sp.salon_id = s.salon_id
                     LEFT JOIN pictures p ON p.picture_id = sp.picture_id
                     ${isAdmin ? "LEFT JOIN users u ON u.user_id = s.owner_user_id" : ""}
-                    ${whereSql} ${orderBy}
-                    LIMIT ${limit} OFFSET ${offset};`;
+                    ${whereSql} ${orderBy} LIMIT ${limit} OFFSET ${offset};`;
     const [rows] = await db.execute(listSql, params);
 
     //build photomap
@@ -384,22 +388,24 @@ exports.browseSalons = async (req, res) => {
       status: r.status,
       created_at: r.created_at,
       updated_at: r.updated_at,
-      rating: r.avg_rating != null ? Number(Number(r.avg_rating).toFixed(1)) : null,
-      total_reviews: Number(r.total_reviews || 0),
       weekly_hours: hoursMap[r.salon_id] ?? {},
       photo_url: photoMap[r.salon_id] ?? null,
 
+      //customer specific data
+      ...(isAdmin ? {} : {
+        rating: r.avg_rating != null ? Number(r.avg_rating.toFixed(1)) : null,
+        total_reviews: Number(r.total_reviews || 0)
+      }),
+
       //admin specific data
-      ...(isAdmin
-        ? {
-          owner: {
-            user_id: r.owner_user_id,
-            name: r.owner_name,
-            email: r.owner_email,
-            phone: r.owner_phone
-          }
+      ...(isAdmin ? {
+        owner: {
+          user_id: r.owner_user_id,
+          name: r.owner_name,
+          email: r.owner_email,
+          phone: r.owner_phone
         }
-        : {})
+      } : {})
     }));
 
     return res.status(200).json({
