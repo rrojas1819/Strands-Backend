@@ -194,9 +194,34 @@ exports.approveSalon = async (req, res) => {
 
     if (salonInfo.length > 0) {
       const salon = salonInfo[0];
-      const statusMessage = status === 'APPROVED' 
-        ? `Congratulations! Your salon "${salon.name}" has been approved and is now live on Strands. You can now start managing your salon, adding employees, and accepting bookings.`
-        : `We regret to inform you that your salon registration for "${salon.name}" has been rejected. Please review your salon information and contact support if you have any questions.`;
+      const maxLength = 380;
+      
+      const approvedPrefix = 'Congratulations! Your salon "';
+      const approvedSuffix = '" has been approved and is now live on Strands. You can now start managing your salon, adding employees, and accepting bookings.';
+      const rejectedPrefix = 'We regret to inform you that your salon registration for "';
+      const rejectedSuffix = '" has been rejected. Please review your salon information and contact support if you have any questions.';
+      
+      const prefix = status === 'APPROVED' ? approvedPrefix : rejectedPrefix;
+      const suffix = status === 'APPROVED' ? approvedSuffix : rejectedSuffix;
+      
+      const baseLength = prefix.length + suffix.length;
+      const availableSpace = Math.max(0, maxLength - baseLength - 3);
+      
+      let salonName = salon.name;
+      if (salonName.length > availableSpace) {
+        salonName = salon.name.substring(0, availableSpace) + '...';
+      }
+      
+      let statusMessage = prefix + salonName + suffix;
+      
+      if (statusMessage.length > maxLength) {
+        statusMessage = statusMessage.substring(0, maxLength);
+      }
+
+      //console.log('Original message:', statusMessage);
+      //console.log('Original message length:', statusMessage.length);
+      //console.log('Salon name used:', salonName);
+      //console.log('Salon name length:', salonName.length);
 
       try {
         await createNotification(db, {
