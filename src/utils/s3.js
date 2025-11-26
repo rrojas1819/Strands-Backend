@@ -1,4 +1,3 @@
-require('dotenv').config();
 const connection = require('../config/databaseConnection');
 const crypto = require('crypto');
 const { S3Client, PutObjectCommand, HeadObjectCommand, DeleteObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
