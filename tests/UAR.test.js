@@ -3,6 +3,8 @@ const app = require('../src/app');
 const connection = require('../src/config/databaseConnection');
 const notificationsController = require('../src/controllers/notificationsController');
 const { ROLE_CASES, baseSignupPayload, insertUserWithCredentials } = require('./helpers/authTestUtils');
+const { DateTime } = require('luxon');
+const { toMySQLUtc } = require('../src/utils/utilies');
 
 const db = connection.promise();
 
@@ -10,7 +12,7 @@ const db = connection.promise();
 
 
 //UAR 1.1/ 1.2 - Login, Signup, Logout, authentication test
-describe('Auth Routes', () => {
+describe('UAR 1.1/ 1.2 login, signup, logout, authentication test', () => {
     beforeEach(() => {
         jest.spyOn(notificationsController, 'createNotification').mockResolvedValue({
             success: true
@@ -131,7 +133,7 @@ describe('Auth Routes', () => {
                 message: 'Invalid email format'
             });
         });
-        
+
 
     });
 
@@ -175,6 +177,153 @@ describe('Auth Routes', () => {
             });
         });
 
+
+    });
+
+    // UAR 1.8 - Stylist should see only their assigned salon when they login
+    describe('UAR 1.8 - Stylist salon visibility', () => {
+        beforeEach(() => {
+            jest.spyOn(notificationsController, 'createNotification').mockResolvedValue({
+                success: true
+            });
+        });
+
+        test('As a stylist when they login they should see the salon they work for and no other salon', async () => {
+            const password = 'Password123!';
+            const nowUtc = toMySQLUtc(DateTime.utc());
+
+            const owner1 = await insertUserWithCredentials({
+                password,
+                role: 'OWNER'
+            });
+
+            const owner2 = await insertUserWithCredentials({
+                password,
+                role: 'OWNER'
+            });
+
+            const stylist = await insertUserWithCredentials({
+                password,
+                role: 'EMPLOYEE'
+            });
+
+            const [salon1Result] = await db.execute(
+                `INSERT INTO salons (owner_user_id, name, description, category, phone, email, 
+                 address, city, state, postal_code, country, status, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [
+                    owner1.user_id,
+                    'Stylist Salon',
+                    'Test salon for stylist',
+                    'HAIR SALON',
+                    '555-0100',
+                    'stylist-salon@test.com',
+                    '123 Main St',
+                    'Test City',
+                    'TS',
+                    '12345',
+                    'USA',
+                    'APPROVED',
+                    nowUtc,
+                    nowUtc
+                ]
+            );
+            const salon1Id = salon1Result.insertId;
+
+            const [salon2Result] = await db.execute(
+                `INSERT INTO salons (owner_user_id, name, description, category, phone, email, 
+                 address, city, state, postal_code, country, status, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [
+                    owner2.user_id,
+                    'Other Salon',
+                    'Another salon',
+                    'HAIR SALON',
+                    '555-0200',
+                    'other-salon@test.com',
+                    '456 Other St',
+                    'Test City',
+                    'TS',
+                    '12345',
+                    'USA',
+                    'APPROVED',
+                    nowUtc,
+                    nowUtc
+                ]
+            );
+            const salon2Id = salon2Result.insertId;
+
+            await db.execute(
+                `INSERT INTO employees (salon_id, user_id, title, active, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?)`,
+                [salon1Id, stylist.user_id, 'Senior Stylist', 1, nowUtc, nowUtc]
+            );
+
+            const loginResponse = await request(app)
+                .post('/api/user/login')
+                .send({ email: stylist.email, password });
+
+            expect(loginResponse.status).toBe(200);
+            const token = loginResponse.body.data.token;
+
+            const salonResponse = await request(app)
+                .get('/api/user/stylist/getSalon')
+                .set('Authorization', `Bearer ${token}`);
+
+            expect(salonResponse.status).toBe(200);
+            expect(salonResponse.body.data).toBeDefined();
+
+            expect(salonResponse.body.data.salon_id).toBe(salon1Id);
+            expect(salonResponse.body.data.name).toBe('Stylist Salon');
+
+            expect(salonResponse.body.data.salon_id).not.toBe(salon2Id);
+            expect(salonResponse.body.data.name).not.toBe('Other Salon');
+
+            expect(salonResponse.body.data).toHaveProperty('salon_id');
+            expect(salonResponse.body.data).toHaveProperty('name');
+            expect(salonResponse.body.data).toHaveProperty('description');
+            expect(salonResponse.body.data).toHaveProperty('category');
+            expect(salonResponse.body.data).toHaveProperty('employee_title');
+        });
+        //Every other role should not be able to access this route
+        test.each([...ROLE_CASES.filter(role => role !== 'EMPLOYEE')])('As a %s when they try to access this route they should be rejected', async (role) => {
+            const password = 'Password123!';
+            const user = await insertUserWithCredentials({ password, role });
+
+            const loginResponse = await request(app)
+                .post('/api/user/login')
+                .send({ email: user.email, password });
+
+            const token = loginResponse.body.data.token;
+
+            const response = await request(app)
+                .get('/api/user/stylist/getSalon')
+                .set('Authorization', `Bearer ${token}`);
+
+            expect(response.status).toBe(403);
+            expect(response.body).toMatchObject({
+                error: 'Insufficient permissions'
+            });
+        });
+        //Test for when the stylist is not assigned to any salon
+        test('As a stylist when they are not assigned to any salon they should be rejected', async () => {
+            const password = 'Password123!';
+            const user = await insertUserWithCredentials({ password, role: 'EMPLOYEE' });
+            const loginResponse = await request(app)
+                .post('/api/user/login')
+                .send({ email: user.email, password });
+
+            const token = loginResponse.body.data.token;
+
+            const response = await request(app)
+                .get('/api/user/stylist/getSalon')
+                .set('Authorization', `Bearer ${token}`);
+
+            expect(response.status).toBe(404);
+            expect(response.body).toMatchObject({
+                message: 'No salon assigned to this stylist'
+            });
+        });
 
     });
 });
