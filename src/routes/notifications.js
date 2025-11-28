@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { getNotifications, markAsRead, markAllAsRead, stylistSendReminder, deleteNotification, deleteAllNotifications, ownerSendUnusedOffersNotifications } = require('../controllers/notificationsController');
+const { getNotifications, getUnreadCount, markAsRead, markAllAsRead, stylistSendReminder, deleteNotification, deleteAllNotifications, ownerSendUnusedOffersNotifications } = require('../controllers/notificationsController');
 const { authenticateToken, roleAuthorization } = require('../middleware/auth.middleware');
 
 // NC 1.1 - Get user's notifications with pagination
