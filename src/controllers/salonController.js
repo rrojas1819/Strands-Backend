@@ -247,162 +247,180 @@ exports.approveSalon = async (req, res) => {
   }
 };
 
-
 //UAR 1.6 browse salons user/admin
 exports.browseSalons = async (req, res) => {
   const db = connection.promise();
-  const userRole = req.user?.role;
-  const isAdmin = userRole === 'ADMIN';
-  const category = req.body?.category;
 
   try {
-    //URL params
-    let {status = 'all', limit = 20, offset = 0, sort = 'recent'} = req.query;
+    const role = req.user?.role || "CUSTOMER";
+    const isAdmin = role === "ADMIN";
 
-    //pagination
-    limit  = Number.isFinite(+limit) ? +limit : 10;
-    offset = Number.isFinite(+offset) ? +offset : 0;
+    //URL params
+    let { status = "all", limit = 20, offset = 0, sort = "recent", category } = req.query;
+
+    //normalizing values + pagination
+    limit = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
+    offset = Math.max(parseInt(offset, 10) || 0, 0);
+    status = String(status).toUpperCase();
+    category = category?.trim() || null;
 
     //dynamic filters
     const where = [];
     const params = [];
 
+    //admin can view all types of salons, PENDING, APPROVED, etc.
     if (isAdmin) {
-      //admin can view all types of salons, PENDING, APPROVED, etc.
-      if (status && status !== 'all') {
+      if (status !== "ALL") {
         where.push(`s.status = ?`);
         params.push(status);
       }
     } else {
-      //users can only see APPROVED
+      //users (CUSTOMER) can only see APPROVED
       where.push(`s.status = 'APPROVED'`);
     }
 
-    //filters
-    if (category) {where.push(`s.category = ?`); params.push(category);}
+    if (category) { where.push(`s.category = ?`); params.push(category); }
 
-    //sorting
-    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "WHERE 1=1";
 
+    //sorting (now on backend as well)
     let orderBy = `ORDER BY s.created_at DESC`;
-    if (sort === 'name') orderBy = `ORDER BY s.name ASC`;
-
-    //tab counts, ex. All (6)
-    let counts;
-    if (isAdmin) {
-      const [[allC]] = await db.execute(`SELECT COUNT(*) AS c FROM salons`);
-      const [[pC]] = await db.execute(`SELECT COUNT(*) AS c FROM salons WHERE status='PENDING'`);
-      const [[aC]] = await db.execute(`SELECT COUNT(*) AS c FROM salons WHERE status='APPROVED'`);
-      const [[rC]] = await db.execute(`SELECT COUNT(*) AS c FROM salons WHERE status='REJECTED'`);
-      counts = {all: allC.c || 0, pending: pC.c || 0, approved: aC.c || 0, rejected: rC.c || 0};
+    switch (sort) {
+      case "name_asc":
+        orderBy = "ORDER BY s.name ASC";
+        break;
+      case "name_desc":
+        orderBy = "ORDER BY s.name DESC";
+        break;
+      case "rating":
+        if (!isAdmin) {
+          orderBy = "ORDER BY sr.avg_rating IS NULL ASC, sr.avg_rating DESC";
+        } else {
+          orderBy = "ORDER BY s.created_at DESC"; //for admin
+        }
+        break;
+      default:
+        orderBy = "ORDER BY s.created_at DESC";
     }
 
-    //current total for current filtered view
-    const countSql = isAdmin ? `SELECT COUNT(*) AS total FROM salons s JOIN users u ON u.user_id = s.owner_user_id ${whereSql}`
-                             : `SELECT COUNT(*) AS total FROM salons s ${whereSql}`;
-    const [countRows] = await db.execute(countSql, params);
+    //count for pagination
+    const [[countRow]] = await db.execute(`SELECT COUNT(*) AS total FROM salons s ${whereSql}`, params);
+    const total = countRow.total || 0;
 
-    const total = countRows[0]?.total || 0;
-
-    //fetching salon info
-    const listSql = isAdmin ? `SELECT s.salon_id, s.name, s.category, s.description, s.phone, s.email, s.address, s.city, s.state, s.postal_code, s.country,
-                              s.status, s.created_at, s.updated_at, u.user_id AS owner_user_id, u.full_name AS owner_name, u.email AS owner_email, u.phone AS owner_phone
-                              FROM salons s JOIN users u ON u.user_id = s.owner_user_id ${whereSql} ${orderBy} LIMIT ${limit} OFFSET ${offset}`
-                            : `SELECT s.salon_id, s.name, s.description, s.category, s.phone, s.email, s.address, s.city, s.state, s.postal_code, s.country,
-                              s.status, s.created_at, s.updated_at FROM salons s ${whereSql} ${orderBy} LIMIT ${limit} OFFSET ${offset}`;
+    //fetch salons
+    const listSql = `SELECT s.salon_id, s.name, s.description, s.category, s.phone, s.email, s.address, s.city, s.state, 
+                    s.postal_code, s.country, s.status, s.created_at, s.updated_at, p.s3_key AS photo_key
+                    ${!isAdmin ? ", sr.avg_rating AS avg_rating, sr.total_reviews AS total_reviews" : ""}
+                    ${isAdmin ? ", u.user_id AS owner_user_id, u.full_name AS owner_name, u.email AS owner_email, u.phone AS owner_phone" : ""}
+                    FROM salons s
+                    ${!isAdmin ? `LEFT JOIN (SELECT salon_id, AVG(rating) AS avg_rating, COUNT(review_id) AS total_reviews FROM reviews 
+                    GROUP BY salon_id) sr ON sr.salon_id = s.salon_id` : ""}
+                    LEFT JOIN (SELECT salon_id, MIN(picture_id) AS picture_id FROM salon_photos GROUP BY salon_id) sp ON sp.salon_id = s.salon_id
+                    LEFT JOIN pictures p ON p.picture_id = sp.picture_id
+                    ${isAdmin ? "LEFT JOIN users u ON u.user_id = s.owner_user_id" : ""}
+                    ${whereSql} ${orderBy} LIMIT ${limit} OFFSET ${offset};`;
     const [rows] = await db.execute(listSql, params);
-    
-    const salonIds = rows.map(row => row.salon_id);
-    let salonHours = {};
-    
+
+    //build photomap
+    const photoMap = {};
+    await Promise.all(
+      rows.map(async (r) => {
+        if (!r.photo_key) return;
+        try {
+          const { url } = await getFilePresigned(r.photo_key);
+          photoMap[r.salon_id] = url;
+        } catch (e) {
+          console.error(
+            `browseSalons: error generating presigned URL for salon ${r.salon_id} (key=${r.photo_key}):`,
+            e
+          );
+          photoMap[r.salon_id] = null;
+        }
+      })
+    );
+
+    //weekly hours
+    const salonIds = rows.map((r) => r.salon_id);
+    let hoursMap = {};
+
     if (salonIds.length > 0) {
-      const placeholders = salonIds.map(() => '?').join(',');
-      const getAvailabilityQuery = `
-        SELECT salon_id, weekday, start_time, end_time
-        FROM salon_availability 
-        WHERE salon_id IN (${placeholders})
-        ORDER BY salon_id, weekday
-      `;
-      const [availabilityResult] = await db.execute(getAvailabilityQuery, salonIds);
-      
-      salonHours = salonIds.reduce((acc, id) => {
+      const placeholders = salonIds.map(() => "?").join(",");
+      const [hours] = await db.execute(`SELECT salon_id, weekday, start_time, end_time FROM salon_availability
+                                       WHERE salon_id IN (${placeholders}) ORDER BY salon_id, weekday`, salonIds);
+      hoursMap = salonIds.reduce((acc, id) => {
         acc[id] = {};
-        return acc;
-      }, {});
-      
-      salonIds.forEach(id => {
         VALID_WEEKDAYS.forEach(day => {
-          salonHours[id][day] = {
+          acc[id][day] = {
             is_open: false,
             start_time: null,
             end_time: null
           };
         });
-      });
-      
-      availabilityResult.forEach(avail => {
-        const dayName = Object.keys(WEEKDAY_TO_NUMBER).find(day => WEEKDAY_TO_NUMBER[day] === avail.weekday);
-        if (dayName && salonHours[avail.salon_id]) {
-          salonHours[avail.salon_id][dayName] = {
+        return acc;
+      }, {});
+
+      //fill hours
+      hours.forEach(h => {
+        const dayName = Object.keys(WEEKDAY_TO_NUMBER)
+          .find(k => WEEKDAY_TO_NUMBER[k] === h.weekday);
+        if (dayName) {
+          hoursMap[h.salon_id][dayName] = {
             is_open: true,
-            start_time: avail.start_time,
-            end_time: avail.end_time
+            start_time: h.start_time,
+            end_time: h.end_time
           };
         }
       });
     }
 
-    // fetch salon photo signed URL per salon (bulk)
-    const salonPhotoUrlById = {};
-    if (salonIds.length > 0) {
-      const placeholders = salonIds.map(() => '?').join(',');
-      const getSalonPhotosQuery = `
-        SELECT sp.salon_id, p.s3_key
-        FROM salon_photos sp
-        JOIN pictures p ON p.picture_id = sp.picture_id
-        WHERE sp.salon_id IN (${placeholders})
-      `;
-      const [photoRows] = await db.execute(getSalonPhotosQuery, salonIds);
+    const data = rows.map((r) => ({
+      salon_id: r.salon_id,
+      name: r.name,
+      category: r.category,
+      description: r.description,
+      phone: r.phone,
+      email: r.email,
+      address: r.address,
+      city: r.city,
+      state: r.state,
+      postal_code: r.postal_code,
+      country: r.country,
+      status: r.status,
+      created_at: r.created_at,
+      updated_at: r.updated_at,
+      weekly_hours: hoursMap[r.salon_id] ?? {},
+      photo_url: photoMap[r.salon_id] ?? null,
 
-      // Map one key per salon (first encountered)
-      const keyBySalonId = {};
-      for (const row of photoRows) {
-        const sid = row.salon_id;
-        const key = row.s3_key;
-        if (sid != null && key && !keyBySalonId[sid]) {
-          keyBySalonId[sid] = key;
+      //customer specific data
+      ...(isAdmin ? {} : {
+        rating: r.avg_rating != null ? Number(r.avg_rating.toFixed(1)) : null,
+        total_reviews: Number(r.total_reviews || 0)
+      }),
+
+      //admin specific data
+      ...(isAdmin ? {
+        owner: {
+          user_id: r.owner_user_id,
+          name: r.owner_name,
+          email: r.owner_email,
+          phone: r.owner_phone
         }
-      }
-
-      const presignedEntries = await Promise.all(
-        Object.entries(keyBySalonId).map(async ([sid, s3Key]) => {
-          const { url } = await getFilePresigned(s3Key);
-          return [Number(sid), url || null];
-        })
-      );
-
-      presignedEntries.forEach(([sid, url]) => {
-        if (url) salonPhotoUrlById[sid] = url;
-      });
-    }
-    
-    
-      
-    const rowsWithHours = rows.map(row => ({
-      ...row,
-      weekly_hours: salonHours[row.salon_id] || {},
-      photo_url: salonPhotoUrlById[row.salon_id] || null
+      } : {})
     }));
-    
-    //returning salons
+
     return res.status(200).json({
-      data: rowsWithHours,
-      meta: {total, limit, offset, hasMore: offset + rows.length < total},
-      ...(isAdmin ? { counts } : {})
+      data,
+      meta: {
+        total,
+        limit,
+        offset,
+        hasMore: offset + data.length < total
+      }
     });
+
   } catch (err) {
-    console.error('browseSalonsUnified error:', err);
-    return res.status(500).json({ message: 'Internal server error' });
+    console.error("browseSalons error:", err);
+    return res.status(500).json({ message: "Internal server error" });
   }
 };
 
