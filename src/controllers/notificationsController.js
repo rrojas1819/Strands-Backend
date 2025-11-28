@@ -107,7 +107,7 @@ exports.getNotifications = async (req, res) => {
             // Parse created_at and read_at using Luxon
             let created_at_dt = null;
             let read_at_dt = null;
-            
+
             if (notif.created_at) {
                 if (notif.created_at instanceof Date) {
                     created_at_dt = DateTime.fromJSDate(notif.created_at, { zone: 'utc' });
@@ -118,7 +118,7 @@ exports.getNotifications = async (req, res) => {
                     }
                 }
             }
-            
+
             if (notif.read_at) {
                 if (notif.read_at instanceof Date) {
                     read_at_dt = DateTime.fromJSDate(notif.read_at, { zone: 'utc' });
@@ -154,12 +154,12 @@ exports.getNotifications = async (req, res) => {
                 message: decryptedMessage,
                 sender_email: notif.sender_email,
                 created_at: formatDateTime(notif.created_at),
-                sent: created_at_dt && created_at_dt.isValid 
-                    ? created_at_dt.toLocal().toFormat('EEE, MMM d, yyyy h:mm a') 
+                sent: created_at_dt && created_at_dt.isValid
+                    ? created_at_dt.toLocal().toFormat('EEE, MMM d, yyyy h:mm a')
                     : null,
                 read_at: formatDateTime(notif.read_at),
-                read_at_formatted: read_at_dt && read_at_dt.isValid 
-                    ? read_at_dt.toLocal().toFormat('EEE, MMM d, yyyy h:mm a') 
+                read_at_formatted: read_at_dt && read_at_dt.isValid
+                    ? read_at_dt.toLocal().toFormat('EEE, MMM d, yyyy h:mm a')
                     : null
             };
         });
@@ -167,8 +167,8 @@ exports.getNotifications = async (req, res) => {
         const totalPages = Math.ceil(total / limit);
         const hasMore = page < totalPages;
 
-        const activeFilter = filter && filter !== 'all' && categoryFilters[filter.toLowerCase()] 
-            ? filter.toLowerCase() 
+        const activeFilter = filter && filter !== 'all' && categoryFilters[filter.toLowerCase()]
+            ? filter.toLowerCase()
             : 'all';
 
         return res.status(200).json({
@@ -192,6 +192,37 @@ exports.getNotifications = async (req, res) => {
 
     } catch (error) {
         console.error('getNotifications error:', error);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
+// Get unread notification count
+exports.getUnreadCount = async (req, res) => {
+    const db = connection.promise();
+
+    try {
+        const user_id = req.user?.user_id;
+
+        if (!user_id) {
+            return res.status(401).json({ message: 'Unauthorized' });
+        }
+
+        // Get unread count
+        const [unreadCountResult] = await db.execute(
+            `SELECT COUNT(*) as unread_count 
+             FROM notifications_inbox 
+             WHERE user_id = ? AND status = 'UNREAD'`,
+            [user_id]
+        );
+
+        const unreadCount = unreadCountResult[0]?.unread_count || 0;
+
+        return res.status(200).json({
+            unread_count: unreadCount
+        });
+
+    } catch (error) {
+        console.error('getUnreadCount error:', error);
         return res.status(500).json({ message: 'Internal server error' });
     }
 };
@@ -222,8 +253,8 @@ exports.markAsRead = async (req, res) => {
         );
 
         if (result.affectedRows === 0) {
-            return res.status(404).json({ 
-                message: 'Notification not found, already read, or does not belong to you' 
+            return res.status(404).json({
+                message: 'Notification not found, already read, or does not belong to you'
             });
         }
 
@@ -362,7 +393,7 @@ exports.stylistSendReminder = async (req, res) => {
             // Parse booking times and convert to salon timezone for display
             const bookingStart = DateTime.fromSQL(booking.scheduled_start, { zone: 'utc' });
             const bookingEnd = DateTime.fromSQL(booking.scheduled_end, { zone: 'utc' });
-            
+
             const bookingStartLocal = bookingStart.setZone(salonTimezone);
             const bookingEndLocal = bookingEnd.setZone(salonTimezone);
 
@@ -386,14 +417,14 @@ exports.stylistSendReminder = async (req, res) => {
                 const customerBookings = customer.bookings;
 
                 let message = `Reminder: You have ${customerBookings.length} appointment${customerBookings.length > 1 ? 's' : ''} at ${salon_name} with ${stylist_name} scheduled for ${dateStr}:\n\n`;
-                
+
                 for (let i = 0; i < customerBookings.length; i++) {
                     const booking = customerBookings[i];
                     const startTime = booking.scheduled_start.toFormat('h:mm a');
                     const endTime = booking.scheduled_end.toFormat('h:mm a');
-                    
+
                     message += `${i + 1}. ${startTime} - ${endTime}\n`;
-                    
+
                     const [services] = await db.execute(
                         `SELECT 
                             s.name AS service_name,
@@ -404,7 +435,7 @@ exports.stylistSendReminder = async (req, res) => {
                          ORDER BY s.name`,
                         [booking.booking_id, employee_id]
                     );
-                    
+
                     if (services.length > 0) {
                         message += `   Services:\n`;
                         services.forEach((service) => {
@@ -493,8 +524,8 @@ exports.deleteNotification = async (req, res) => {
         );
 
         if (notification.length === 0) {
-            return res.status(404).json({ 
-                message: 'Notification not found or does not belong to you' 
+            return res.status(404).json({
+                message: 'Notification not found or does not belong to you'
             });
         }
 
@@ -505,8 +536,8 @@ exports.deleteNotification = async (req, res) => {
         );
 
         if (result.affectedRows === 0) {
-            return res.status(404).json({ 
-                message: 'Notification not found or does not belong to you' 
+            return res.status(404).json({
+                message: 'Notification not found or does not belong to you'
             });
         }
 
@@ -636,8 +667,8 @@ const sendUnusedOffersNotifications = async (db = null, salon_id = null) => {
             };
         }
 
-        const customerUserIds = salon_id !== null && allCustomers.length > 0 
-            ? allCustomers.map(c => c.user_id) 
+        const customerUserIds = salon_id !== null && allCustomers.length > 0
+            ? allCustomers.map(c => c.user_id)
             : null;
 
         // Query unused promos - filter by salon_id and customer list if provided
@@ -656,7 +687,7 @@ const sendUnusedOffersNotifications = async (db = null, salon_id = null) => {
              JOIN users u ON u.user_id = up.user_id
              WHERE up.status = 'ISSUED'
                AND (up.expires_at IS NULL OR up.expires_at > ?)`;
-        
+
         const promoParams = [nowUtc];
         if (salon_id !== null) {
             promoQuery += ` AND up.salon_id = ?`;
@@ -686,7 +717,7 @@ const sendUnusedOffersNotifications = async (db = null, salon_id = null) => {
              JOIN users u ON u.user_id = ar.user_id
              WHERE ar.active = 1 
                AND ar.redeemed_at IS NULL`;
-        
+
         const rewardParams = [];
         if (salon_id !== null) {
             rewardQuery += ` AND ar.salon_id = ?`;
@@ -770,14 +801,14 @@ const sendUnusedOffersNotifications = async (db = null, salon_id = null) => {
                     const createNotificationChunks = (message) => {
                         const maxMessageLength = 400;
                         const messageChunks = [];
-                        
+
                         if (message.length <= maxMessageLength) {
                             messageChunks.push(message.trim());
                         } else {
                             let remaining = message;
                             let partNumber = 1;
                             const totalParts = Math.ceil(message.length / maxMessageLength);
-                            
+
                             while (remaining.length > 0) {
                                 if (remaining.length <= maxMessageLength) {
                                     let chunk = remaining.trim();
@@ -787,21 +818,21 @@ const sendUnusedOffersNotifications = async (db = null, salon_id = null) => {
                                     messageChunks.push(chunk);
                                     break;
                                 }
-                                
+
                                 let splitPoint = maxMessageLength;
                                 const searchStart = Math.max(0, maxMessageLength - 50);
                                 const lastNewline = remaining.lastIndexOf('\n', maxMessageLength);
-                                
+
                                 if (lastNewline > searchStart) {
                                     splitPoint = lastNewline + 1;
                                 }
-                                
+
                                 let chunk = remaining.substring(0, splitPoint).trim();
                                 if (totalParts > 1) {
                                     chunk = `(Part ${partNumber}/${totalParts})\n${chunk}`;
                                 }
                                 messageChunks.push(chunk);
-                                
+
                                 remaining = remaining.substring(splitPoint);
                                 partNumber++;
                             }
@@ -812,7 +843,7 @@ const sendUnusedOffersNotifications = async (db = null, salon_id = null) => {
                     if (userData.promos.length > 0) {
                         let promoMessage = `You have unused promo codes at ${userData.salon_name}:\n\n`;
                         promoMessage += `Promo Codes (${userData.promos.length}):\n`;
-                        
+
                         userData.promos.forEach((promo, index) => {
                             promoMessage += `${index + 1}. Code: ${promo.promo_code} - ${promo.discount_pct}% off`;
                             if (promo.description) {
@@ -832,7 +863,7 @@ const sendUnusedOffersNotifications = async (db = null, salon_id = null) => {
                                 } else if (promo.expires_at instanceof Date) {
                                     expiresAt = DateTime.fromJSDate(promo.expires_at, { zone: 'utc' });
                                 }
-                                
+
                                 if (expiresAt && expiresAt.isValid) {
                                     promoMessage += ` (Expires: ${expiresAt.toFormat('MMM d, yyyy')})`;
                                 }
@@ -841,35 +872,35 @@ const sendUnusedOffersNotifications = async (db = null, salon_id = null) => {
                         });
 
                         const promoChunks = createNotificationChunks(promoMessage);
-                            
-                            for (let i = 0; i < promoChunks.length; i++) {
-                                const notificationResult = await exports.createNotification(db, {
-                                    user_id: userData.user_id,
-                                    salon_id: userData.salon_id,
-                                    email: userData.email,
-                                    type_code: type_code,
-                                    message: promoChunks[i],
-                                    sender_email: 'SYSTEM'
-                                });
 
-                                notificationsCreated.push({
-                                    notification_id: notificationResult.notification_id,
-                                    user_id: userData.user_id,
-                                    email: userData.email,
-                                    salon_id: userData.salon_id,
-                                    salon_name: userData.salon_name,
-                                    type: 'promo_codes',
-                                    promos_count: userData.promos.length,
-                                    part_number: promoChunks.length > 1 ? i + 1 : null,
-                                    total_parts: promoChunks.length > 1 ? promoChunks.length : null
-                                });
-                            }
+                        for (let i = 0; i < promoChunks.length; i++) {
+                            const notificationResult = await exports.createNotification(db, {
+                                user_id: userData.user_id,
+                                salon_id: userData.salon_id,
+                                email: userData.email,
+                                type_code: type_code,
+                                message: promoChunks[i],
+                                sender_email: 'SYSTEM'
+                            });
+
+                            notificationsCreated.push({
+                                notification_id: notificationResult.notification_id,
+                                user_id: userData.user_id,
+                                email: userData.email,
+                                salon_id: userData.salon_id,
+                                salon_name: userData.salon_name,
+                                type: 'promo_codes',
+                                promos_count: userData.promos.length,
+                                part_number: promoChunks.length > 1 ? i + 1 : null,
+                                total_parts: promoChunks.length > 1 ? promoChunks.length : null
+                            });
+                        }
                     }
 
                     if (userData.rewards.length > 0) {
                         let rewardMessage = `You have unused loyalty rewards at ${userData.salon_name}:\n\n`;
                         rewardMessage += `Loyalty Rewards (${userData.rewards.length}):\n`;
-                        
+
                         userData.rewards.forEach((reward, index) => {
                             rewardMessage += `${index + 1}. ${reward.discount_percentage}% off`;
                             if (reward.note) {
@@ -879,30 +910,30 @@ const sendUnusedOffersNotifications = async (db = null, salon_id = null) => {
                         });
 
                         const rewardChunks = createNotificationChunks(rewardMessage);
-                            
-                            for (let i = 0; i < rewardChunks.length; i++) {
-                                // Use createNotification helper to ensure encryption
-                                const notificationResult = await exports.createNotification(db, {
-                                    user_id: userData.user_id,
-                                    salon_id: userData.salon_id,
-                                    email: userData.email,
-                                    type_code: type_code,
-                                    message: rewardChunks[i],
-                                    sender_email: 'SYSTEM'
-                                });
 
-                                notificationsCreated.push({
-                                    notification_id: notificationResult.notification_id,
-                                    user_id: userData.user_id,
-                                    email: userData.email,
-                                    salon_id: userData.salon_id,
-                                    salon_name: userData.salon_name,
-                                    type: 'loyalty_rewards',
-                                    rewards_count: userData.rewards.length,
-                                    part_number: rewardChunks.length > 1 ? i + 1 : null,
-                                    total_parts: rewardChunks.length > 1 ? rewardChunks.length : null
-                                });
-                            }
+                        for (let i = 0; i < rewardChunks.length; i++) {
+                            // Use createNotification helper to ensure encryption
+                            const notificationResult = await exports.createNotification(db, {
+                                user_id: userData.user_id,
+                                salon_id: userData.salon_id,
+                                email: userData.email,
+                                type_code: type_code,
+                                message: rewardChunks[i],
+                                sender_email: 'SYSTEM'
+                            });
+
+                            notificationsCreated.push({
+                                notification_id: notificationResult.notification_id,
+                                user_id: userData.user_id,
+                                email: userData.email,
+                                salon_id: userData.salon_id,
+                                salon_name: userData.salon_name,
+                                type: 'loyalty_rewards',
+                                rewards_count: userData.rewards.length,
+                                part_number: rewardChunks.length > 1 ? i + 1 : null,
+                                total_parts: rewardChunks.length > 1 ? rewardChunks.length : null
+                            });
+                        }
                     }
                 } catch (userError) {
                     // Log error for this specific user but continue with others
@@ -954,7 +985,7 @@ exports.sendUnusedOffersNotifications = sendUnusedOffersNotifications;
 // NC 1.3 - Owner endpoint to manually trigger unused offers notifications
 exports.ownerSendUnusedOffersNotifications = async (req, res) => {
     const db = connection.promise();
-    
+
     try {
         const owner_user_id = req.user?.user_id;
 
