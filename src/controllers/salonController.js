@@ -247,6 +247,7 @@ exports.approveSalon = async (req, res) => {
   }
 };
 
+
 //UAR 1.6 browse salons user/admin
 exports.browseSalons = async (req, res) => {
   const db = connection.promise();

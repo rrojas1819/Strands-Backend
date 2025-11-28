@@ -16,7 +16,27 @@ jobs:
         run: npm install
 
       - name: Run unit tests
-        run: npm test
+        env:
+          APP_PORT: ${{ secrets.PORT }}
+          UTC_DEBUG: ${{ secrets.UTC_DEBUG }}
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_PORT: ${{ secrets.DB_PORT }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          BCRYPT_SALT: ${{ secrets.BCRYPT_SALT }}
+          NOTIFICATION_ENCRYPTION_KEY: ${{ secrets.NOTIFICATION_ENCRYPTION_KEY }}
+          PAYMENT_ENCRYPTION_KEY: ${{ secrets.PAYMENT_ENCRYPTION_KEY }}
+          CVC_HMAC_SECRET: ${{ secrets.CVC_HMAC_SECRET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
+          AWS_S3_DEFAULT_PREFIX: ${{ secrets.AWS_S3_DEFAULT_PREFIX }}
+          UPLOAD_MAX_BYTES: ${{ secrets.UPLOAD_MAX_BYTES }}
+            
+        run: npm test --runInBand
 
       - name: Build project
         run: npm run build --if-present
@@ -40,5 +60,44 @@ jobs:
           script: |
             cd /home/ubuntu/Strands-Backend
             npm install --production
-            pm2 restart all || pm2 start server.js
+                        
+            PM2_CONFIG=$(cat <<EOF
+            {
+              "apps": [
+                {
+                  "name": "strands-backend",
+                  "script": "./src/server.js",
+                  "env": {
+                    "NODE_ENV": "production", 
+                    "APP_PORT": "${{ secrets.PORT }}",
+                    "UTC_DEBUG": "${{ secrets.UTC_DEBUG }}",
+                    "DB_HOST": "${{ secrets.DB_HOST }}",
+                    "DB_USER": "${{ secrets.DB_USER }}",
+                    "DB_PASSWORD": "${{ secrets.DB_PASSWORD }}",
+                    "DB_NAME": "${{ secrets.DB_NAME }}",
+                    "DB_PORT": "${{ secrets.DB_PORT }}",
+                    "JWT_SECRET": "${{ secrets.JWT_SECRET }}",
+                    "BCRYPT_SALT": "${{ secrets.BCRYPT_SALT }}",
+                    "NOTIFICATION_ENCRYPTION_KEY": "${{ secrets.NOTIFICATION_ENCRYPTION_KEY }}",
+                    "PAYMENT_ENCRYPTION_KEY": "${{ secrets.PAYMENT_ENCRYPTION_KEY }}",
+                    "CVC_HMAC_SECRET": "${{ secrets.CVC_HMAC_SECRET }}",
+                    "AWS_ACCESS_KEY_ID": "${{ secrets.AWS_ACCESS_KEY_ID }}",
+                    "AWS_SECRET_ACCESS_KEY": "${{ secrets.AWS_SECRET_ACCESS_KEY }}",
+                    "AWS_REGION": "${{ secrets.AWS_REGION }}",
+                    "AWS_S3_BUCKET": "${{ secrets.AWS_S3_BUCKET }}",
+                    "AWS_S3_DEFAULT_PREFIX": "${{ secrets.AWS_S3_DEFAULT_PREFIX }}",
+                    "UPLOAD_MAX_BYTES": "${{ secrets.UPLOAD_MAX_BYTES }}"
+                  }
+                }
+              ]
+            }
+            EOF
+            )
+
+            echo "$PM2_CONFIG" > pm2_temp_config.json
+            
+            pm2 start pm2_temp_config.json --update-env --force
             pm2 save
+            
+            rm pm2_temp_config.json
+            
