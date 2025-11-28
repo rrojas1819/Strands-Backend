@@ -6,6 +6,10 @@ const { ROLE_CASES, baseSignupPayload, insertUserWithCredentials } = require('./
 
 const db = connection.promise();
 
+// User Authentication & Roles unit tests
+
+
+//UAR 1.1/ 1.2 - Login, Signup, Logout, authentication test
 describe('Auth Routes', () => {
     beforeEach(() => {
         jest.spyOn(notificationsController, 'createNotification').mockResolvedValue({
@@ -55,6 +59,29 @@ describe('Auth Routes', () => {
                 message: 'All fields are required'
             });
         });
+
+        test('rejects invalid password length', async () => {
+            const response = await request(app)
+                .post('/api/user/signup')
+                .send({ full_name: 'Test User', email: 'test@example.com', role: 'CUSTOMER', password: 'Short' });
+
+            expect(response.status).toBe(400);
+            expect(response.body).toMatchObject({
+                message: 'Password must be at least 6 characters long'
+            });
+        });
+
+        test('rejects user who already exists', async () => {
+            const user = await insertUserWithCredentials();
+            const response = await request(app)
+                .post('/api/user/signup')
+                .send({ full_name: user.full_name, email: user.email, role: user.role, password: user.password });
+
+            expect(response.status).toBe(409);
+            expect(response.body).toMatchObject({
+                message: 'Invalid credentials or account cannot be created'
+            });
+        });
     });
 
     describe('POST /api/user/login', () => {
@@ -93,6 +120,19 @@ describe('Auth Routes', () => {
                 message: 'Invalid credentials'
             });
         });
+
+        test('rejects invalid email format', async () => {
+            const response = await request(app)
+                .post('/api/user/login')
+                .send({ email: 'invalid-email', password: 'Password123!' });
+
+            expect(response.status).toBe(400);
+            expect(response.body).toMatchObject({
+                message: 'Invalid email format'
+            });
+        });
+        
+
     });
 
     describe('POST /api/user/logout', () => {
@@ -134,6 +174,8 @@ describe('Auth Routes', () => {
                 error: 'Access token required'
             });
         });
+
+
     });
 });
 
