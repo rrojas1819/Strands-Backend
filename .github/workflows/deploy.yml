@@ -17,7 +17,7 @@ jobs:
 
       - name: Run unit tests
         env:
-          PORT: ${{ secrets.PORT }}
+          APP_PORT: ${{ secrets.PORT }}
           UTC_DEBUG: ${{ secrets.UTC_DEBUG }}
           DB_HOST: ${{ secrets.DB_HOST }}
           DB_USER: ${{ secrets.DB_USER }}
@@ -54,7 +54,7 @@ jobs:
       - name: Restart PM2 on EC2
         uses: appleboy/ssh-action@v0.1.7
         env:
-          PORT: ${{ secrets.PORT }}
+          APP_PORT: ${{ secrets.PORT }}
           UTC_DEBUG: ${{ secrets.UTC_DEBUG }}
           DB_HOST: ${{ secrets.DB_HOST }}
           DB_USER: ${{ secrets.DB_USER }}
