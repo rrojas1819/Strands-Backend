@@ -68,7 +68,7 @@ jobs:
                   "name": "strands-backend",
                   "script": "./src/server.js",
                   "env": {
-                    "NODE_ENV": "production",  # <--- THIS IS NOW SET TO "production"
+                    "NODE_ENV": "production", 
                     "APP_PORT": "${{ secrets.PORT }}",
                     "UTC_DEBUG": "${{ secrets.UTC_DEBUG }}",
                     "DB_HOST": "${{ secrets.DB_HOST }}",
