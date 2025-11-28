@@ -283,7 +283,7 @@ exports.browseSalons = async (req, res) => {
 
     const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "WHERE 1=1";
 
-    //sorting (now on backend as well)
+    //sorting logic (now on backend as well)
     let orderBy = `ORDER BY s.created_at DESC`;
     switch (sort) {
       case "name_asc":
@@ -295,8 +295,6 @@ exports.browseSalons = async (req, res) => {
       case "rating":
         if (!isAdmin) {
           orderBy = "ORDER BY avg_rating DESC, total_reviews DESC, name ASC";
-        } else {
-          orderBy = "ORDER BY s.created_at DESC"; //for admin
         }
         break;
       default:
@@ -308,61 +306,70 @@ exports.browseSalons = async (req, res) => {
     const total = countRow.total || 0;
 
     //fetch salons
-    const listSql = `SELECT s.salon_id, s.name, s.description, s.category, s.phone, s.email, s.address, s.city, s.state, 
-                    s.postal_code, s.country, s.status, s.created_at, s.updated_at, p.s3_key AS photo_key
-                    ${!isAdmin ? ", sr.avg_rating AS avg_rating, sr.total_reviews AS total_reviews" : ""}
+    const listSql = `SELECT s.salon_id, s.name, s.description, s.category, s.phone, s.email, s.address,
+                    s.city, s.state, s.postal_code, s.country, s.status, s.created_at, s.updated_at
+                    ${!isAdmin ? ", sr.avg_rating, sr.total_reviews" : ""}
                     ${isAdmin ? ", u.user_id AS owner_user_id, u.full_name AS owner_name, u.email AS owner_email, u.phone AS owner_phone" : ""}
                     FROM salons s
-                    ${!isAdmin ? `LEFT JOIN (SELECT salon_id, AVG(rating) AS avg_rating, COUNT(review_id) AS total_reviews FROM reviews 
-                    GROUP BY salon_id) sr ON sr.salon_id = s.salon_id` : ""}
-                    LEFT JOIN (SELECT salon_id, MIN(picture_id) AS picture_id FROM salon_photos GROUP BY salon_id) sp ON sp.salon_id = s.salon_id
-                    LEFT JOIN pictures p ON p.picture_id = sp.picture_id
+                    ${!isAdmin ? `LEFT JOIN (SELECT salon_id, AVG(rating) AS avg_rating, COUNT(review_id) AS total_reviews
+                                 FROM reviews GROUP BY salon_id) sr ON sr.salon_id = s.salon_id` : ""}
                     ${isAdmin ? "LEFT JOIN users u ON u.user_id = s.owner_user_id" : ""}
                     ${whereSql} ${orderBy} LIMIT ${limit} OFFSET ${offset};`;
     const [rows] = await db.execute(listSql, params);
 
-    //build photomap
+    //getting photos
+    const salonIds = rows.map(r => r.salon_id);
     const photoMap = {};
-    await Promise.all(
-      rows.map(async (r) => {
-        if (!r.photo_key) return;
-        try {
-          const { url } = await getFilePresigned(r.photo_key);
-          photoMap[r.salon_id] = url;
-        } catch (e) {
-          console.error(
-            `browseSalons: error generating presigned URL for salon ${r.salon_id} (key=${r.photo_key}):`,
-            e
-          );
-          photoMap[r.salon_id] = null;
-        }
-      })
-    );
-
-    //weekly hours
-    const salonIds = rows.map((r) => r.salon_id);
-    let hoursMap = {};
 
     if (salonIds.length > 0) {
-      const placeholders = salonIds.map(() => "?").join(",");
-      const [hours] = await db.execute(`SELECT salon_id, weekday, start_time, end_time FROM salon_availability
-                                       WHERE salon_id IN (${placeholders}) ORDER BY salon_id, weekday`, salonIds);
+      const ph = salonIds.map(() => "?").join(",");
+
+      const [photoRows] = await db.execute(`SELECT sp.salon_id, p.s3_key FROM salon_photos sp
+                                           JOIN pictures p ON p.picture_id = sp.picture_id WHERE sp.salon_id IN (${ph})
+                                           ORDER BY sp.picture_id ASC`, salonIds
+      );
+
+      const keyBySalonId = {};
+      for (const row of photoRows) {
+        if (!keyBySalonId[row.salon_id]) {
+          keyBySalonId[row.salon_id] = row.s3_key;
+        }
+      }
+
+      const urlEntries = await Promise.all(
+        Object.entries(keyBySalonId).map(async ([sid, key]) => {
+          try {
+            const { url } = await getFilePresigned(key);
+            return [Number(sid), url || null];
+          } catch {
+            return [Number(sid), null];
+          }
+        })
+      );
+
+      urlEntries.forEach(([sid, url]) => {
+        photoMap[sid] = url;
+      });
+    }
+
+    //weekly hours
+    let hoursMap = {};
+    if (salonIds.length > 0) {
+      const ph = salonIds.map(() => "?").join(",");
+      const [hours] = await db.execute(`SELECT salon_id, weekday, start_time, end_time
+                                       FROM salon_availability WHERE salon_id IN (${ph})
+                                       ORDER BY salon_id, weekday`, salonIds
+      );
+
       hoursMap = salonIds.reduce((acc, id) => {
         acc[id] = {};
-        VALID_WEEKDAYS.forEach(day => {
-          acc[id][day] = {
-            is_open: false,
-            start_time: null,
-            end_time: null
-          };
-        });
+        VALID_WEEKDAYS.forEach(day => { acc[id][day] = { is_open: false, start_time: null, end_time: null }; });
         return acc;
       }, {});
 
       //fill hours
       hours.forEach(h => {
-        const dayName = Object.keys(WEEKDAY_TO_NUMBER)
-          .find(k => WEEKDAY_TO_NUMBER[k] === h.weekday);
+        const dayName = Object.keys(WEEKDAY_TO_NUMBER).find(k => WEEKDAY_TO_NUMBER[k] === h.weekday);
         if (dayName) {
           hoursMap[h.salon_id][dayName] = {
             is_open: true,
@@ -373,7 +380,7 @@ exports.browseSalons = async (req, res) => {
       });
     }
 
-    const data = rows.map((r) => {
+    const data = rows.map(r => {
 
       //ensure ratings is proper format to prevent errors for CUSTOMER view
       let avgRating = null;
@@ -385,8 +392,8 @@ exports.browseSalons = async (req, res) => {
       return {
         salon_id: r.salon_id,
         name: r.name,
-        category: r.category,
         description: r.description,
+        category: r.category,
         phone: r.phone,
         email: r.email,
         address: r.address,
@@ -397,8 +404,8 @@ exports.browseSalons = async (req, res) => {
         status: r.status,
         created_at: r.created_at,
         updated_at: r.updated_at,
-        weekly_hours: hoursMap[r.salon_id] ?? {},
-        photo_url: photoMap[r.salon_id] ?? null,
+        weekly_hours: hoursMap[r.salon_id] || {},
+        photo_url: photoMap[r.salon_id] || null,
 
         //CUSTOMER specific data
         ...(isAdmin ? {} : {
@@ -418,15 +425,9 @@ exports.browseSalons = async (req, res) => {
       };
     });
 
-
     return res.status(200).json({
       data,
-      meta: {
-        total,
-        limit,
-        offset,
-        hasMore: offset + data.length < total
-      }
+      meta: { total, limit, offset, hasMore: offset + data.length < total }
     });
 
   } catch (err) {
