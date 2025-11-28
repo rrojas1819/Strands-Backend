@@ -294,7 +294,7 @@ exports.browseSalons = async (req, res) => {
         break;
       case "rating":
         if (!isAdmin) {
-          orderBy = "ORDER BY sr.avg_rating IS NULL ASC, sr.avg_rating DESC";
+          orderBy = "ORDER BY avg_rating DESC, total_reviews DESC, name ASC";
         } else {
           orderBy = "ORDER BY s.created_at DESC"; //for admin
         }
@@ -373,40 +373,51 @@ exports.browseSalons = async (req, res) => {
       });
     }
 
-    const data = rows.map((r) => ({
-      salon_id: r.salon_id,
-      name: r.name,
-      category: r.category,
-      description: r.description,
-      phone: r.phone,
-      email: r.email,
-      address: r.address,
-      city: r.city,
-      state: r.state,
-      postal_code: r.postal_code,
-      country: r.country,
-      status: r.status,
-      created_at: r.created_at,
-      updated_at: r.updated_at,
-      weekly_hours: hoursMap[r.salon_id] ?? {},
-      photo_url: photoMap[r.salon_id] ?? null,
+    const data = rows.map((r) => {
 
-      //customer specific data
-      ...(isAdmin ? {} : {
-        rating: r.avg_rating != null ? Number(r.avg_rating.toFixed(1)) : null,
-        total_reviews: Number(r.total_reviews || 0)
-      }),
+      //ensure ratings is proper format to prevent errors for CUSTOMER view
+      let avgRating = null;
+      if (r.avg_rating !== null && r.avg_rating !== undefined) {
+        const num = Number(r.avg_rating);
+        avgRating = Number.isFinite(num) ? Number(num.toFixed(1)) : null;
+      }
 
-      //admin specific data
-      ...(isAdmin ? {
-        owner: {
-          user_id: r.owner_user_id,
-          name: r.owner_name,
-          email: r.owner_email,
-          phone: r.owner_phone
-        }
-      } : {})
-    }));
+      return {
+        salon_id: r.salon_id,
+        name: r.name,
+        category: r.category,
+        description: r.description,
+        phone: r.phone,
+        email: r.email,
+        address: r.address,
+        city: r.city,
+        state: r.state,
+        postal_code: r.postal_code,
+        country: r.country,
+        status: r.status,
+        created_at: r.created_at,
+        updated_at: r.updated_at,
+        weekly_hours: hoursMap[r.salon_id] ?? {},
+        photo_url: photoMap[r.salon_id] ?? null,
+
+        //CUSTOMER specific data
+        ...(isAdmin ? {} : {
+          rating: avgRating,
+          total_reviews: Number(r.total_reviews || 0)
+        }),
+
+        //ADMIN specific data
+        ...(isAdmin ? {
+          owner: {
+            user_id: r.owner_user_id,
+            name: r.owner_name,
+            email: r.owner_email,
+            phone: r.owner_phone
+          }
+        } : {})
+      };
+    });
+
 
     return res.status(200).json({
       data,
