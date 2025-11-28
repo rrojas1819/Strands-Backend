@@ -61,24 +61,24 @@ jobs:
             cd /home/ubuntu/Strands-Backend
             npm install --production
             
-            export APP_PORT=${{ secrets.PORT }}
-            export UTC_DEBUG=${{ secrets.UTC_DEBUG }}
-            export DB_HOST=${{ secrets.DB_HOST }}
-            export DB_USER=${{ secrets.DB_USER }}
-            export DB_PASSWORD=${{ secrets.DB_PASSWORD }}
-            export DB_NAME=${{ secrets.DB_NAME }}
-            export DB_PORT=${{ secrets.DB_PORT }}
-            export JWT_SECRET=${{ secrets.JWT_SECRET }}
-            export BCRYPT_SALT=${{ secrets.BCRYPT_SALT }}
-            export NOTIFICATION_ENCRYPTION_KEY=${{ secrets.NOTIFICATION_ENCRYPTION_KEY }}
-            export PAYMENT_ENCRYPTION_KEY=${{ secrets.PAYMENT_ENCRYPTION_KEY }}
-            export CVC_HMAC_SECRET=${{ secrets.CVC_HMAC_SECRET }}
-            export AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }}
-            export AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }}
-            export AWS_REGION=${{ secrets.AWS_REGION }}
-            export AWS_S3_BUCKET=${{ secrets.AWS_S3_BUCKET }}
-            export AWS_S3_DEFAULT_PREFIX=${{ secrets.AWS_S3_DEFAULT_PREFIX }}
-            export UPLOAD_MAX_BYTES=${{ secrets.UPLOAD_MAX_BYTES }}
+            export APP_PORT="${{ secrets.PORT }}"
+            export UTC_DEBUG="${{ secrets.UTC_DEBUG }}"
+            export DB_HOST="${{ secrets.DB_HOST }}"
+            export DB_USER="${{ secrets.DB_USER }}"
+            export DB_PASSWORD="${{ secrets.DB_PASSWORD }}"  # <--- FIX IS HERE
+            export DB_NAME="${{ secrets.DB_NAME }}"
+            export DB_PORT="${{ secrets.DB_PORT }}"
+            export JWT_SECRET="${{ secrets.JWT_SECRET }}"
+            export BCRYPT_SALT="${{ secrets.BCRYPT_SALT }}"
+            export NOTIFICATION_ENCRYPTION_KEY="${{ secrets.NOTIFICATION_ENCRYPTION_KEY }}"
+            export PAYMENT_ENCRYPTION_KEY="${{ secrets.PAYMENT_ENCRYPTION_KEY }}"
+            export CVC_HMAC_SECRET="${{ secrets.CVC_HMAC_SECRET }}"
+            export AWS_ACCESS_KEY_ID="${{ secrets.AWS_ACCESS_KEY_ID }}"
+            export AWS_SECRET_ACCESS_KEY="${{ secrets.AWS_SECRET_ACCESS_KEY }}"
+            export AWS_REGION="${{ secrets.AWS_REGION }}"
+            export AWS_S3_BUCKET="${{ secrets.AWS_S3_BUCKET }}"
+            export AWS_S3_DEFAULT_PREFIX="${{ secrets.AWS_S3_DEFAULT_PREFIX }}"
+            export UPLOAD_MAX_BYTES="${{ secrets.UPLOAD_MAX_BYTES }}"
             
             pm2 restart all || pm2 start ./src/server.js
             pm2 save
