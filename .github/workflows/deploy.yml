@@ -79,5 +79,5 @@ jobs:
           script: |
             cd /home/ubuntu/Strands-Backend
             npm install --production
-            pm2 restart all || pm2 start server.js
+            pm2 restart all || pm2 start ./src/server.js
             pm2 save
