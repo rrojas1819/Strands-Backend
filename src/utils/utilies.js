@@ -1,4 +1,5 @@
 const { DateTime } = require('luxon');
+const notificationSecurity = require('./notificationsSecurity');
 
 function logUtcDebug(label, value) {
     if (process.env.UTC_DEBUG === '1') {
@@ -157,7 +158,7 @@ function startBookingsAutoComplete(connection) {
         } catch (error) {
             console.error('Bookings auto-complete job failed:', error);
         }
-    }, 1 * 60 * 1000); 
+    }, 1 * 60 * 1000);
 }
 
 // Job to update loyalty_seen for completed bookings with past end times every 15 minutes
@@ -412,6 +413,14 @@ function startAppointmentReminders(connection) {
                             message = message.substring(0, 497) + '...';
                         }
 
+                        let encryptedMessage;
+                        try {
+                            encryptedMessage = notificationSecurity.encryptMessage(message.trim());
+                        } catch (encryptError) {
+                            console.error('Failed to encrypt appointment reminder notification message:', encryptError);
+                            throw new Error('Failed to encrypt notification message');
+                        }
+
                         const nowUtc = toMySQLUtc(now);
                         await db.execute(
                             `INSERT INTO notifications_inbox 
@@ -423,7 +432,7 @@ function startAppointmentReminders(connection) {
                                 booking.email,
                                 booking.booking_id,
                                 reminderType,
-                                message.trim(),
+                                encryptedMessage,
                                 nowUtc
                             ]
                         );
