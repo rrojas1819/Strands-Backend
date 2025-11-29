@@ -297,12 +297,7 @@ exports.getStylistSalon = async (req, res) => {
       if (!user_id) {
         return res.status(401).json({ message: 'No user found' });
       }
-  
-      if (role !== 'EMPLOYEE') {
-        return res.status(403).json({ message: 'Access denied.' });
-      }
-  
-  
+
       // Query to get the salon where this employee works
       const getStylistSalonQuery = 
       `SELECT s.salon_id, s.name, s.description, s.category, s.phone, s.email, 
