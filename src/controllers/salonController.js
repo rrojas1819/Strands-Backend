@@ -2739,6 +2739,20 @@ exports.getTopSalonMetrics = async (req, res) => {
       return res.status(401).json({ message: 'Invalid fields.' });
     }
 
+    // Check if owner has a salon first
+    const checkSalonQuery = `SELECT salon_id FROM salons WHERE owner_user_id = ?`;  
+    const [salonCheck] = await db.execute(checkSalonQuery, [owner_user_id]);
+
+    if (!salonCheck || salonCheck.length === 0) {
+      return res.status(200).json({
+        stylists: [],
+        totalProductRevenue: 0,
+        totalSalonRevenue: 0,
+        services: [],
+        productsRevenue: []
+      });
+    }
+
     // Calculate week start using Luxon (Monday of current week)
     const now = DateTime.utc();
     const weekStart = now.startOf('week'); // Monday
@@ -2839,6 +2853,9 @@ exports.getTopSalonMetrics = async (req, res) => {
     GROUP BY s.salon_id, s.name;`;
     const [totalSalonRevenueResults] = await db.execute(totalSalonRevenueQuery, [owner_user_id]);
 
+
+
+
     return res.status(200).json({
       stylists: topSalonStylistResults,
       totalProductRevenue: totalProductRevenueResults[0].total_product_revenue,
@@ -2848,6 +2865,7 @@ exports.getTopSalonMetrics = async (req, res) => {
     });
 
   } catch (err) {
+    console.error('getTopSalonMetrics error:', err);
     return res.status(500).json({ message: 'Internal Server Error' });
   }
 };

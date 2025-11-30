@@ -897,11 +897,11 @@ exports.getAllRewards = async (req, res) => {
 
     if (totalRewards.length === 0) {
       res.status(200).json({
-        totalRewards: "You have no rewards."
+        totalRewards: []
       });
     }
 
-    res.status(200).json({
+    return res.status(200).json({
       totalRewards: totalRewards
     });
     
