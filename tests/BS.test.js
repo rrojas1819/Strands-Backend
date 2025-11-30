@@ -3,6 +3,7 @@ const app = require('../src/app');
 const connection = require('../src/config/databaseConnection');
 const notificationsController = require('../src/controllers/notificationsController');
 const { ROLE_CASES, baseSignupPayload, insertUserWithCredentials } = require('./helpers/authTestUtils');
+const { setupServiceTestEnvironment, baseServicePayload } = require('./helpers/serviceTestUtils');
 const { DateTime } = require('luxon');
 const { toMySQLUtc } = require('../src/utils/utilies');
 
@@ -237,53 +238,7 @@ describe('BS 1.01 - Stylist service management', () => {
     });
 
     test('As a stylist, I should be able to create a service and add it to my profile', async () => {
-        const password = 'Password123!';
-        const nowUtc = toMySQLUtc(DateTime.utc());
-
-        const owner = await insertUserWithCredentials({
-            password,
-            role: 'OWNER'
-        });
-
-        const stylist = await insertUserWithCredentials({
-            password,
-            role: 'EMPLOYEE'
-        });
-
-        const [salonResult] = await db.execute(
-            `INSERT INTO salons (owner_user_id, name, description, category, phone, email, 
-             address, city, state, postal_code, country, status, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-                owner.user_id,
-                'Test Salon',
-                'Test salon description',
-                'HAIR SALON',
-                '555-0100',
-                'test-salon@test.com',
-                '123 Main St',
-                'Test City',
-                'TS',
-                '12345',
-                'USA',
-                'APPROVED',
-                nowUtc,
-                nowUtc
-            ]
-        );
-        const salonId = salonResult.insertId;
-
-        await db.execute(
-            `INSERT INTO employees (salon_id, user_id, title, active, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?)`,
-            [salonId, stylist.user_id, 'Senior Stylist', 1, nowUtc, nowUtc]
-        );
-
-        const [employeeResult] = await db.execute(
-            `SELECT employee_id FROM employees WHERE user_id = ?`,
-            [stylist.user_id]
-        );
-        const employeeId = employeeResult[0].employee_id;
+        const { stylist, salonId, employeeId, password } = await setupServiceTestEnvironment();
 
         const loginResponse = await request(app)
             .post('/api/user/login')
@@ -292,12 +247,7 @@ describe('BS 1.01 - Stylist service management', () => {
         expect(loginResponse.status).toBe(200);
         const token = loginResponse.body.data.token;
 
-        const payload = {
-            name: 'Haircut & Style',
-            description: 'Professional haircut and styling service',
-            duration_minutes: 60,
-            price: 75
-        };
+        const payload = baseServicePayload();
 
         const response = await request(app)
             .post('/api/salons/stylist/createService')
@@ -348,54 +298,8 @@ describe('BS 1.01 - Stylist service management', () => {
         });
     });
 
-    test('As a stylist, creating a duplicate service name should fail', async () => {
-        const password = 'Password123!';
-        const nowUtc = toMySQLUtc(DateTime.utc());
-
-        const owner = await insertUserWithCredentials({
-            password,
-            role: 'OWNER'
-        });
-
-        const stylist = await insertUserWithCredentials({
-            password,
-            role: 'EMPLOYEE'
-        });
-
-        const [salonResult] = await db.execute(
-            `INSERT INTO salons (owner_user_id, name, description, category, phone, email, 
-             address, city, state, postal_code, country, status, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-                owner.user_id,
-                'Test Salon',
-                'Test salon description',
-                'HAIR SALON',
-                '555-0100',
-                'test-salon@test.com',
-                '123 Main St',
-                'Test City',
-                'TS',
-                '12345',
-                'USA',
-                'APPROVED',
-                nowUtc,
-                nowUtc
-            ]
-        );
-        const salonId = salonResult.insertId;
-
-        await db.execute(
-            `INSERT INTO employees (salon_id, user_id, title, active, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?)`,
-            [salonId, stylist.user_id, 'Senior Stylist', 1, nowUtc, nowUtc]
-        );
-
-        const [employeeResult] = await db.execute(
-            `SELECT employee_id FROM employees WHERE user_id = ?`,
-            [stylist.user_id]
-        );
-        const employeeId = employeeResult[0].employee_id;
+    test('As a stylist, I should NOT be able to create a duplicate service', async () => {
+        const { stylist, employeeId, password } = await setupServiceTestEnvironment();
 
         const loginResponse = await request(app)
             .post('/api/user/login')
@@ -404,12 +308,7 @@ describe('BS 1.01 - Stylist service management', () => {
         expect(loginResponse.status).toBe(200);
         const token = loginResponse.body.data.token;
 
-        const payload = {
-            name: 'Haircut & Style',
-            description: 'Professional haircut and styling service',
-            duration_minutes: 60,
-            price: 75
-        };
+        const payload = baseServicePayload();
 
         const firstResponse = await request(app)
             .post('/api/salons/stylist/createService')
@@ -446,6 +345,75 @@ describe('BS 1.01 - Stylist service management', () => {
         const targetNormalized = payload.name.toLowerCase().replace(/\s+/g, ' ').trim();
         const occurrences = normalizedNames.filter(n => n === targetNormalized).length;
         expect(occurrences).toBe(1);
+    });
+
+    test('As a stylist, I should NOT be able to create a service with 0 price', async () => {
+        const { stylist, password } = await setupServiceTestEnvironment();
+
+        const loginResponse = await request(app)
+            .post('/api/user/login')
+            .send({ email: stylist.email, password });
+
+        expect(loginResponse.status).toBe(200);
+        const token = loginResponse.body.data.token;
+
+        const payload = baseServicePayload({ price: 0 });
+
+        const response = await request(app)
+            .post('/api/salons/stylist/createService')
+            .set('Authorization', `Bearer ${token}`)
+            .send(payload);
+
+        expect(response.status).toBe(400);
+        expect(response.body).toMatchObject({
+            message: 'Missing required fields'
+        });
+    });
+
+    test('As a stylist, I should NOT be able to create a service with 0 duration_minutes', async () => {
+        const { stylist, password } = await setupServiceTestEnvironment();
+
+        const loginResponse = await request(app)
+            .post('/api/user/login')
+            .send({ email: stylist.email, password });
+
+        expect(loginResponse.status).toBe(200);
+        const token = loginResponse.body.data.token;
+
+        const payload = baseServicePayload({ duration_minutes: 0 });
+
+        const response = await request(app)
+            .post('/api/salons/stylist/createService')
+            .set('Authorization', `Bearer ${token}`)
+            .send(payload);
+
+        expect(response.status).toBe(400);
+        expect(response.body).toMatchObject({
+            message: 'Missing required fields'
+        });
+    });
+
+    test('As a stylist, I should NOT be able to create a service with both 0 price and 0 duration_minutes', async () => {
+        const { stylist, password } = await setupServiceTestEnvironment();
+
+        const loginResponse = await request(app)
+            .post('/api/user/login')
+            .send({ email: stylist.email, password });
+
+        expect(loginResponse.status).toBe(200);
+        const token = loginResponse.body.data.token;
+
+        const payload = baseServicePayload({ price: 0, duration_minutes: 0 });
+
+        const response = await request(app)
+            .post('/api/salons/stylist/createService')
+            .set('Authorization', `Bearer ${token}`)
+            .send(payload);
+
+        expect(response.status).toBe(400);
+        expect(response.body).toMatchObject({
+            message: 'Missing required fields'
+        });
     });
 
     test.each(['CUSTOMER', 'OWNER', 'ADMIN'])('As a %s, I should not be able to create stylist services', async (role) => {
