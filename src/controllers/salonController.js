@@ -82,6 +82,10 @@ exports.createSalon = async (req, res) => {
       }
     }
 
+    if (postal_code && !/^\d+$/.test(postal_code)) {
+      return res.status(400).json({ message: "Field 'postal_code' must contain only numeric characters" });
+    }
+
     category = category.toUpperCase(); //making category uppercase for db
     if (!category || !ALLOWED_CATEGORIES.has(category)) {
       return res.status(400).json({
