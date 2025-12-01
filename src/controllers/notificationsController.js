@@ -93,8 +93,8 @@ exports.getNotifications = async (req, res) => {
                 status,
                 message,
                 sender_email,
-                DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') AS created_at,
-                DATE_FORMAT(read_at, '%Y-%m-%d %H:%i:%s') AS read_at
+                created_at,
+                read_at
              FROM notifications_inbox
              ${whereClause}
              ORDER BY notifications_inbox.created_at DESC
@@ -139,6 +139,16 @@ exports.getNotifications = async (req, res) => {
                 decryptedMessage = '[Unable to decrypt message]';
             }
 
+            const createdAtIso =
+                created_at_dt && created_at_dt.isValid
+                    ? created_at_dt.toUTC().toISO()
+                    : formatDateTime(notif.created_at);
+
+            const readAtIso =
+                read_at_dt && read_at_dt.isValid
+                    ? read_at_dt.toUTC().toISO()
+                    : formatDateTime(notif.read_at);
+
             return {
                 notification_id: notif.notification_id,
                 user_id: notif.user_id,
@@ -153,14 +163,10 @@ exports.getNotifications = async (req, res) => {
                 status: notif.status,
                 message: decryptedMessage,
                 sender_email: notif.sender_email,
-                created_at: formatDateTime(notif.created_at),
-                sent: created_at_dt && created_at_dt.isValid
-                    ? created_at_dt.toLocal().toFormat('EEE, MMM d, yyyy h:mm a')
-                    : null,
-                read_at: formatDateTime(notif.read_at),
-                read_at_formatted: read_at_dt && read_at_dt.isValid
-                    ? read_at_dt.toLocal().toFormat('EEE, MMM d, yyyy h:mm a')
-                    : null
+                created_at: createdAtIso,
+                read_at: readAtIso,
+                sent: createdAtIso,
+                read_at_formatted: readAtIso
             };
         });
 
