@@ -1655,6 +1655,7 @@ exports.getAvailableTimeSlotsRange = async (req, res) => {
                   date: dateStr,
                   day_name: dayName,
                   available_slots: [],
+                  is_closed: true,
                   message: 'No availability set for this day'
               };
           } else {
@@ -1769,6 +1770,9 @@ exports.getAvailableTimeSlotsRange = async (req, res) => {
                   slotStart = slotStart.plus({ minutes: serviceDurationMinutes });
               }
               
+              const availableSlotsCount = allSlots.filter(slot => slot.available === true).length;
+              const isClosed = availableSlotsCount === 0;
+              
               dailySlots[dateStr] = {
                   date: dateStr,
                   day_name: dayName,
@@ -1777,7 +1781,8 @@ exports.getAvailableTimeSlotsRange = async (req, res) => {
                       end_time: availability.end_time
                   },
                   available_slots: allSlots,
-                  total_slots: allSlots.length
+                  total_slots: allSlots.length,
+                  is_closed: isClosed
               };
           }
           
