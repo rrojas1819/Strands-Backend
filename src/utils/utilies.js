@@ -193,8 +193,8 @@ function startLoyaltySeenUpdate(connection) {
                     if (membership.length === 0) {
                         const nowUtc = toMySQLUtc(DateTime.utc());
                         const insertMembershipQuery = `
-                            INSERT INTO loyalty_memberships (user_id, salon_id, visits_count, created_at, updated_at)
-                            VALUES (?, ?, 0, ?, ?)
+                            INSERT INTO loyalty_memberships (user_id, salon_id, visits_count, total_visits_count, created_at, updated_at)
+                            VALUES (?, ?, 0, 0, ?, ?)
                         `;
                         await db.execute(insertMembershipQuery, [booking.customer_user_id, booking.salon_id, nowUtc, nowUtc]);
                     }
@@ -202,7 +202,9 @@ function startLoyaltySeenUpdate(connection) {
                     const nowUtc = toMySQLUtc(DateTime.utc());
                     const incrementVisitsQuery = `
                         UPDATE loyalty_memberships
-                        SET visits_count = visits_count + 1, updated_at = ?
+                        SET visits_count = visits_count + 1,
+                            total_visits_count = COALESCE(total_visits_count, 0) + 1,
+                            updated_at = ?
                         WHERE user_id = ? AND salon_id = ?
                     `;
                     await db.execute(incrementVisitsQuery, [nowUtc, booking.customer_user_id, booking.salon_id]);
