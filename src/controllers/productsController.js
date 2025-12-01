@@ -647,7 +647,7 @@ exports.viewUserOrders = async (req, res) => {
     const offsetInt = Math.max(0, Number.isFinite(Number(offset)) ? Number(offset) : 0);
 
     const viewUserOrdersQuery = `
-    SELECT o.order_code, o.subtotal as subtotal_order_price, o.tax as order_tax, o.tax + o.subtotal as total_order_price, oi.purchase_price, oi.quantity, p.name, p.description, p.sku, p.price as listed_price, p.category, o.created_at as ordered_date
+    SELECT s.name, o.order_code, o.subtotal as subtotal_order_price, o.tax as order_tax, o.tax + o.subtotal as total_order_price, oi.purchase_price, oi.quantity, p.name, p.description, p.sku, p.price as listed_price, p.category, o.created_at as ordered_date
     FROM orders o 
     JOIN order_items oi ON o.order_id = oi.order_id 
     JOIN products p ON oi.product_id = p.product_id
