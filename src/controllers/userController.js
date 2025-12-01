@@ -741,7 +741,7 @@ exports.viewLoyaltyProgram = async (req, res) => {
   try {
       const user_id = req.user?.user_id;
 
-      if (!user_id || !salon_id) {
+      if (!user_id) {
           return res.status(401).json({ message: 'Invalid fields.' });
       }
 
@@ -753,6 +753,8 @@ exports.viewLoyaltyProgram = async (req, res) => {
       WHERE lm.user_id = ? and lp.active = 1;`;
 
       const [result] = await db.execute(getLoyaltyProgramQuery, [user_id]);
+
+      console.log(result);
 
       if (result.length === 0) {
           return res.status(404).json({ 
@@ -770,7 +772,7 @@ exports.viewLoyaltyProgram = async (req, res) => {
       const [userRewards] = await db.execute(getUserRewardsQuery, [user_id]);
   
       return res.status(200).json({ 
-          userData: result[0],
+          userData: result,
           goldenSalons: goldenSalons[0].golden_salons,
           totalVisits: totalVisits[0].total_visits,
           userRewards: userRewards
