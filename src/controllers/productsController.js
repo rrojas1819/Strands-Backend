@@ -621,17 +621,20 @@ exports.viewUserOrders = async (req, res) => {
     const db = connection.promise();
 
   try {
-    const { limit, offset } = req.body;
+    const { salon_id, limit, offset } = req.body;
     const owner_user_id = req.user?.user_id;
 
-    if (!limit || isNaN(offset)) {
+    let salon_filter = salon_id ? `AND o.salon_id = ${salon_id}` : '';
+
+    if (!limit || isNaN(offset) ) {
       return res.status(400).json({ message: 'Invalid fields.' });
     }
-
+    
     const countQuery = 
     `SELECT COUNT(*) as total 
-    FROM orders
-    WHERE user_id = ?`;
+    FROM orders o
+    WHERE user_id = ? ${salon_filter}
+    `;
 
     const [countResult] = await db.execute(countQuery, [owner_user_id]);
 
@@ -652,7 +655,7 @@ exports.viewUserOrders = async (req, res) => {
     JOIN order_items oi ON o.order_id = oi.order_id 
     JOIN products p ON oi.product_id = p.product_id
     JOIN salons s ON o.salon_id = s.salon_id
-    WHERE o.user_id = ?
+    WHERE o.user_id = ? ${salon_filter}
     LIMIT ${limitInt} OFFSET ${offsetInt}`;
 
     const [ordersResults] = await db.execute(viewUserOrdersQuery, [owner_user_id]);
