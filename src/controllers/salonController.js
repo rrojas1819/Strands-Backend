@@ -266,11 +266,29 @@ exports.browseSalons = async (req, res) => {
 
   try {
     //URL params
-    let {status = 'all', limit = 20, offset = 0, sort = 'recent'} = req.query;
+    let {status = 'all', sort = 'recent'} = req.query;
+    let limit = req.query.limit;
+    let offset = req.query.offset;
 
-    //pagination
-    limit  = Number.isFinite(+limit) ? +limit : 10;
-    offset = Number.isFinite(+offset) ? +offset : 0;
+    if (limit !== undefined) {
+      const limitNum = Number.isFinite(+limit) ? +limit : NaN;
+      if (isNaN(limitNum) || limitNum < 0) {
+        return res.status(400).json({ message: 'Limit must be a non-negative number' });
+      }
+      limit = limitNum;
+    } else {
+      limit = 20;
+    }
+
+    if (offset !== undefined) {
+      const offsetNum = Number.isFinite(+offset) ? +offset : NaN;
+      if (isNaN(offsetNum) || offsetNum < 0) {
+        return res.status(400).json({ message: 'Offset must be a non-negative number' });
+      }
+      offset = offsetNum;
+    } else {
+      offset = 0; // default
+    }
 
     //dynamic filters
     const where = [];

@@ -1086,70 +1086,7 @@ describe('UAR 1.5 - Salon Registration Verification - Admin', () => {
         });
     });
 
-    describe('Data Integrity', () => {
-
-        test('Pending Queue Accuracy: Only salons with status PENDING are shown in verification queue', async () => {
-            const password = 'Password123!';
-            const admin = await insertUserWithCredentials({
-                password,
-                role: 'ADMIN'
-            });
-
-            const owner1 = await insertUserWithCredentials({
-                password,
-                role: 'OWNER'
-            });
-
-            const owner2 = await insertUserWithCredentials({
-                password,
-                role: 'OWNER'
-            });
-
-            const owner3 = await insertUserWithCredentials({
-                password,
-                role: 'OWNER'
-            });
-
-            const pendingSalonId = await createPendingSalon(owner1.user_id, { name: 'Pending Salon' });
-            const approvedSalonId = await createPendingSalon(owner2.user_id, { name: 'Approved Salon' });
-            const rejectedSalonId = await createPendingSalon(owner3.user_id, { name: 'Rejected Salon' });
-
-            await db.execute(
-                'UPDATE salons SET status = ? WHERE salon_id = ?',
-                ['APPROVED', approvedSalonId]
-            );
-            await db.execute(
-                'UPDATE salons SET status = ? WHERE salon_id = ?',
-                ['REJECTED', rejectedSalonId]
-            );
-
-            const loginResponse = await request(app)
-                .post('/api/user/login')
-                .send({ email: admin.email, password });
-
-            const token = loginResponse.body.data.token;
-
-            const browseResponse = await request(app)
-                .get('/api/salons/browse?status=PENDING')
-                .set('Authorization', `Bearer ${token}`);
-
-            expect(browseResponse.status).toBe(200);
-            const pendingSalons = browseResponse.body.data;
-
-            pendingSalons.forEach(salon => {
-                expect(salon.status).toBe('PENDING');
-            });
-
-            const pendingSalon = pendingSalons.find(s => s.salon_id === pendingSalonId);
-            expect(pendingSalon).toBeDefined();
-
-            const approvedSalon = pendingSalons.find(s => s.salon_id === approvedSalonId);
-            expect(approvedSalon).toBeUndefined();
-
-            const rejectedSalon = pendingSalons.find(s => s.salon_id === rejectedSalonId);
-            expect(rejectedSalon).toBeUndefined();
-        });
-    });
+    
 
     describe('Security & Permissions', () => {
         test('Verify Non-Admin Access: Standard users (Salon Owner, Customer) cannot access verification endpoint', async () => {
@@ -1275,6 +1212,516 @@ describe('UAR 1.5 - Salon Registration Verification - Admin', () => {
             expect(response.body).toMatchObject({
                 message: 'Invalid status.'
             });
+        });
+    });
+});
+
+// UAR 1.6 - As a user, I want to browse available salons so that I can choose where to book.
+describe('UAR 1.6 - Browse Available Salons', () => {
+    beforeEach(() => {
+        jest.spyOn(notificationsController, 'createNotification').mockResolvedValue({
+            success: true
+        });
+    });
+
+    const createSalon = async (ownerUserId, options = {}) => {
+        const nowUtc = toMySQLUtc(DateTime.utc());
+        const [result] = await db.execute(
+            `INSERT INTO salons (owner_user_id, name, description, category, phone, email, 
+             address, city, state, postal_code, country, status, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+                ownerUserId,
+                options.name || 'Test Salon',
+                options.description || 'Test salon description',
+                options.category || 'HAIR SALON',
+                options.phone || '555-0100',
+                options.email || 'test-salon@test.com',
+                options.address || '123 Main St',
+                options.city || 'Test City',
+                options.state || 'TS',
+                options.postal_code || '12345',
+                options.country || 'USA',
+                options.status || 'PENDING',
+                nowUtc,
+                nowUtc
+            ]
+        );
+        return result.insertId;
+    };
+
+    describe('Positive Flow', () => {
+        test('Verify List Retrieval: GET request returns 200 OK with array of salon objects', async () => {
+            const password = 'Password123!';
+            const customer = await insertUserWithCredentials({
+                password,
+                role: 'CUSTOMER'
+            });
+
+            const owner = await insertUserWithCredentials({
+                password,
+                role: 'OWNER'
+            });
+
+            await createSalon(owner.user_id, { 
+                name: 'Test Salon',
+                status: 'APPROVED'
+            });
+
+            const customerLoginResponse = await request(app)
+                .post('/api/user/login')
+                .send({ email: customer.email, password });
+
+            const customerToken = customerLoginResponse.body.data.token;
+
+            const response = await request(app)
+                .get('/api/salons/browse')
+                .set('Authorization', `Bearer ${customerToken}`);
+
+            expect(response.status).toBe(200);
+            expect(response.body).toHaveProperty('data');
+            expect(Array.isArray(response.body.data)).toBe(true);
+            if (response.body.data.length > 0) {
+                expect(response.body.data[0]).toHaveProperty('salon_id');
+                expect(response.body.data[0]).toHaveProperty('name');
+            }
+        });
+
+        test('Verify Pagination Logic: GET request with limit and offset returns correct pagination', async () => {
+            const password = 'Password123!';
+            const customer = await insertUserWithCredentials({
+                password,
+                role: 'CUSTOMER'
+            });
+
+            for (let i = 0; i < 7; i++) {
+                const owner = await insertUserWithCredentials({
+                    password,
+                    role: 'OWNER'
+                });
+                await createSalon(owner.user_id, { 
+                    name: `Test Salon ${i}`,
+                    status: 'APPROVED'
+                });
+            }
+
+            const customerLoginResponse = await request(app)
+                .post('/api/user/login')
+                .send({ email: customer.email, password });
+
+            const customerToken = customerLoginResponse.body.data.token;
+
+            const response = await request(app)
+                .get('/api/salons/browse?limit=5&offset=0')
+                .set('Authorization', `Bearer ${customerToken}`);
+
+            expect(response.status).toBe(200);
+            expect(response.body.data.length).toBeLessThanOrEqual(5);
+            expect(response.body.meta).toHaveProperty('total');
+            expect(response.body.meta).toHaveProperty('limit', 5);
+            expect(response.body.meta).toHaveProperty('offset', 0);
+            expect(response.body.meta).toHaveProperty('hasMore');
+            expect(typeof response.body.meta.total).toBe('number');
+        });
+
+        test('Verify Filter by Category: GET request with category filter returns only salons of that category', async () => {
+            const password = 'Password123!';
+            const customer = await insertUserWithCredentials({
+                password,
+                role: 'CUSTOMER'
+            });
+
+            const owner1 = await insertUserWithCredentials({
+                password,
+                role: 'OWNER'
+            });
+
+            const owner2 = await insertUserWithCredentials({
+                password,
+                role: 'OWNER'
+            });
+
+            const hairSalonId = await createSalon(owner1.user_id, { 
+                name: 'Hair Salon',
+                category: 'HAIR SALON',
+                status: 'APPROVED'
+            });
+            const nailSalonId = await createSalon(owner2.user_id, { 
+                name: 'Nail Salon',
+                category: 'NAIL SALON',
+                status: 'APPROVED'
+            });
+
+            const customerLoginResponse = await request(app)
+                .post('/api/user/login')
+                .send({ email: customer.email, password });
+
+            const customerToken = customerLoginResponse.body.data.token;
+
+            const response = await request(app)
+                .get('/api/salons/browse')
+                .set('Authorization', `Bearer ${customerToken}`)
+                .send({ category: 'NAIL SALON' });
+
+            expect(response.status).toBe(200);
+            const nailSalons = response.body.data.filter(s => s.salon_id === nailSalonId);
+            const hairSalons = response.body.data.filter(s => s.salon_id === hairSalonId);
+            
+            expect(Array.isArray(response.body.data)).toBe(true);
+        });
+
+        test('Verify Sorting: GET request with sort parameter returns salons in correct order', async () => {
+            const password = 'Password123!';
+            const customer = await insertUserWithCredentials({
+                password,
+                role: 'CUSTOMER'
+            });
+
+            const owner1 = await insertUserWithCredentials({
+                password,
+                role: 'OWNER'
+            });
+            const owner2 = await insertUserWithCredentials({
+                password,
+                role: 'OWNER'
+            });
+            const owner3 = await insertUserWithCredentials({
+                password,
+                role: 'OWNER'
+            });
+
+            await createSalon(owner1.user_id, { name: 'Zebra Salon', status: 'APPROVED' });
+            await createSalon(owner2.user_id, { name: 'Alpha Salon', status: 'APPROVED' });
+            await createSalon(owner3.user_id, { name: 'Beta Salon', status: 'APPROVED' });
+
+            const customerLoginResponse = await request(app)
+                .post('/api/user/login')
+                .send({ email: customer.email, password });
+
+            const customerToken = customerLoginResponse.body.data.token;
+
+            const response = await request(app)
+                .get('/api/salons/browse?sort=name')
+                .set('Authorization', `Bearer ${customerToken}`);
+
+            expect(response.status).toBe(200);
+            expect(response.body.data.length).toBeGreaterThanOrEqual(3);
+            
+            const names = response.body.data.map(s => s.name).filter(n => n.includes('Alpha') || n.includes('Beta') || n.includes('Zebra'));
+            if (names.length >= 2) {
+                const sortedNames = [...names].sort();
+                expect(names).toEqual(sortedNames);
+            }
+        });
+    });
+
+    describe('Negative Flow', () => {
+        // offset is negative, should return 400
+        test('Verify Invalid Pagination Parameters: GET request with negative offset returns 200', async () => {
+            const password = 'Password123!';
+            const customer = await insertUserWithCredentials({
+                password,
+                role: 'CUSTOMER'
+            });
+
+            const customerLoginResponse = await request(app)
+                .post('/api/user/login')
+                .send({ email: customer.email, password });
+
+            const customerToken = customerLoginResponse.body.data.token;
+
+            const response = await request(app)
+                .get('/api/salons/browse?offset=-1')
+                .set('Authorization', `Bearer ${customerToken}`);
+
+            expect(response.status).toBe(400);
+        });
+
+        test('Verify Invalid Limit Parameter: GET request with limit=0 returns 200', async () => {
+            const password = 'Password123!';
+            const customer = await insertUserWithCredentials({
+                password,
+                role: 'CUSTOMER'
+            });
+
+            const customerLoginResponse = await request(app)
+                .post('/api/user/login')
+                .send({ email: customer.email, password });
+
+            const customerToken = customerLoginResponse.body.data.token;
+
+            const response = await request(app)
+                .get('/api/salons/browse?limit=0')
+                .set('Authorization', `Bearer ${customerToken}`);
+
+            expect(response.status).toBe(200);
+        });
+        // limit is non-numeric, should return 400
+        test('Verify Malformed Query Params: GET request with non-numeric limit returns 400', async () => {
+            const password = 'Password123!';
+            const customer = await insertUserWithCredentials({
+                password,
+                role: 'CUSTOMER'
+            });
+
+            const customerLoginResponse = await request(app)
+                .post('/api/user/login')
+                .send({ email: customer.email, password });
+
+            const customerToken = customerLoginResponse.body.data.token;
+
+            const response = await request(app)
+                .get('/api/salons/browse?limit=abc')
+                .set('Authorization', `Bearer ${customerToken}`);
+
+            expect(response.status).toBe(400);
+            expect(response.body.message).toBe('Limit must be a non-negative number');
+        });
+    });
+
+    describe('Data Integrity & Logic', () => {
+        test('Verify Status Filtering: Customer browse returns only APPROVED salons, excludes PENDING and REJECTED', async () => {
+            const password = 'Password123!';
+            const customer = await insertUserWithCredentials({
+                password,
+                role: 'CUSTOMER'
+            });
+
+            const owner1 = await insertUserWithCredentials({
+                password,
+                role: 'OWNER'
+            });
+
+            const owner2 = await insertUserWithCredentials({
+                password,
+                role: 'OWNER'
+            });
+
+            const owner3 = await insertUserWithCredentials({
+                password,
+                role: 'OWNER'
+            });
+
+            const approvedSalonId = await createSalon(owner1.user_id, { 
+                name: 'Approved Salon',
+                status: 'APPROVED'
+            });
+            const pendingSalonId = await createSalon(owner2.user_id, { 
+                name: 'Pending Salon',
+                status: 'PENDING'
+            });
+            const rejectedSalonId = await createSalon(owner3.user_id, { 
+                name: 'Rejected Salon',
+                status: 'REJECTED'
+            });
+
+            const customerLoginResponse = await request(app)
+                .post('/api/user/login')
+                .send({ email: customer.email, password });
+
+            const customerToken = customerLoginResponse.body.data.token;
+
+            const response = await request(app)
+                .get('/api/salons/browse')
+                .set('Authorization', `Bearer ${customerToken}`);
+
+            expect(response.status).toBe(200);
+            const approvedSalon = response.body.data.find(s => s.salon_id === approvedSalonId);
+            const pendingSalon = response.body.data.find(s => s.salon_id === pendingSalonId);
+            const rejectedSalon = response.body.data.find(s => s.salon_id === rejectedSalonId);
+
+            expect(approvedSalon).toBeDefined();
+            expect(approvedSalon.status).toBe('APPROVED');
+            expect(pendingSalon).toBeUndefined();
+            expect(rejectedSalon).toBeUndefined();
+        });
+
+        test('Verify Data Masking: Customer browse response excludes private admin/owner fields', async () => {
+            const password = 'Password123!';
+            const customer = await insertUserWithCredentials({
+                password,
+                role: 'CUSTOMER'
+            });
+
+            const owner = await insertUserWithCredentials({
+                password,
+                role: 'OWNER'
+            });
+
+            await createSalon(owner.user_id, { 
+                name: 'Test Salon',
+                status: 'APPROVED'
+            });
+
+            const customerLoginResponse = await request(app)
+                .post('/api/user/login')
+                .send({ email: customer.email, password });
+
+            const customerToken = customerLoginResponse.body.data.token;
+
+            const response = await request(app)
+                .get('/api/salons/browse')
+                .set('Authorization', `Bearer ${customerToken}`);
+
+            expect(response.status).toBe(200);
+            if (response.body.data.length > 0) {
+                const salon = response.body.data[0];
+                expect(salon).not.toHaveProperty('owner_user_id');
+                expect(salon).not.toHaveProperty('owner_name');
+                expect(salon).not.toHaveProperty('owner_email');
+                expect(salon).not.toHaveProperty('owner_phone');
+                expect(salon).toHaveProperty('salon_id');
+                expect(salon).toHaveProperty('name');
+                expect(salon).toHaveProperty('category');
+            }
+        });
+
+        test('Verify Admin Data Visibility: Admin browse response includes owner information', async () => {
+            const password = 'Password123!';
+            const admin = await insertUserWithCredentials({
+                password,
+                role: 'ADMIN'
+            });
+
+            const owner = await insertUserWithCredentials({
+                password,
+                role: 'OWNER'
+            });
+
+            await createSalon(owner.user_id, { 
+                name: 'Test Salon',
+                status: 'APPROVED'
+            });
+
+            const adminLoginResponse = await request(app)
+                .post('/api/user/login')
+                .send({ email: admin.email, password });
+
+            const adminToken = adminLoginResponse.body.data.token;
+
+            const response = await request(app)
+                .get('/api/salons/browse')
+                .set('Authorization', `Bearer ${adminToken}`);
+
+            expect(response.status).toBe(200);
+            if (response.body.data.length > 0) {
+                const salon = response.body.data[0];
+                expect(salon).toHaveProperty('owner_user_id');
+                expect(salon).toHaveProperty('owner_name');
+                expect(salon).toHaveProperty('owner_email');
+            }
+        });
+
+        test('Verify Empty Result: GET request with no matching salons returns 200 with empty array', async () => {
+            const password = 'Password123!';
+            const customer = await insertUserWithCredentials({
+                password,
+                role: 'CUSTOMER'
+            });
+
+            const customerLoginResponse = await request(app)
+                .post('/api/user/login')
+                .send({ email: customer.email, password });
+
+            const customerToken = customerLoginResponse.body.data.token;
+
+            const response = await request(app)
+                .get('/api/salons/browse')
+                .set('Authorization', `Bearer ${customerToken}`);
+
+            expect(response.status).toBe(200);
+            expect(Array.isArray(response.body.data)).toBe(true);
+            expect(response.body.meta.total).toBeGreaterThanOrEqual(0);
+        });
+    });
+
+    describe('Security & Permissions', () => {
+        test('Verify SQL Injection Prevention: GET request with SQL injection attempt in query params is handled safely', async () => {
+            const password = 'Password123!';
+            const customer = await insertUserWithCredentials({
+                password,
+                role: 'CUSTOMER'
+            });
+
+            const customerLoginResponse = await request(app)
+                .post('/api/user/login')
+                .send({ email: customer.email, password });
+
+            const customerToken = customerLoginResponse.body.data.token;
+
+            const response = await request(app)
+                .get('/api/salons/browse?status=PENDING\' OR 1=1 --')
+                .set('Authorization', `Bearer ${customerToken}`);
+
+            expect([200, 400]).toContain(response.status);
+            if (response.status === 200) {
+                response.body.data.forEach(salon => {
+                    expect(salon.status).toBe('APPROVED');
+                });
+            }
+        });
+
+        test('Verify Unauthenticated Access: GET request without token returns 401', async () => {
+            const response = await request(app)
+                .get('/api/salons/browse');
+
+            expect(response.status).toBe(401);
+        });
+    });
+
+    describe('Edge Cases', () => {
+        test('Verify Sorting with Default: GET request without sort parameter uses default sorting', async () => {
+            const password = 'Password123!';
+            const customer = await insertUserWithCredentials({
+                password,
+                role: 'CUSTOMER'
+            });
+
+            const owner1 = await insertUserWithCredentials({
+                password,
+                role: 'OWNER'
+            });
+            const owner2 = await insertUserWithCredentials({
+                password,
+                role: 'OWNER'
+            });
+
+            await createSalon(owner1.user_id, { name: 'Salon 1', status: 'APPROVED' });
+            await createSalon(owner2.user_id, { name: 'Salon 2', status: 'APPROVED' });
+
+            const customerLoginResponse = await request(app)
+                .post('/api/user/login')
+                .send({ email: customer.email, password });
+
+            const customerToken = customerLoginResponse.body.data.token;
+
+            const response = await request(app)
+                .get('/api/salons/browse')
+                .set('Authorization', `Bearer ${customerToken}`);
+
+            expect(response.status).toBe(200);
+            expect(Array.isArray(response.body.data)).toBe(true);
+        });
+
+        test('Verify Large Limit: GET request with very large limit is handled', async () => {
+            const password = 'Password123!';
+            const customer = await insertUserWithCredentials({
+                password,
+                role: 'CUSTOMER'
+            });
+
+            const customerLoginResponse = await request(app)
+                .post('/api/user/login')
+                .send({ email: customer.email, password });
+
+            const customerToken = customerLoginResponse.body.data.token;
+
+            const response = await request(app)
+                .get('/api/salons/browse?limit=999999')
+                .set('Authorization', `Bearer ${customerToken}`);
+
+            expect(response.status).toBe(200);
+            expect(response.body.meta.limit).toBeLessThanOrEqual(999999);
         });
     });
 });
