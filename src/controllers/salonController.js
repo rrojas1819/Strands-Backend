@@ -2870,3 +2870,39 @@ exports.getTopSalonMetrics = async (req, res) => {
   }
 };
 
+// Check Salon Status
+exports.checkSalonStatus = async (req, res) => {
+  const db = connection.promise();
+
+  try {
+    const checkSalonStatusQuery = 
+    `SELECT
+        s.name AS salon_name,
+        CASE 
+            WHEN COUNT(DISTINCT e.employee_id) > 0
+              AND COUNT(DISTINCT sv.service_id) > 0
+              AND COUNT(DISTINCT ea.availability_id) > 0
+            THEN 1
+            ELSE 0
+        END AS is_open
+    FROM salons s
+    LEFT JOIN employees e ON e.salon_id = s.salon_id AND e.active = 1
+    LEFT JOIN services sv ON sv.salon_id = s.salon_id AND sv.active = 1
+    LEFT JOIN employee_availability ea ON ea.employee_id = e.employee_id
+    WHERE s.status = 'APPROVED'
+    GROUP BY s.salon_id, s.name;`;
+
+    const [salonStatusResult] = await db.execute(checkSalonStatusQuery);
+
+    if (!salonStatusResult || salonStatusResult.length === 0) {
+      return res.status(404).json({ message: 'No approved Salons found.' });
+    }
+
+    return res.status(200).json({ 
+      status: salonStatusResult 
+    });
+  } catch (error) {
+    console.error('checkSalonStatus error:', error);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+}

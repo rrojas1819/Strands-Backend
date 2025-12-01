@@ -740,9 +740,8 @@ exports.viewLoyaltyProgram = async (req, res) => {
 
   try {
       const user_id = req.user?.user_id;
-      const salon_id = req.query.salon_id;
 
-      if (!user_id || !salon_id) {
+      if (!user_id) {
           return res.status(401).json({ message: 'Invalid fields.' });
       }
 
@@ -751,9 +750,11 @@ exports.viewLoyaltyProgram = async (req, res) => {
       FROM loyalty_memberships lm
       JOIN loyalty_programs lp ON lm.salon_id = lp.salon_id
       JOIN salons s ON s.salon_id = lp.salon_id
-      WHERE lm.salon_id = ? and lm.user_id = ? and lp.active = 1;`;
+      WHERE lm.user_id = ? and lp.active = 1;`;
 
-      const [result] = await db.execute(getLoyaltyProgramQuery, [salon_id, user_id]);
+      const [result] = await db.execute(getLoyaltyProgramQuery, [user_id]);
+
+      console.log(result);
 
       if (result.length === 0) {
           return res.status(404).json({ 
@@ -767,11 +768,11 @@ exports.viewLoyaltyProgram = async (req, res) => {
       const getTotalVisitsQuery = `SELECT SUM(COALESCE(total_visits_count, visits_count, 0)) as total_visits FROM loyalty_memberships WHERE user_id = ?;`;
       const [totalVisits] = await db.execute(getTotalVisitsQuery, [user_id]);
 
-      const getUserRewardsQuery = `SELECT reward_id, creationDate AS earned_at, active, redeemed_at, discount_percentage, note FROM available_rewards WHERE salon_id = ? AND user_id = ?;`;
-      const [userRewards] = await db.execute(getUserRewardsQuery, [salon_id, user_id]);
+      const getUserRewardsQuery = `SELECT reward_id, creationDate AS earned_at, active, redeemed_at, discount_percentage, note FROM available_rewards WHERE user_id = ?;`;
+      const [userRewards] = await db.execute(getUserRewardsQuery, [user_id]);
   
       return res.status(200).json({ 
-          userData: result[0],
+          userData: result,
           goldenSalons: goldenSalons[0].golden_salons,
           totalVisits: totalVisits[0].total_visits,
           userRewards: userRewards

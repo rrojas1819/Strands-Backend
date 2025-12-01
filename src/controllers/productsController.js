@@ -624,16 +624,19 @@ exports.viewUserOrders = async (req, res) => {
     const { salon_id, limit, offset } = req.body;
     const owner_user_id = req.user?.user_id;
 
-    if (!salon_id || !limit || isNaN(offset)) {
+    let salon_filter = salon_id ? `AND o.salon_id = ${salon_id}` : '';
+
+    if (!limit || isNaN(offset) ) {
       return res.status(400).json({ message: 'Invalid fields.' });
     }
-
+    
     const countQuery = 
     `SELECT COUNT(*) as total 
-    FROM orders
-    WHERE salon_id = ? AND user_id = ?`;
+    FROM orders o
+    WHERE user_id = ? ${salon_filter}
+    `;
 
-    const [countResult] = await db.execute(countQuery, [salon_id, owner_user_id]);
+    const [countResult] = await db.execute(countQuery, [owner_user_id]);
 
     const total = countResult[0]?.total || 0;
 
@@ -647,28 +650,33 @@ exports.viewUserOrders = async (req, res) => {
     const offsetInt = Math.max(0, Number.isFinite(Number(offset)) ? Number(offset) : 0);
 
     const viewUserOrdersQuery = `
-    SELECT o.order_code, o.subtotal as subtotal_order_price, o.tax as order_tax, o.tax + o.subtotal as total_order_price, oi.purchase_price, oi.quantity, p.name, p.description, p.sku, p.price as listed_price, p.category, o.created_at as ordered_date
+    SELECT s.name as salon_name, o.order_code, o.subtotal as subtotal_order_price, o.tax as order_tax, o.tax + o.subtotal as total_order_price, oi.purchase_price, oi.quantity, p.name, p.description, p.sku, p.price as listed_price, p.category, o.created_at as ordered_date
     FROM orders o 
     JOIN order_items oi ON o.order_id = oi.order_id 
     JOIN products p ON oi.product_id = p.product_id
     JOIN salons s ON o.salon_id = s.salon_id
-    WHERE o.salon_id = ? AND o.user_id = ?
+    WHERE o.user_id = ? ${salon_filter}
     LIMIT ${limitInt} OFFSET ${offsetInt}`;
 
-    const [employees] = await db.execute(viewUserOrdersQuery, [salon_id, owner_user_id]);
+    const [ordersResults] = await db.execute(viewUserOrdersQuery, [owner_user_id]);
 
+    if (ordersResults.length === 0) {
+      return res.status(404).json({ message: 'No orders found' });
+    }
 
+    console.log(ordersResults);
+    
     const totalPages = Math.ceil(total / limit);
     const currentPage = Math.floor(offset / limit) + 1;
-    const hasNextPage = offset + employees.length < total;
+    const hasNextPage = offset + ordersResults.length < total;
     const hasPrevPage = offset > 0;
 
     return res.status(200).json({
-      orders: employees,
+      orders: ordersResults,
       pagination: {
         current_page: currentPage,
         total_pages: totalPages,
-        total_employees: total,
+        total_orders: total,
         limit: limit,
         offset: offset,
         has_next_page: hasNextPage,
