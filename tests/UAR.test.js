@@ -3,6 +3,7 @@ const app = require('../src/app');
 const connection = require('../src/config/databaseConnection');
 const notificationsController = require('../src/controllers/notificationsController');
 const { ROLE_CASES, baseSignupPayload, insertUserWithCredentials } = require('./helpers/authTestUtils');
+const { baseSalonPayload, setupOwnerWithoutSalon } = require('./helpers/salonTestUtils');
 const { DateTime } = require('luxon');
 const { toMySQLUtc } = require('../src/utils/utilies');
 
@@ -325,6 +326,505 @@ describe('UAR 1.1/ 1.2 login, signup, logout, authentication test', () => {
             });
         });
 
+    });
+});
+
+// UAR 1.3 - As a salon owner, I want to register my salon so that I can list it on the platform.
+describe('UAR 1.3 - Salon Registration - Owner', () => {
+    beforeEach(() => {
+        jest.spyOn(notificationsController, 'createNotification').mockResolvedValue({
+            success: true
+        });
+    });
+
+    describe('Positive Flow', () => {
+        test('Successful Creation: POST request with valid payload returns 201 Created with salonId and correct database state', async () => {
+            const { owner, token } = await setupOwnerWithoutSalon();
+            const payload = baseSalonPayload();
+
+            const response = await request(app)
+                .post('/api/salons/create')
+                .set('Authorization', `Bearer ${token}`)
+                .send(payload);
+
+            expect(response.status).toBe(201);
+            expect(response.body).toMatchObject({
+                message: 'Salon registered (pending verification)'
+            });
+            expect(response.body.data).toBeDefined();
+            expect(response.body.data.salon_id).toBeDefined();
+            expect(typeof response.body.data.salon_id).toBe('number');
+
+            const salonId = response.body.data.salon_id;
+
+            const [salonRows] = await db.execute(
+                'SELECT salon_id, owner_user_id, status, name FROM salons WHERE salon_id = ?',
+                [salonId]
+            );
+
+            expect(salonRows).toHaveLength(1);
+            expect(salonRows[0]).toMatchObject({
+                owner_user_id: owner.user_id,
+                status: 'PENDING',
+                name: payload.name
+            });
+        });
+
+        
+    });
+
+    describe('Negative Flow', () => {
+        test.each([
+            { field: 'name', action: (p) => delete p.name },
+            { field: 'address', action: (p) => delete p.address },
+            { field: 'phone', action: (p) => delete p.phone },
+            { field: 'name', action: (p) => p.name = '' }
+        ])('Missing/Invalid Required Fields: POST request with missing or empty $field returns 400', async ({ field, action }) => {
+            const { token } = await setupOwnerWithoutSalon();
+            const payload = baseSalonPayload();
+            action(payload);
+
+            const response = await request(app)
+                .post('/api/salons/create')
+                .set('Authorization', `Bearer ${token}`)
+                .send(payload);
+
+            expect(response.status).toBe(400);
+            expect(response.body.message).toContain(`Field '${field}' is required`);
+        });
+
+        
+    });
+
+    describe('Data Integrity', () => {
+        test('Data Mapping: Address details are stored in correct database columns', async () => {
+            const { token } = await setupOwnerWithoutSalon();
+            const payload = baseSalonPayload({
+                address: '456 Oak Avenue',
+                city: 'Springfield',
+                state: 'IL',
+                postal_code: '62701',
+                country: 'USA'
+            });
+
+            const response = await request(app)
+                .post('/api/salons/create')
+                .set('Authorization', `Bearer ${token}`)
+                .send(payload);
+
+            expect(response.status).toBe(201);
+            const salonId = response.body.data.salon_id;
+
+            const [salonRows] = await db.execute(
+                'SELECT address, city, state, postal_code, country FROM salons WHERE salon_id = ?',
+                [salonId]
+            );
+
+            expect(salonRows[0]).toMatchObject({
+                address: '456 Oak Avenue',
+                city: 'Springfield',
+                state: 'IL',
+                postal_code: '62701',
+                country: 'USA'
+            });
+        });
+
+        test('Send Empty Fields: POST request with empty fields returns 400', async () => {
+            const { token } = await setupOwnerWithoutSalon();
+            const payload = baseSalonPayload({
+                description: '',
+                phone: '',
+                email: '',
+                address: '',
+                city: '',
+                state: '',
+                postal_code: ''
+            });
+
+            const response = await request(app)
+                .post('/api/salons/create')
+                .set('Authorization', `Bearer ${token}`)
+                .send(payload);
+
+            expect(response.status).toBe(400);
+        });
+
+        test('Data Types: All string fields are stored as strings in database', async () => {
+            const { token } = await setupOwnerWithoutSalon();
+            const payload = baseSalonPayload({
+                postal_code: '12345' 
+            });
+
+            const response = await request(app)
+                .post('/api/salons/create')
+                .set('Authorization', `Bearer ${token}`)
+                .send(payload);
+
+            expect(response.status).toBe(201);
+            const salonId = response.body.data.salon_id;
+
+            const [salonRows] = await db.execute(
+                'SELECT postal_code FROM salons WHERE salon_id = ?',
+                [salonId]
+            );
+
+            expect(salonRows[0].postal_code).toBe('12345');
+        });
+
+        test.each([
+            { postal_code: 'ABC12', description: 'contains letters' },
+            { postal_code: '12ABC', description: 'starts with numbers but contains letters' },
+            { postal_code: '12345-6789', description: 'contains hyphen' },
+            { postal_code: '123 45', description: 'contains space' },
+            { postal_code: '12345!', description: 'contains special character' },
+            { postal_code: 'ABCDE', description: 'all letters' },
+            { postal_code: '12.34', description: 'contains decimal point' }
+        ])('Postal Code Validation: POST request with postal_code that $description returns 400', async ({ postal_code }) => {
+            const { token } = await setupOwnerWithoutSalon();
+            const payload = baseSalonPayload({
+                postal_code: postal_code
+            });
+
+            const response = await request(app)
+                .post('/api/salons/create')
+                .set('Authorization', `Bearer ${token}`)
+                .send(payload);
+
+            expect(response.status).toBe(400);
+            expect(response.body.message).toBeDefined();
+        });
+    });
+
+    describe('Security & Permissions', () => {
+        test('Unauthenticated Access: POST request without Authorization header returns 401', async () => {
+            const payload = baseSalonPayload();
+
+            const response = await request(app)
+                .post('/api/salons/create')
+                .send(payload);
+
+            expect(response.status).toBe(401);
+            expect(response.body).toMatchObject({
+                error: 'Access token required'
+            });
+
+            const [salonRows] = await db.execute(
+                'SELECT salon_id FROM salons WHERE name = ?',
+                [payload.name]
+            );
+            expect(salonRows).toHaveLength(0);
+        });
+
+        test.each(['CUSTOMER', 'EMPLOYEE', 'ADMIN'])('Authorization/Role Check: POST request by %s role returns 403', async (role) => {
+            const password = 'Password123!';
+            const user = await insertUserWithCredentials({
+                password,
+                role
+            });
+
+            const loginResponse = await request(app)
+                .post('/api/user/login')
+                .send({ email: user.email, password });
+
+            const token = loginResponse.body.data.token;
+            const payload = baseSalonPayload();
+
+            const response = await request(app)
+                .post('/api/salons/create')
+                .set('Authorization', `Bearer ${token}`)
+                .send(payload);
+
+            expect(response.status).toBe(403);
+            expect(response.body).toMatchObject({
+                error: 'Insufficient permissions'
+            });
+        });
+    });
+
+    describe('Edge Cases', () => {
+
+        //Realistically never happens, but just in case
+        test('Duplicate Registration: Owner with existing salon cannot register another salon', async () => {
+            const { token } = await setupOwnerWithoutSalon();
+            const payload = baseSalonPayload();
+
+            const firstResponse = await request(app)
+                .post('/api/salons/create')
+                .set('Authorization', `Bearer ${token}`)
+                .send(payload);
+
+            expect(firstResponse.status).toBe(201);
+
+            const secondPayload = baseSalonPayload({ name: 'Second Salon' });
+            const secondResponse = await request(app)
+                .post('/api/salons/create')
+                .set('Authorization', `Bearer ${token}`)
+                .send(secondPayload);
+
+            expect(secondResponse.status).toBe(409);
+            expect(secondResponse.body).toMatchObject({
+                message: 'You already have a salon registered.'
+            });
+        });
+
+        test('Empty Payload: POST request with empty body returns 400', async () => {
+            const { token } = await setupOwnerWithoutSalon();
+
+            const response = await request(app)
+                .post('/api/salons/create')
+                .set('Authorization', `Bearer ${token}`)
+                .send({});
+
+            expect(response.status).toBe(400);
+            expect(response.body.message).toBeDefined();
+        });
+
+        test('All Required Fields Present: Complete valid payload succeeds', async () => {
+            const { token } = await setupOwnerWithoutSalon();
+            const payload = baseSalonPayload({
+                name: 'Complete Salon',
+                description: 'Full description',
+                category: 'NAIL SALON',
+                phone: '555-9876',
+                email: 'complete@salon.com',
+                address: '789 Complete St',
+                city: 'Complete City',
+                state: 'CC',
+                postal_code: '99999',
+                country: 'USA'
+            });
+
+            const response = await request(app)
+                .post('/api/salons/create')
+                .set('Authorization', `Bearer ${token}`)
+                .send(payload);
+
+            expect(response.status).toBe(201);
+            expect(response.body.data).toMatchObject({
+                name: 'Complete Salon',
+                category: 'NAIL SALON',
+                phone: '555-9876',
+                email: 'complete@salon.com',
+                address: '789 Complete St',
+                city: 'Complete City',
+                state: 'CC',
+                postal_code: '99999',
+                country: 'USA'
+            });
+        });
+
+    });
+});
+
+// UAR 1.4 - As a salon owner, I want to select my salon type (e.g., hair, nails, eyelashes) during registration so that users can find me based on category.
+describe('UAR 1.4 - Salon Type/Category Selection - Owner', () => {
+    beforeEach(() => {
+        jest.spyOn(notificationsController, 'createNotification').mockResolvedValue({
+            success: true
+        });
+    });
+
+    describe('Positive Flow', () => {
+        test('Verify Valid Category Selection: POST request with valid category returns 201 Created', async () => {
+            const { token } = await setupOwnerWithoutSalon();
+            const payload = baseSalonPayload({ category: 'HAIR SALON' });
+
+            const response = await request(app)
+                .post('/api/salons/create')
+                .set('Authorization', `Bearer ${token}`)
+                .send(payload);
+
+            expect(response.status).toBe(201);
+            expect(response.body).toMatchObject({
+                message: 'Salon registered (pending verification)'
+            });
+            expect(response.body.data).toBeDefined();
+            expect(response.body.data.category).toBe('HAIR SALON');
+        });
+
+        test('Verify Database Persistence: Category is correctly stored in database', async () => {
+            const { token, owner } = await setupOwnerWithoutSalon();
+            const payload = baseSalonPayload({ 
+                category: 'NAIL SALON',
+                name: 'Test Nail Salon Persistence'
+            });
+
+            const response = await request(app)
+                .post('/api/salons/create')
+                .set('Authorization', `Bearer ${token}`)
+                .send(payload);
+
+            expect(response.status).toBe(201);
+            const salonId = response.body.data.salon_id;
+
+            const [salonRows] = await db.execute(
+                'SELECT category FROM salons WHERE salon_id = ?',
+                [salonId]
+            );
+
+            expect(salonRows).toHaveLength(1);
+            expect(salonRows[0].category).toBe('NAIL SALON');
+        });
+
+        test('Verify All Valid Categories: All allowed categories can be selected', async () => {
+            const allowedCategories = [
+                'NAIL SALON',
+                'HAIR SALON',
+                'EYELASH STUDIO',
+                'SPA & WELLNESS',
+                'BARBERSHOP',
+                'FULL SERVICE BEAUTY'
+            ];
+
+            for (const category of allowedCategories) {
+                const owner = await insertUserWithCredentials({
+                    password: 'Password123!',
+                    role: 'OWNER'
+                });
+
+                const loginResponse = await request(app)
+                    .post('/api/user/login')
+                    .send({ email: owner.email, password: 'Password123!' });
+
+                const ownerToken = loginResponse.body.data.token;
+                const payload = baseSalonPayload({
+                    name: `Test ${category}`,
+                    category: category
+                });
+
+                const response = await request(app)
+                    .post('/api/salons/create')
+                    .set('Authorization', `Bearer ${ownerToken}`)
+                    .send(payload);
+
+                expect(response.status).toBe(201);
+                expect(response.body.data.category).toBe(category);
+            }
+        });
+    });
+
+    describe('Negative Flow', () => {
+        test('Verify Invalid Category: POST request with non-existent category returns 400', async () => {
+            const { token } = await setupOwnerWithoutSalon();
+            const payload = baseSalonPayload({ category: 'AUTO_REPAIR' });
+
+            const response = await request(app)
+                .post('/api/salons/create')
+                .set('Authorization', `Bearer ${token}`)
+                .send(payload);
+
+            expect(response.status).toBe(400);
+            expect(response.body).toMatchObject({
+                message: "Invalid 'category'"
+            });
+            expect(response.body.allowed).toBeDefined();
+            expect(Array.isArray(response.body.allowed)).toBe(true);
+        });
+
+        test('Verify Missing Category: POST request with missing category field returns 400', async () => {
+            const { token } = await setupOwnerWithoutSalon();
+            const payload = baseSalonPayload();
+            delete payload.category;
+
+            const response = await request(app)
+                .post('/api/salons/create')
+                .set('Authorization', `Bearer ${token}`)
+                .send(payload);
+
+            expect(response.status).toBe(400);
+            expect(response.body.message).toBeDefined();
+            expect(response.body.message).toMatch(/category|required/i);
+        });
+
+        test('Verify Null Category: POST request with null category returns 400', async () => {
+            const { token } = await setupOwnerWithoutSalon();
+            const payload = baseSalonPayload({ category: null });
+
+            const response = await request(app)
+                .post('/api/salons/create')
+                .set('Authorization', `Bearer ${token}`)
+                .send(payload);
+
+            expect(response.status).toBe(400);
+            expect(response.body.message).toBeDefined();
+        });
+
+        test('Verify Empty String Category: POST request with empty string category returns 400', async () => {
+            const { token } = await setupOwnerWithoutSalon();
+            const payload = baseSalonPayload({ category: '' });
+
+            const response = await request(app)
+                .post('/api/salons/create')
+                .set('Authorization', `Bearer ${token}`)
+                .send(payload);
+
+            expect(response.status).toBe(400);
+            expect(response.body.message).toBeDefined();
+        });
+    });
+
+    describe('Data Integrity & Logic', () => {
+        test('Verify Case Sensitivity: Lowercase category is normalized to uppercase', async () => {
+            const { token } = await setupOwnerWithoutSalon();
+            const payload = baseSalonPayload({ category: 'hair salon' }); // lowercase
+
+            const response = await request(app)
+                .post('/api/salons/create')
+                .set('Authorization', `Bearer ${token}`)
+                .send(payload);
+
+            expect(response.status).toBe(201);
+            expect(response.body.data.category).toBe('HAIR SALON');
+        });
+
+        test('Verify Case Sensitivity: Mixed case category is normalized to uppercase', async () => {
+            const { token } = await setupOwnerWithoutSalon();
+            const payload = baseSalonPayload({ category: 'Hair Salon' }); // mixed case
+
+            const response = await request(app)
+                .post('/api/salons/create')
+                .set('Authorization', `Bearer ${token}`)
+                .send(payload);
+
+            expect(response.status).toBe(201);
+            expect(response.body.data.category).toBe('HAIR SALON');
+        });
+
+        test('Verify Type Validation: Non-string category type returns 400', async () => {
+            const { token } = await setupOwnerWithoutSalon();
+            const payload = baseSalonPayload({ category: 12345 }); // number instead of string
+
+            const response = await request(app)
+                .post('/api/salons/create')
+                .set('Authorization', `Bearer ${token}`)
+                .send(payload);
+
+            expect(response.status).toBe(400);
+            expect(response.body.message).toBeDefined();
+        });
+
+        test('Verify Database Storage Format: Category is stored in uppercase format', async () => {
+            const { token } = await setupOwnerWithoutSalon();
+            const payload = baseSalonPayload({ 
+                category: 'nail salon', 
+                name: 'Test Case Normalization'
+            });
+
+            const response = await request(app)
+                .post('/api/salons/create')
+                .set('Authorization', `Bearer ${token}`)
+                .send(payload);
+
+            expect(response.status).toBe(201);
+            const salonId = response.body.data.salon_id;
+
+            const [salonRows] = await db.execute(
+                'SELECT category FROM salons WHERE salon_id = ?',
+                [salonId]
+            );
+
+            expect(salonRows[0].category).toBe('NAIL SALON');
+        });
     });
 });
 
@@ -775,376 +1275,6 @@ describe('UAR 1.5 - Salon Registration Verification - Admin', () => {
             expect(response.body).toMatchObject({
                 message: 'Invalid status.'
             });
-        });
-    });
-});
-
-// UAR 1.3 - As a salon owner, I want to register my salon so that I can list it on the platform.
-describe('UAR 1.3 - Salon Registration - Owner', () => {
-    beforeEach(() => {
-        jest.spyOn(notificationsController, 'createNotification').mockResolvedValue({
-            success: true
-        });
-    });
-
-    const baseSalonPayload = (overrides = {}) => ({
-        name: overrides.name || 'Test Salon091384723',
-        description: overrides.description !== undefined ? overrides.description : 'A test salon description',
-        category: overrides.category || 'HAIR SALON',
-        phone: overrides.phone !== undefined ? overrides.phone : '555-1234',
-        email: overrides.email !== undefined ? overrides.email : 'salon@test.com',
-        address: overrides.address !== undefined ? overrides.address : '123 Main Street',
-        city: overrides.city !== undefined ? overrides.city : 'Test City',
-        state: overrides.state !== undefined ? overrides.state : 'TS',
-        postal_code: overrides.postal_code !== undefined ? overrides.postal_code : '12345',
-        country: overrides.country !== undefined ? overrides.country : 'USA',
-        ...overrides
-    });
-
-    const setupOwnerWithoutSalon = async () => {
-        const password = 'Password123!';
-        const owner = await insertUserWithCredentials({
-            password,
-            role: 'OWNER'
-        });
-
-        const loginResponse = await request(app)
-            .post('/api/user/login')
-            .send({ email: owner.email, password });
-
-        expect(loginResponse.status).toBe(200);
-        const token = loginResponse.body.data.token;
-
-        return { owner, token, password };
-    };
-
-    describe('Positive Flow', () => {
-        test('Successful Creation: POST request with valid payload returns 201 Created with salonId and correct database state', async () => {
-            const { owner, token } = await setupOwnerWithoutSalon();
-            const payload = baseSalonPayload();
-
-            const response = await request(app)
-                .post('/api/salons/create')
-                .set('Authorization', `Bearer ${token}`)
-                .send(payload);
-
-            expect(response.status).toBe(201);
-            expect(response.body).toMatchObject({
-                message: 'Salon registered (pending verification)'
-            });
-            expect(response.body.data).toBeDefined();
-            expect(response.body.data.salon_id).toBeDefined();
-            expect(typeof response.body.data.salon_id).toBe('number');
-
-            const salonId = response.body.data.salon_id;
-
-            const [salonRows] = await db.execute(
-                'SELECT salon_id, owner_user_id, status, name FROM salons WHERE salon_id = ?',
-                [salonId]
-            );
-
-            expect(salonRows).toHaveLength(1);
-            expect(salonRows[0]).toMatchObject({
-                owner_user_id: owner.user_id,
-                status: 'PENDING',
-                name: payload.name
-            });
-        });
-
-        
-    });
-
-    describe('Negative Flow', () => {
-        test.each([
-            { field: 'name', action: (p) => delete p.name },
-            { field: 'address', action: (p) => delete p.address },
-            { field: 'phone', action: (p) => delete p.phone },
-            { field: 'name', action: (p) => p.name = '' }
-        ])('Missing/Invalid Required Fields: POST request with missing or empty $field returns 400', async ({ field, action }) => {
-            const { token } = await setupOwnerWithoutSalon();
-            const payload = baseSalonPayload();
-            action(payload);
-
-            const response = await request(app)
-                .post('/api/salons/create')
-                .set('Authorization', `Bearer ${token}`)
-                .send(payload);
-
-            expect(response.status).toBe(400);
-            expect(response.body.message).toContain(`Field '${field}' is required`);
-        });
-
-        test('Invalid Category: POST request with invalid category returns 400', async () => {
-            const { token } = await setupOwnerWithoutSalon();
-            const payload = baseSalonPayload({ category: 'INVALID_CATEGORY' });
-
-            const response = await request(app)
-                .post('/api/salons/create')
-                .set('Authorization', `Bearer ${token}`)
-                .send(payload);
-
-            expect(response.status).toBe(400);
-            expect(response.body).toMatchObject({
-                message: "Invalid 'category'"
-            });
-            expect(response.body.allowed).toBeDefined();
-            expect(Array.isArray(response.body.allowed)).toBe(true);
-        });
-
-        
-    });
-
-    describe('Data Integrity', () => {
-        test('Data Mapping: Address details are stored in correct database columns', async () => {
-            const { token } = await setupOwnerWithoutSalon();
-            const payload = baseSalonPayload({
-                address: '456 Oak Avenue',
-                city: 'Springfield',
-                state: 'IL',
-                postal_code: '62701',
-                country: 'USA'
-            });
-
-            const response = await request(app)
-                .post('/api/salons/create')
-                .set('Authorization', `Bearer ${token}`)
-                .send(payload);
-
-            expect(response.status).toBe(201);
-            const salonId = response.body.data.salon_id;
-
-            const [salonRows] = await db.execute(
-                'SELECT address, city, state, postal_code, country FROM salons WHERE salon_id = ?',
-                [salonId]
-            );
-
-            expect(salonRows[0]).toMatchObject({
-                address: '456 Oak Avenue',
-                city: 'Springfield',
-                state: 'IL',
-                postal_code: '62701',
-                country: 'USA'
-            });
-        });
-
-        test('Send Empty Fields: POST request with empty fields returns 400', async () => {
-            const { token } = await setupOwnerWithoutSalon();
-            const payload = baseSalonPayload({
-                description: '',
-                phone: '',
-                email: '',
-                address: '',
-                city: '',
-                state: '',
-                postal_code: ''
-            });
-
-            const response = await request(app)
-                .post('/api/salons/create')
-                .set('Authorization', `Bearer ${token}`)
-                .send(payload);
-
-            expect(response.status).toBe(400);
-        });
-
-        test('Data Types: All string fields are stored as strings in database', async () => {
-            const { token } = await setupOwnerWithoutSalon();
-            const payload = baseSalonPayload({
-                postal_code: '12345' 
-            });
-
-            const response = await request(app)
-                .post('/api/salons/create')
-                .set('Authorization', `Bearer ${token}`)
-                .send(payload);
-
-            expect(response.status).toBe(201);
-            const salonId = response.body.data.salon_id;
-
-            const [salonRows] = await db.execute(
-                'SELECT postal_code FROM salons WHERE salon_id = ?',
-                [salonId]
-            );
-
-            expect(salonRows[0].postal_code).toBe('12345');
-        });
-
-        test.each([
-            { postal_code: 'ABC12', description: 'contains letters' },
-            { postal_code: '12ABC', description: 'starts with numbers but contains letters' },
-            { postal_code: '12345-6789', description: 'contains hyphen' },
-            { postal_code: '123 45', description: 'contains space' },
-            { postal_code: '12345!', description: 'contains special character' },
-            { postal_code: 'ABCDE', description: 'all letters' },
-            { postal_code: '12.34', description: 'contains decimal point' }
-        ])('Postal Code Validation: POST request with postal_code that $description returns 400', async ({ postal_code }) => {
-            const { token } = await setupOwnerWithoutSalon();
-            const payload = baseSalonPayload({
-                postal_code: postal_code
-            });
-
-            const response = await request(app)
-                .post('/api/salons/create')
-                .set('Authorization', `Bearer ${token}`)
-                .send(payload);
-
-            expect(response.status).toBe(400);
-            expect(response.body.message).toBeDefined();
-        });
-    });
-
-    describe('Security & Permissions', () => {
-        test('Unauthenticated Access: POST request without Authorization header returns 401', async () => {
-            const payload = baseSalonPayload();
-
-            const response = await request(app)
-                .post('/api/salons/create')
-                .send(payload);
-
-            expect(response.status).toBe(401);
-            expect(response.body).toMatchObject({
-                error: 'Access token required'
-            });
-
-            const [salonRows] = await db.execute(
-                'SELECT salon_id FROM salons WHERE name = ?',
-                [payload.name]
-            );
-            expect(salonRows).toHaveLength(0);
-        });
-
-        test.each(['CUSTOMER', 'EMPLOYEE', 'ADMIN'])('Authorization/Role Check: POST request by %s role returns 403', async (role) => {
-            const password = 'Password123!';
-            const user = await insertUserWithCredentials({
-                password,
-                role
-            });
-
-            const loginResponse = await request(app)
-                .post('/api/user/login')
-                .send({ email: user.email, password });
-
-            const token = loginResponse.body.data.token;
-            const payload = baseSalonPayload();
-
-            const response = await request(app)
-                .post('/api/salons/create')
-                .set('Authorization', `Bearer ${token}`)
-                .send(payload);
-
-            expect(response.status).toBe(403);
-            expect(response.body).toMatchObject({
-                error: 'Insufficient permissions'
-            });
-        });
-    });
-
-    describe('Edge Cases', () => {
-
-        //Realistically never happens, but just in case
-        test('Duplicate Registration: Owner with existing salon cannot register another salon', async () => {
-            const { token } = await setupOwnerWithoutSalon();
-            const payload = baseSalonPayload();
-
-            const firstResponse = await request(app)
-                .post('/api/salons/create')
-                .set('Authorization', `Bearer ${token}`)
-                .send(payload);
-
-            expect(firstResponse.status).toBe(201);
-
-            const secondPayload = baseSalonPayload({ name: 'Second Salon' });
-            const secondResponse = await request(app)
-                .post('/api/salons/create')
-                .set('Authorization', `Bearer ${token}`)
-                .send(secondPayload);
-
-            expect(secondResponse.status).toBe(409);
-            expect(secondResponse.body).toMatchObject({
-                message: 'You already have a salon registered.'
-            });
-        });
-
-        test('Empty Payload: POST request with empty body returns 400', async () => {
-            const { token } = await setupOwnerWithoutSalon();
-
-            const response = await request(app)
-                .post('/api/salons/create')
-                .set('Authorization', `Bearer ${token}`)
-                .send({});
-
-            expect(response.status).toBe(400);
-            expect(response.body.message).toBeDefined();
-        });
-
-        test('All Required Fields Present: Complete valid payload succeeds', async () => {
-            const { token } = await setupOwnerWithoutSalon();
-            const payload = baseSalonPayload({
-                name: 'Complete Salon',
-                description: 'Full description',
-                category: 'NAIL SALON',
-                phone: '555-9876',
-                email: 'complete@salon.com',
-                address: '789 Complete St',
-                city: 'Complete City',
-                state: 'CC',
-                postal_code: '99999',
-                country: 'USA'
-            });
-
-            const response = await request(app)
-                .post('/api/salons/create')
-                .set('Authorization', `Bearer ${token}`)
-                .send(payload);
-
-            expect(response.status).toBe(201);
-            expect(response.body.data).toMatchObject({
-                name: 'Complete Salon',
-                category: 'NAIL SALON',
-                phone: '555-9876',
-                email: 'complete@salon.com',
-                address: '789 Complete St',
-                city: 'Complete City',
-                state: 'CC',
-                postal_code: '99999',
-                country: 'USA'
-            });
-        });
-
-        test('Valid Categories: All allowed categories can be used', async () => {
-            const allowedCategories = [
-                'NAIL SALON',
-                'HAIR SALON',
-                'EYELASH STUDIO',
-                'SPA & WELLNESS',
-                'BARBERSHOP',
-                'FULL SERVICE BEAUTY'
-            ];
-
-            for (const category of allowedCategories) {
-                const owner = await insertUserWithCredentials({
-                    password: 'Password123!',
-                    role: 'OWNER'
-                });
-
-                const loginResponse = await request(app)
-                    .post('/api/user/login')
-                    .send({ email: owner.email, password: 'Password123!' });
-
-                const ownerToken = loginResponse.body.data.token;
-                const payload = baseSalonPayload({
-                    name: `Test ${category}`,
-                    category: category
-                });
-
-                const response = await request(app)
-                    .post('/api/salons/create')
-                    .set('Authorization', `Bearer ${ownerToken}`)
-                    .send(payload);
-
-                expect(response.status).toBe(201);
-                expect(response.body.data.category).toBe(category);
-            }
         });
     });
 });
