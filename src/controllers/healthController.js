@@ -1,11 +1,11 @@
-require('dotenv').config();
+const { DateTime } = require('luxon');
 
 // Health Check
 exports.healthCheck = async (req, res) => {
     res.status(200).json({
         status: "OK",
         message: "Server: Online",
-        timestamp: new Date().toISOString(),
+        timestamp: DateTime.utc().toISO(),
     });
 };
 

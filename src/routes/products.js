@@ -1,0 +1,21 @@
+const express = require('express');
+const router = express.Router();
+const { addProduct, getProducts, deleteProduct, updateProduct, addToCart, viewCart, removeFromCart, updateCart, checkout, viewUserOrders, viewSalonOrders } = require('../controllers/productsController');
+const { authenticateToken, roleAuthorization } = require('../middleware/auth.middleware');
+
+//SF 1.1 Owner Shop
+router.post('/', authenticateToken, roleAuthorization(['OWNER']), addProduct);
+router.get('/:salon_id', authenticateToken, roleAuthorization(['CUSTOMER','OWNER']), getProducts);
+router.delete('/:product_id', authenticateToken, roleAuthorization(['OWNER']), deleteProduct);
+router.patch('/:product_id', authenticateToken, roleAuthorization(['OWNER']), updateProduct);
+
+// SF 1.2 Customer Shop
+router.post('/customer/add-to-cart', authenticateToken, roleAuthorization(['CUSTOMER']), addToCart);
+router.get('/customer/view-cart/:salon_id', authenticateToken, roleAuthorization(['CUSTOMER']), viewCart);
+router.delete('/customer/remove-from-cart', authenticateToken, roleAuthorization(['CUSTOMER']), removeFromCart);
+router.patch('/customer/update-cart', authenticateToken, roleAuthorization(['CUSTOMER']), updateCart);
+router.post('/customer/checkout', authenticateToken, roleAuthorization(['CUSTOMER']), checkout);
+router.post('/customer/view-orders', authenticateToken, roleAuthorization(['CUSTOMER']), viewUserOrders);
+router.post('/owner/view-orders', authenticateToken, roleAuthorization(['OWNER']), viewSalonOrders);
+
+module.exports = router;

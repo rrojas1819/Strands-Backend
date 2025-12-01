@@ -1,0 +1,25 @@
+const express = require('express');
+const router = express.Router();
+const { demographics, loyaltyProgramAnalytics, userEngagement, appointmentAnalytics, salonRevenueAnalytics, customerRetentionAnalytics } = require('../controllers/analyticsController');
+const { authenticateToken, roleAuthorization } = require('../middleware/auth.middleware');
+
+// AFVD 1.1 User Engagement
+router.get('/user-engagement', authenticateToken, roleAuthorization(['ADMIN']), userEngagement);
+
+// AFVD 1.2 Appointment Analytics
+router.get('/appointment-analytics', authenticateToken, roleAuthorization(['ADMIN']), appointmentAnalytics);
+
+// AFDV 1.3 Salon Revenue Analytics
+router.get('/salon-revenue-analytics', authenticateToken, roleAuthorization(['ADMIN']), salonRevenueAnalytics);
+
+// AFDV 1.4 Loyalty Program Analytics
+router.get('/loyalty-program', authenticateToken, roleAuthorization(['ADMIN']), loyaltyProgramAnalytics);
+
+// AFDV 1.5 User Pie Chart
+router.get('/demographics', authenticateToken, roleAuthorization(['ADMIN']), demographics);
+
+// AFDV 1.6 Customer Retention Analytics
+router.get('/customer-retention-analytics', authenticateToken, roleAuthorization(['ADMIN']), customerRetentionAnalytics);
+
+
+module.exports = router;
