@@ -772,7 +772,7 @@ exports.viewLoyaltyProgram = async (req, res) => {
       const [userRewards] = await db.execute(getUserRewardsQuery, [user_id]);
   
       return res.status(200).json({ 
-          userData: result,
+          userData: result[0],
           goldenSalons: goldenSalons[0].golden_salons,
           totalVisits: totalVisits[0].total_visits,
           userRewards: userRewards
