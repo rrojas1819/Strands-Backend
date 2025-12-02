@@ -144,7 +144,7 @@ function startBookingsAutoComplete(connection) {
         try {
             const db = connection.promise();
             //Small grace period
-            const nowMinusGrace = DateTime.utc().minus({ minutes: 2 });
+            const nowMinusGrace = DateTime.utc().minus({ minutes: 0.1 });
             const currentUtc = toMySQLUtc(nowMinusGrace);
 
             const updateQuery = `
