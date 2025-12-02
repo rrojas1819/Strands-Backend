@@ -811,11 +811,11 @@ exports.viewStylistMetrics = async (req, res) => {
 
     const nowInSalonTz = DateTime.now().setZone(salonTimezone);
     const todayStartInSalonTz = nowInSalonTz.startOf('day');
-    const todayEndInSalonTz = nowInSalonTz.endOf('day');
+    const tomorrowStartInSalonTz = nowInSalonTz.plus({ days: 1 }).startOf('day'); 
     const weekAgoStartInSalonTz = nowInSalonTz.minus({ days: 7 }).startOf('day');
 
     const todayStart = toMySQLUtc(todayStartInSalonTz.toUTC());
-    const todayEnd = toMySQLUtc(todayEndInSalonTz.toUTC());
+    const tomorrowStart = toMySQLUtc(tomorrowStartInSalonTz.toUTC()); 
     const weekAgoStart = toMySQLUtc(weekAgoStartInSalonTz.toUTC());
 
     const revenueMetricsQuery = 
@@ -825,8 +825,8 @@ exports.viewStylistMetrics = async (req, res) => {
       JOIN bookings b ON b.booking_id = p.booking_id
       JOIN booking_services bs ON bs.booking_id = b.booking_id
       WHERE p.status = 'SUCCEEDED'
-        AND p.created_at >= ?
-        AND p.created_at < ?
+        AND b.scheduled_start >= ?
+        AND b.scheduled_start < ?
         AND bs.employee_id = ?
     ) AS revenue_today,
 
@@ -835,8 +835,8 @@ exports.viewStylistMetrics = async (req, res) => {
       JOIN bookings b ON b.booking_id = p.booking_id
       JOIN booking_services bs ON bs.booking_id = b.booking_id
       WHERE p.status = 'SUCCEEDED'
-        AND p.created_at >= ?
-        AND p.created_at < ?
+        AND b.scheduled_start >= ?
+        AND b.scheduled_start < ?
         AND bs.employee_id = ?
     ) AS revenue_past_week,
 
@@ -849,8 +849,8 @@ exports.viewStylistMetrics = async (req, res) => {
     ) AS revenue_all_time;`;
 
     const [revenueMetrics] = await db.execute(revenueMetricsQuery, [
-      todayStart, todayEnd, employee_id,  // revenue_today
-      weekAgoStart, todayEnd, employee_id,  // revenue_past_week
+      todayStart, tomorrowStart, employee_id,  
+      weekAgoStart, tomorrowStart, employee_id,  
       employee_id  // revenue_all_time
     ]);
 
@@ -880,12 +880,12 @@ exports.viewTotalRewards = async (req, res) => {
     const [totalRewards] = await db.execute(getTotalRewardsQuery, [user_id]);
 
     if (totalRewards.length === 0) {
-      res.status(200).json({
+      return res.status(200).json({
         totalRewards: "You have no rewards."
       });
     }
 
-    res.status(200).json({
+    return res.status(200).json({
       totalRewards: totalRewards[0].total_rewards
     });
     
@@ -914,7 +914,7 @@ exports.getAllRewards = async (req, res) => {
     const [totalRewards] = await db.execute(getTotalRewardsQuery, [user_id]);
 
     if (totalRewards.length === 0) {
-      res.status(200).json({
+      return res.status(200).json({
         totalRewards: []
       });
     }
