@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { signUp, login, logout, authTest, getStylistSalon,viewLoyaltyProgram, getStylistWeeklySchedule, viewStylistMetrics, viewTotalRewards, getAllRewards } = require('../controllers/userController');
+const { signUp, login, logout, authTest, getStylistSalon,viewLoyaltyProgram, getStylistWeeklySchedule, viewStylistMetrics, viewTotalRewards, getAllRewards, viewSingleLoyaltyProgram } = require('../controllers/userController');
 const { authenticateToken, roleAuthorization } = require('../middleware/auth.middleware');
 
 
@@ -17,6 +17,7 @@ router.get('/stylist/getSalon', authenticateToken, roleAuthorization(['EMPLOYEE'
 router.get('/stylist/weeklySchedule', authenticateToken, roleAuthorization(['EMPLOYEE']), getStylistWeeklySchedule);
 // PLR 1.4 View Loyalty Program
 router.get('/loyalty/view', authenticateToken, roleAuthorization(['CUSTOMER']), viewLoyaltyProgram);
+router.get('/loyalty/salon-view', authenticateToken, roleAuthorization(['CUSTOMER']), viewSingleLoyaltyProgram);
 router.get('/loyalty/total-rewards', authenticateToken, roleAuthorization(['CUSTOMER']), viewTotalRewards);
 router.get('/loyalty/all-rewards', authenticateToken, roleAuthorization(['CUSTOMER']), getAllRewards);
 
