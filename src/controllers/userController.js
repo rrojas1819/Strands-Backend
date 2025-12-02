@@ -754,7 +754,54 @@ exports.viewLoyaltyProgram = async (req, res) => {
 
       const [result] = await db.execute(getLoyaltyProgramQuery, [user_id]);
 
-      console.log(result);
+      if (result.length === 0) {
+          return res.status(404).json({ 
+              message: 'No Loyalty Program found.' 
+          });
+      }
+
+      const getGoldenSalonsQuery = `SELECT COUNT(*) as golden_salons FROM loyalty_memberships WHERE user_id = ? and COALESCE(total_visits_count, visits_count, 0) >= 5;`;
+      const [goldenSalons] = await db.execute(getGoldenSalonsQuery, [user_id]);    
+  
+      const getTotalVisitsQuery = `SELECT SUM(COALESCE(total_visits_count, visits_count, 0)) as total_visits FROM loyalty_memberships WHERE user_id = ?;`;
+      const [totalVisits] = await db.execute(getTotalVisitsQuery, [user_id]);
+
+      const getUserRewardsQuery = `SELECT reward_id, creationDate AS earned_at, active, redeemed_at, discount_percentage, note FROM available_rewards WHERE user_id = ?;`;
+      const [userRewards] = await db.execute(getUserRewardsQuery, [user_id]);
+  
+      return res.status(200).json({ 
+          userData: result,
+          goldenSalons: goldenSalons[0].golden_salons,
+          totalVisits: totalVisits[0].total_visits,
+          userRewards: userRewards
+      }); 
+
+  } catch (err) {
+    console.error('viewLoyaltyProgram error:', err);
+    return res.status(500).json({ message: 'Internal Server Error' });
+  }
+};
+
+exports.viewSingleLoyaltyProgram = async (req, res) => {
+  const db = connection.promise();
+
+  try {
+      const { salon_id } = req.query;
+      const user_id = req.user?.user_id;
+
+
+      if (!user_id || !salon_id) {
+          return res.status(401).json({ message: 'Invalid fields.' });
+      }
+
+      const getLoyaltyProgramQuery = 
+      `SELECT lm.visits_count, lm.total_visits_count, lp.target_visits, lp.discount_percentage, lp.note, s.name as salon_name
+      FROM loyalty_memberships lm
+      JOIN loyalty_programs lp ON lm.salon_id = lp.salon_id
+      JOIN salons s ON s.salon_id = lp.salon_id
+      WHERE lm.user_id = ? AND lm.salon_id = ? AND lp.active = 1;`;
+
+      const [result] = await db.execute(getLoyaltyProgramQuery, [user_id, salon_id]);
 
       if (result.length === 0) {
           return res.status(404).json({ 
