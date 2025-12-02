@@ -22,6 +22,7 @@ HTTP: Axios for API calls with interceptors
 Styling: Tailwind CSS
 Forms: React Hook Form
 Mockup: Figma
+UI Testing: Selenium
 ```
 
 **Backend**:
