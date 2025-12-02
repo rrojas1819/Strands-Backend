@@ -795,11 +795,28 @@ exports.viewStylistMetrics = async (req, res) => {
       return res.status(401).json({ message: 'Invalid fields.' });
     }
 
-    // Calculate date ranges using Luxon
-    const now = DateTime.utc();
-    const todayStart = toMySQLUtc(now.startOf('day'));
-    const todayEnd = toMySQLUtc(now.endOf('day'));
-    const weekAgoStart = toMySQLUtc(now.minus({ days: 7 }).startOf('day'));
+    const getEmployeeQuery = 'SELECT employee_id, salon_id FROM employees WHERE user_id = ? AND active = 1';
+    const [employeeResult] = await db.execute(getEmployeeQuery, [user_id]);
+
+    if (employeeResult.length === 0) {
+      return res.status(404).json({ message: 'Employee not found' });
+    }
+
+    const employee_id = employeeResult[0].employee_id;
+    const salon_id = employeeResult[0].salon_id;
+
+    const getSalonTimezoneQuery = 'SELECT timezone FROM salons WHERE salon_id = ?';
+    const [salonTimezoneResult] = await db.execute(getSalonTimezoneQuery, [salon_id]);
+    const salonTimezone = salonTimezoneResult[0]?.timezone || 'America/New_York';
+
+    const nowInSalonTz = DateTime.now().setZone(salonTimezone);
+    const todayStartInSalonTz = nowInSalonTz.startOf('day');
+    const todayEndInSalonTz = nowInSalonTz.endOf('day');
+    const weekAgoStartInSalonTz = nowInSalonTz.minus({ days: 7 }).startOf('day');
+
+    const todayStart = toMySQLUtc(todayStartInSalonTz.toUTC());
+    const todayEnd = toMySQLUtc(todayEndInSalonTz.toUTC());
+    const weekAgoStart = toMySQLUtc(weekAgoStartInSalonTz.toUTC());
 
     const revenueMetricsQuery = 
     `SELECT
@@ -810,7 +827,7 @@ exports.viewStylistMetrics = async (req, res) => {
       WHERE p.status = 'SUCCEEDED'
         AND p.created_at >= ?
         AND p.created_at < ?
-        AND bs.employee_id = (SELECT employee_id FROM employees WHERE user_id = ?)
+        AND bs.employee_id = ?
     ) AS revenue_today,
 
     (SELECT COALESCE(SUM(p.amount), 0)
@@ -820,7 +837,7 @@ exports.viewStylistMetrics = async (req, res) => {
       WHERE p.status = 'SUCCEEDED'
         AND p.created_at >= ?
         AND p.created_at < ?
-        AND bs.employee_id = (SELECT employee_id FROM employees WHERE user_id = ?)
+        AND bs.employee_id = ?
     ) AS revenue_past_week,
 
     (SELECT COALESCE(SUM(p.amount), 0)
@@ -828,13 +845,13 @@ exports.viewStylistMetrics = async (req, res) => {
       JOIN bookings b ON b.booking_id = p.booking_id
       JOIN booking_services bs ON bs.booking_id = b.booking_id
       WHERE p.status = 'SUCCEEDED'
-        AND bs.employee_id = (SELECT employee_id FROM employees WHERE user_id = ?)
+        AND bs.employee_id = ?
     ) AS revenue_all_time;`;
 
     const [revenueMetrics] = await db.execute(revenueMetricsQuery, [
-      todayStart, todayEnd, user_id,  // revenue_today
-      weekAgoStart, todayEnd, user_id,  // revenue_past_week
-      user_id  // revenue_all_time (if exists)
+      todayStart, todayEnd, employee_id,  // revenue_today
+      weekAgoStart, todayEnd, employee_id,  // revenue_past_week
+      employee_id  // revenue_all_time
     ]);
 
     return res.status(200).json({
