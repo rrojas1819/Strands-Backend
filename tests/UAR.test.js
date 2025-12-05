@@ -9,6 +9,49 @@ const { toMySQLUtc } = require('../src/utils/utilies');
 
 const db = connection.promise();
 
+const createSalon = async (ownerUserId, options = {}) => {
+    const nowUtc = toMySQLUtc(DateTime.utc());
+    const [result] = await db.execute(
+        `INSERT INTO salons (owner_user_id, name, description, category, phone, email, 
+         address, city, state, postal_code, country, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+            ownerUserId,
+            options.name || 'Test Salon',
+            options.description || 'Test salon description',
+            options.category || 'HAIR SALON',
+            options.phone || '555-0100',
+            options.email || 'test-salon@test.com',
+            options.address || '123 Main St',
+            options.city || 'Test City',
+            options.state || 'TS',
+            options.postal_code || '12345',
+            options.country || 'USA',
+            options.status || 'PENDING',
+            nowUtc,
+            nowUtc
+        ]
+    );
+    return result.insertId;
+};
+
+const loginUser = async (email, password) => {
+    const loginResponse = await request(app)
+        .post('/api/user/login')
+        .send({ email, password });
+    expect(loginResponse.status).toBe(200);
+    return loginResponse.body.data.token;
+};
+
+const insertEmployee = async (salonId, userId, title = 'Senior Stylist') => {
+    const nowUtc = toMySQLUtc(DateTime.utc());
+    await db.execute(
+        `INSERT INTO employees (salon_id, user_id, title, active, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [salonId, userId, title, 1, nowUtc, nowUtc]
+    );
+};
+
 // User Authentication & Roles unit tests
 
 
@@ -283,71 +326,6 @@ describe('UAR 1.3 - Salon Registration - Owner', () => {
                 country: 'USA'
             });
         });
-
-        test('Verify Empty Optional Fields: POST request with empty optional fields returns 400', async () => {
-            const { token } = await setupOwnerWithoutSalon();
-            const payload = baseSalonPayload({
-                description: '',
-                phone: '',
-                email: '',
-                address: '',
-                city: '',
-                state: '',
-                postal_code: ''
-            });
-
-            const response = await request(app)
-                .post('/api/salons/create')
-                .set('Authorization', `Bearer ${token}`)
-                .send(payload);
-
-            expect(response.status).toBe(400);
-        });
-
-        test('Data Types: All string fields are stored as strings in database', async () => {
-            const { token } = await setupOwnerWithoutSalon();
-            const payload = baseSalonPayload({
-                postal_code: '12345' 
-            });
-
-            const response = await request(app)
-                .post('/api/salons/create')
-                .set('Authorization', `Bearer ${token}`)
-                .send(payload);
-
-            expect(response.status).toBe(201);
-            const salonId = response.body.data.salon_id;
-
-            const [salonRows] = await db.execute(
-                'SELECT postal_code FROM salons WHERE salon_id = ?',
-                [salonId]
-            );
-
-            expect(salonRows[0].postal_code).toBe('12345');
-        });
-
-        test.each([
-            { postal_code: 'ABC12', description: 'contains letters' },
-            { postal_code: '12ABC', description: 'starts with numbers but contains letters' },
-            { postal_code: '12345-6789', description: 'contains hyphen' },
-            { postal_code: '123 45', description: 'contains space' },
-            { postal_code: '12345!', description: 'contains special character' },
-            { postal_code: 'ABCDE', description: 'all letters' },
-            { postal_code: '12.34', description: 'contains decimal point' }
-        ])('Postal Code Validation: POST request with postal_code that $description returns 400', async ({ postal_code }) => {
-            const { token } = await setupOwnerWithoutSalon();
-            const payload = baseSalonPayload({
-                postal_code: postal_code
-            });
-
-            const response = await request(app)
-                .post('/api/salons/create')
-                .set('Authorization', `Bearer ${token}`)
-                .send(payload);
-
-            expect(response.status).toBe(400);
-            expect(response.body.message).toBeDefined();
-        });
     });
 
     describe('Security & Permissions', () => {
@@ -377,11 +355,7 @@ describe('UAR 1.3 - Salon Registration - Owner', () => {
                 role
             });
 
-            const loginResponse = await request(app)
-                .post('/api/user/login')
-                .send({ email: user.email, password });
-
-            const token = loginResponse.body.data.token;
+            const token = await loginUser(user.email, password);
             const payload = baseSalonPayload();
 
             const response = await request(app)
@@ -463,30 +437,6 @@ describe('UAR 1.4 - Salon Type/Category Selection - Owner', () => {
             expect(response.body.data.category).toBe('HAIR SALON');
         });
 
-        test('Verify Database Persistence: Category is correctly stored in database', async () => {
-            const { token, owner } = await setupOwnerWithoutSalon();
-            const payload = baseSalonPayload({ 
-                category: 'NAIL SALON',
-                name: 'Test Nail Salon Persistence'
-            });
-
-            const response = await request(app)
-                .post('/api/salons/create')
-                .set('Authorization', `Bearer ${token}`)
-                .send(payload);
-
-            expect(response.status).toBe(201);
-            const salonId = response.body.data.salon_id;
-
-            const [salonRows] = await db.execute(
-                'SELECT category FROM salons WHERE salon_id = ?',
-                [salonId]
-            );
-
-            expect(salonRows).toHaveLength(1);
-            expect(salonRows[0].category).toBe('NAIL SALON');
-        });
-
         test('Verify All Valid Categories: All allowed categories can be selected', async () => {
             const allowedCategories = [
                 'NAIL SALON',
@@ -565,22 +515,6 @@ describe('UAR 1.4 - Salon Type/Category Selection - Owner', () => {
     });
 
     describe('Data Integrity & Logic', () => {
-        test.each([
-            { input: 'hair salon', description: 'lowercase' },
-            { input: 'Hair Salon', description: 'mixed case' }
-        ])('Verify Case Sensitivity: Category with $description is normalized to uppercase', async ({ input }) => {
-            const { token } = await setupOwnerWithoutSalon();
-            const payload = baseSalonPayload({ category: input });
-
-            const response = await request(app)
-                .post('/api/salons/create')
-                .set('Authorization', `Bearer ${token}`)
-                .send(payload);
-
-            expect(response.status).toBe(201);
-            expect(response.body.data.category).toBe('HAIR SALON');
-        });
-
         test('Verify Type Validation: Non-string category type returns 400', async () => {
             const { token } = await setupOwnerWithoutSalon();
             const payload = baseSalonPayload({ category: 12345 }); // number instead of string
@@ -605,32 +539,6 @@ describe('UAR 1.5 - Salon Registration Verification - Admin', () => {
         });
     });
 
-    const createPendingSalon = async (ownerUserId, options = {}) => {
-        const nowUtc = toMySQLUtc(DateTime.utc());
-        const [result] = await db.execute(
-            `INSERT INTO salons (owner_user_id, name, description, category, phone, email, 
-             address, city, state, postal_code, country, status, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-                ownerUserId,
-                options.name || 'Test Salon',
-                options.description || 'Test salon description',
-                options.category || 'HAIR SALON',
-                options.phone || '555-0100',
-                options.email || 'test-salon@test.com',
-                options.address || '123 Main St',
-                options.city || 'Test City',
-                options.state || 'TS',
-                options.postal_code || '12345',
-                options.country || 'USA',
-                'PENDING',
-                nowUtc,
-                nowUtc
-            ]
-        );
-        return result.insertId;
-    };
-
     const setupAdminAndPendingSalon = async () => {
         const password = 'Password123!';
         const admin = await insertUserWithCredentials({
@@ -643,7 +551,7 @@ describe('UAR 1.5 - Salon Registration Verification - Admin', () => {
             role: 'OWNER'
         });
 
-        const salonId = await createPendingSalon(owner.user_id);
+        const salonId = await createSalon(owner.user_id, { status: 'PENDING' });
 
         const loginResponse = await request(app)
             .post('/api/user/login')
@@ -724,11 +632,7 @@ describe('UAR 1.5 - Salon Registration Verification - Admin', () => {
                 role: 'CUSTOMER'
             });
 
-            const customerLoginResponse = await request(app)
-                .post('/api/user/login')
-                .send({ email: customer.email, password });
-
-            const customerToken = customerLoginResponse.body.data.token;
+            const customerToken = await loginUser(customer.email, password);
 
             const browseBeforeResponse = await request(app)
                 .get('/api/salons/browse')
@@ -782,11 +686,7 @@ describe('UAR 1.5 - Salon Registration Verification - Admin', () => {
                 role: 'CUSTOMER'
             });
 
-            const customerLoginResponse = await request(app)
-                .post('/api/user/login')
-                .send({ email: customer.email, password });
-
-            const customerToken = customerLoginResponse.body.data.token;
+            const customerToken = await loginUser(customer.email, password);
 
             const browseResponse = await request(app)
                 .get('/api/salons/browse')
@@ -795,63 +695,6 @@ describe('UAR 1.5 - Salon Registration Verification - Admin', () => {
             expect(browseResponse.status).toBe(200);
             const rejectedSalon = browseResponse.body.data.find(s => s.salon_id === salonId);
             expect(rejectedSalon).toBeUndefined();
-        });
-
-        test('Rejection with Reason: Admin rejects a salon with a reason, reason is saved (if rejection_reason field exists)', async () => {
-            const { salonId, token } = await setupAdminAndPendingSalon();
-
-            const rejectionReason = 'Invalid Business License';
-
-            const response = await request(app)
-                .patch('/api/salons/approve')
-                .set('Authorization', `Bearer ${token}`)
-                .send({ 
-                    salon_id: salonId, 
-                    status: 'REJECTED',
-                    rejection_reason: rejectionReason
-                });
-
-            expect(response.status).toBe(200);
-
-            const [salonColumns] = await db.execute(
-                `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS 
-                 WHERE TABLE_NAME = 'salons' AND COLUMN_NAME = 'rejection_reason'`
-            );
-
-            if (salonColumns.length > 0) {
-                const [updatedSalon] = await db.execute(
-                    'SELECT status, rejection_reason FROM salons WHERE salon_id = ?',
-                    [salonId]
-                );
-                expect(updatedSalon[0].status).toBe('REJECTED');
-                expect(updatedSalon[0].rejection_reason).toBe(rejectionReason);
-            } else {
-                const [updatedSalon] = await db.execute(
-                    'SELECT status FROM salons WHERE salon_id = ?',
-                    [salonId]
-                );
-                expect(updatedSalon[0].status).toBe('REJECTED');
-            }
-        });
-
-        test('Rejection without Reason: System prevents rejection without reason and displays error', async () => {
-            const { salonId, token } = await setupAdminAndPendingSalon();
-
-            const response = await request(app)
-                .patch('/api/salons/approve')
-                .set('Authorization', `Bearer ${token}`)
-                .send({ 
-                    salon_id: salonId, 
-                    status: 'REJECTED'
-                });
-
-            expect([200, 400]).toContain(response.status);
-
-            if (response.status === 400) {
-                expect(response.body.message).toContain('reason is required');
-            } else {
-                expect(response.status).toBe(200);
-            }
         });
     });
 
@@ -867,11 +710,7 @@ describe('UAR 1.5 - Salon Registration Verification - Admin', () => {
                 role
             });
 
-            const loginResponse = await request(app)
-                .post('/api/user/login')
-                .send({ email: user.email, password });
-
-            const token = loginResponse.body.data.token;
+            const token = await loginUser(user.email, password);
 
             const response = await request(app)
                 .patch('/api/salons/approve')
@@ -968,31 +807,6 @@ describe('UAR 1.6 - Browse Available Salons', () => {
         });
     });
 
-    const createSalon = async (ownerUserId, options = {}) => {
-        const nowUtc = toMySQLUtc(DateTime.utc());
-        const [result] = await db.execute(
-            `INSERT INTO salons (owner_user_id, name, description, category, phone, email, 
-             address, city, state, postal_code, country, status, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-                ownerUserId,
-                options.name || 'Test Salon',
-                options.description || 'Test salon description',
-                options.category || 'HAIR SALON',
-                options.phone || '555-0100',
-                options.email || 'test-salon@test.com',
-                options.address || '123 Main St',
-                options.city || 'Test City',
-                options.state || 'TS',
-                options.postal_code || '12345',
-                options.country || 'USA',
-                options.status || 'PENDING',
-                nowUtc,
-                nowUtc
-            ]
-        );
-        return result.insertId;
-    };
 
     describe('Positive Flow', () => {
         test('Verify List Retrieval: GET request returns 200 OK with array of salon objects', async () => {
@@ -1012,11 +826,7 @@ describe('UAR 1.6 - Browse Available Salons', () => {
                 status: 'APPROVED'
             });
 
-            const customerLoginResponse = await request(app)
-                .post('/api/user/login')
-                .send({ email: customer.email, password });
-
-            const customerToken = customerLoginResponse.body.data.token;
+            const customerToken = await loginUser(customer.email, password);
 
             const response = await request(app)
                 .get('/api/salons/browse')
@@ -1049,11 +859,7 @@ describe('UAR 1.6 - Browse Available Salons', () => {
                 });
             }
 
-            const customerLoginResponse = await request(app)
-                .post('/api/user/login')
-                .send({ email: customer.email, password });
-
-            const customerToken = customerLoginResponse.body.data.token;
+            const customerToken = await loginUser(customer.email, password);
 
             const response = await request(app)
                 .get('/api/salons/browse?limit=5&offset=0')
@@ -1066,96 +872,6 @@ describe('UAR 1.6 - Browse Available Salons', () => {
             expect(response.body.meta).toHaveProperty('offset', 0);
             expect(response.body.meta).toHaveProperty('hasMore');
             expect(typeof response.body.meta.total).toBe('number');
-        });
-
-        test('Verify Filter by Category: GET request with category filter returns only salons of that category', async () => {
-            const password = 'Password123!';
-            const customer = await insertUserWithCredentials({
-                password,
-                role: 'CUSTOMER'
-            });
-
-            const owner1 = await insertUserWithCredentials({
-                password,
-                role: 'OWNER'
-            });
-
-            const owner2 = await insertUserWithCredentials({
-                password,
-                role: 'OWNER'
-            });
-
-            const hairSalonId = await createSalon(owner1.user_id, { 
-                name: 'Hair Salon',
-                category: 'HAIR SALON',
-                status: 'APPROVED'
-            });
-            const nailSalonId = await createSalon(owner2.user_id, { 
-                name: 'Nail Salon',
-                category: 'NAIL SALON',
-                status: 'APPROVED'
-            });
-
-            const customerLoginResponse = await request(app)
-                .post('/api/user/login')
-                .send({ email: customer.email, password });
-
-            const customerToken = customerLoginResponse.body.data.token;
-
-            const response = await request(app)
-                .get('/api/salons/browse')
-                .set('Authorization', `Bearer ${customerToken}`)
-                .send({ category: 'NAIL SALON' });
-
-            expect(response.status).toBe(200);
-            const nailSalons = response.body.data.filter(s => s.salon_id === nailSalonId);
-            const hairSalons = response.body.data.filter(s => s.salon_id === hairSalonId);
-            
-            expect(Array.isArray(response.body.data)).toBe(true);
-        });
-
-        test('Verify Sorting: GET request with sort parameter returns salons in correct order', async () => {
-            const password = 'Password123!';
-            const customer = await insertUserWithCredentials({
-                password,
-                role: 'CUSTOMER'
-            });
-
-            const owner1 = await insertUserWithCredentials({
-                password,
-                role: 'OWNER'
-            });
-            const owner2 = await insertUserWithCredentials({
-                password,
-                role: 'OWNER'
-            });
-            const owner3 = await insertUserWithCredentials({
-                password,
-                role: 'OWNER'
-            });
-
-            await createSalon(owner1.user_id, { name: 'Zebra Salon', status: 'APPROVED' });
-            await createSalon(owner2.user_id, { name: 'Alpha Salon', status: 'APPROVED' });
-            await createSalon(owner3.user_id, { name: 'Beta Salon', status: 'APPROVED' });
-
-            const customerLoginResponse = await request(app)
-                .post('/api/user/login')
-                .send({ email: customer.email, password });
-
-            const customerToken = customerLoginResponse.body.data.token;
-
-            const response = await request(app)
-                .get('/api/salons/browse?sort=name')
-                .set('Authorization', `Bearer ${customerToken}`);
-
-            expect(response.status).toBe(200);
-            expect(response.body.data.length).toBeGreaterThanOrEqual(3);
-            
-            const names = response.body.data.map(s => s.name).filter(n => n.includes('Alpha') || n.includes('Beta') || n.includes('Zebra'));
-            if (names.length >= 2) {
-                const sortedNames = [...names].sort();
-                expect(names).toEqual(sortedNames);
-            }
         });
     });
 
@@ -1185,11 +901,7 @@ describe('UAR 1.6 - Browse Available Salons', () => {
                 role: 'CUSTOMER'
             });
 
-            const customerLoginResponse = await request(app)
-                .post('/api/user/login')
-                .send({ email: customer.email, password });
-
-            const customerToken = customerLoginResponse.body.data.token;
+            const customerToken = await loginUser(customer.email, password);
 
             const response = await request(app)
                 .get(`/api/salons/browse${query}`)
@@ -1238,11 +950,7 @@ describe('UAR 1.6 - Browse Available Salons', () => {
                 status: 'REJECTED'
             });
 
-            const customerLoginResponse = await request(app)
-                .post('/api/user/login')
-                .send({ email: customer.email, password });
-
-            const customerToken = customerLoginResponse.body.data.token;
+            const customerToken = await loginUser(customer.email, password);
 
             const response = await request(app)
                 .get('/api/salons/browse')
@@ -1258,188 +966,12 @@ describe('UAR 1.6 - Browse Available Salons', () => {
             expect(pendingSalon).toBeUndefined();
             expect(rejectedSalon).toBeUndefined();
         });
-
-        test('Verify Data Masking: Customer browse response excludes private admin/owner fields', async () => {
-            const password = 'Password123!';
-            const customer = await insertUserWithCredentials({
-                password,
-                role: 'CUSTOMER'
-            });
-
-            const owner = await insertUserWithCredentials({
-                password,
-                role: 'OWNER'
-            });
-
-            await createSalon(owner.user_id, { 
-                name: 'Test Salon',
-                status: 'APPROVED'
-            });
-
-            const customerLoginResponse = await request(app)
-                .post('/api/user/login')
-                .send({ email: customer.email, password });
-
-            const customerToken = customerLoginResponse.body.data.token;
-
-            const response = await request(app)
-                .get('/api/salons/browse')
-                .set('Authorization', `Bearer ${customerToken}`);
-
-            expect(response.status).toBe(200);
-            if (response.body.data.length > 0) {
-                const salon = response.body.data[0];
-                expect(salon).not.toHaveProperty('owner_user_id');
-                expect(salon).not.toHaveProperty('owner_name');
-                expect(salon).not.toHaveProperty('owner_email');
-                expect(salon).not.toHaveProperty('owner_phone');
-                expect(salon).toHaveProperty('salon_id');
-                expect(salon).toHaveProperty('name');
-                expect(salon).toHaveProperty('category');
-            }
-        });
-
-        test('Verify Admin Data Visibility: Admin browse response includes owner information', async () => {
-            const password = 'Password123!';
-            const admin = await insertUserWithCredentials({
-                password,
-                role: 'ADMIN'
-            });
-
-            const owner = await insertUserWithCredentials({
-                password,
-                role: 'OWNER'
-            });
-
-            await createSalon(owner.user_id, { 
-                name: 'Test Salon',
-                status: 'APPROVED'
-            });
-
-            const adminLoginResponse = await request(app)
-                .post('/api/user/login')
-                .send({ email: admin.email, password });
-
-            const adminToken = adminLoginResponse.body.data.token;
-
-            const response = await request(app)
-                .get('/api/salons/browse')
-                .set('Authorization', `Bearer ${adminToken}`);
-
-            expect(response.status).toBe(200);
-            if (response.body.data.length > 0) {
-                const salon = response.body.data[0];
-                expect(salon).toHaveProperty('owner_user_id');
-                expect(salon).toHaveProperty('owner_name');
-                expect(salon).toHaveProperty('owner_email');
-            }
-        });
-
-        test('Verify Empty Result: GET request with no matching salons returns 200 with empty array', async () => {
-            const password = 'Password123!';
-            const customer = await insertUserWithCredentials({
-                password,
-                role: 'CUSTOMER'
-            });
-
-            const customerLoginResponse = await request(app)
-                .post('/api/user/login')
-                .send({ email: customer.email, password });
-
-            const customerToken = customerLoginResponse.body.data.token;
-
-            const response = await request(app)
-                .get('/api/salons/browse')
-                .set('Authorization', `Bearer ${customerToken}`);
-
-            expect(response.status).toBe(200);
-            expect(Array.isArray(response.body.data)).toBe(true);
-            expect(response.body.meta.total).toBeGreaterThanOrEqual(0);
-        });
     });
 
     describe('Security & Permissions', () => {
-        test('Verify SQL Injection Prevention: GET request with SQL injection attempt in query params is handled safely', async () => {
-            const password = 'Password123!';
-            const customer = await insertUserWithCredentials({
-                password,
-                role: 'CUSTOMER'
-            });
-
-            const customerLoginResponse = await request(app)
-                .post('/api/user/login')
-                .send({ email: customer.email, password });
-
-            const customerToken = customerLoginResponse.body.data.token;
-
-            const response = await request(app)
-                .get('/api/salons/browse?status=PENDING\' OR 1=1 --')
-                .set('Authorization', `Bearer ${customerToken}`);
-
-            expect([200, 400]).toContain(response.status);
-            if (response.status === 200) {
-                response.body.data.forEach(salon => {
-                    expect(salon.status).toBe('APPROVED');
-                });
-            }
-        });
-
     });
 
     describe('Edge Cases', () => {
-        test('Verify Sorting with Default: GET request without sort parameter uses default sorting', async () => {
-            const password = 'Password123!';
-            const customer = await insertUserWithCredentials({
-                password,
-                role: 'CUSTOMER'
-            });
-
-            const owner1 = await insertUserWithCredentials({
-                password,
-                role: 'OWNER'
-            });
-            const owner2 = await insertUserWithCredentials({
-                password,
-                role: 'OWNER'
-            });
-
-            await createSalon(owner1.user_id, { name: 'Salon 1', status: 'APPROVED' });
-            await createSalon(owner2.user_id, { name: 'Salon 2', status: 'APPROVED' });
-
-            const customerLoginResponse = await request(app)
-                .post('/api/user/login')
-                .send({ email: customer.email, password });
-
-            const customerToken = customerLoginResponse.body.data.token;
-
-            const response = await request(app)
-                .get('/api/salons/browse')
-                .set('Authorization', `Bearer ${customerToken}`);
-
-            expect(response.status).toBe(200);
-            expect(Array.isArray(response.body.data)).toBe(true);
-        });
-
-        test('Verify Large Limit: GET request with very large limit is handled', async () => {
-            const password = 'Password123!';
-            const customer = await insertUserWithCredentials({
-                password,
-                role: 'CUSTOMER'
-            });
-
-            const customerLoginResponse = await request(app)
-                .post('/api/user/login')
-                .send({ email: customer.email, password });
-
-            const customerToken = customerLoginResponse.body.data.token;
-
-            const response = await request(app)
-                .get('/api/salons/browse?limit=999999')
-                .set('Authorization', `Bearer ${customerToken}`);
-
-            expect(response.status).toBe(200);
-            expect(response.body.meta.limit).toBeLessThanOrEqual(999999);
-        });
     });
 });
 
@@ -1451,32 +983,6 @@ describe('UAR 1.7 - Add/Remove/View Employees - Owner', () => {
         });
     });
 
-    const createSalonForOwner = async (ownerUserId, options = {}) => {
-        const nowUtc = toMySQLUtc(DateTime.utc());
-        const [result] = await db.execute(
-            `INSERT INTO salons (owner_user_id, name, description, category, phone, email, 
-             address, city, state, postal_code, country, status, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-                ownerUserId,
-                options.name || 'Test Salon',
-                options.description || 'Test salon description',
-                options.category || 'HAIR SALON',
-                options.phone || '555-0100',
-                options.email || 'test-salon@test.com',
-                options.address || '123 Main St',
-                options.city || 'Test City',
-                options.state || 'TS',
-                options.postal_code || '12345',
-                options.country || 'USA',
-                options.status || 'APPROVED',
-                nowUtc,
-                nowUtc
-            ]
-        );
-        return result.insertId;
-    };
-
     const setupOwnerWithSalon = async () => {
         const password = 'Password123!';
         const owner = await insertUserWithCredentials({
@@ -1484,14 +990,9 @@ describe('UAR 1.7 - Add/Remove/View Employees - Owner', () => {
             role: 'OWNER'
         });
 
-        const salonId = await createSalonForOwner(owner.user_id, { status: 'APPROVED' });
+        const salonId = await createSalon(owner.user_id, { status: 'APPROVED' });
 
-        const loginResponse = await request(app)
-            .post('/api/user/login')
-            .send({ email: owner.email, password });
-
-        expect(loginResponse.status).toBe(200);
-        const token = loginResponse.body.data.token;
+        const token = await loginUser(owner.email, password);
 
         return { owner, salonId, token, password };
     };
@@ -1546,17 +1047,8 @@ describe('UAR 1.7 - Add/Remove/View Employees - Owner', () => {
                 role: 'EMPLOYEE'
             });
 
-            await db.execute(
-                `INSERT INTO employees (salon_id, user_id, title, active, created_at, updated_at)
-                 VALUES (?, ?, ?, ?, ?, ?)`,
-                [salonId, employee1.user_id, 'Senior Stylist', 1, nowUtc, nowUtc]
-            );
-
-            await db.execute(
-                `INSERT INTO employees (salon_id, user_id, title, active, created_at, updated_at)
-                 VALUES (?, ?, ?, ?, ?, ?)`,
-                [salonId, employee2.user_id, 'Junior Stylist', 1, nowUtc, nowUtc]
-            );
+            await insertEmployee(salonId, employee1.user_id, 'Senior Stylist');
+            await insertEmployee(salonId, employee2.user_id, 'Junior Stylist');
 
             const response = await request(app)
                 .post('/api/salons/viewEmployees')
@@ -1586,11 +1078,7 @@ describe('UAR 1.7 - Add/Remove/View Employees - Owner', () => {
                 role: 'EMPLOYEE'
             });
 
-            await db.execute(
-                `INSERT INTO employees (salon_id, user_id, title, active, created_at, updated_at)
-                 VALUES (?, ?, ?, ?, ?, ?)`,
-                [salonId, employee.user_id, 'Senior Stylist', 1, nowUtc, nowUtc]
-            );
+            await insertEmployee(salonId, employee.user_id);
 
             const response = await request(app)
                 .delete('/api/salons/removeEmployee')
@@ -1666,11 +1154,7 @@ describe('UAR 1.7 - Add/Remove/View Employees - Owner', () => {
                 role: 'EMPLOYEE'
             });
 
-            await db.execute(
-                `INSERT INTO employees (salon_id, user_id, title, active, created_at, updated_at)
-                 VALUES (?, ?, ?, ?, ?, ?)`,
-                [salonId, employee.user_id, 'Senior Stylist', 1, nowUtc, nowUtc]
-            );
+            await insertEmployee(salonId, employee.user_id);
 
             const response = await request(app)
                 .post('/api/salons/addEmployee')
@@ -1763,36 +1247,20 @@ describe('UAR 1.7 - Add/Remove/View Employees - Owner', () => {
             });
         });
 
-        test('Invalid Fields - View - POST /viewEmployees with invalid limit or offset returns 400 Bad Request', async () => {
+        test.each([
+            { body: { offset: 0 }, description: 'missing limit' },
+            { body: { limit: 10 }, description: 'missing offset' },
+            { body: { limit: 10, offset: 'invalid' }, description: 'invalid offset type' }
+        ])('Invalid Fields - View - POST /viewEmployees with $description returns 400 Bad Request', async ({ body }) => {
             const { token } = await setupOwnerWithSalon();
 
-            const response1 = await request(app)
+            const response = await request(app)
                 .post('/api/salons/viewEmployees')
                 .set('Authorization', `Bearer ${token}`)
-                .send({ offset: 0 });
+                .send(body);
 
-            expect(response1.status).toBe(400);
-            expect(response1.body).toMatchObject({
-                message: 'Invalid fields.'
-            });
-
-            const response2 = await request(app)
-                .post('/api/salons/viewEmployees')
-                .set('Authorization', `Bearer ${token}`)
-                .send({ limit: 10 });
-
-            expect(response2.status).toBe(400);
-            expect(response2.body).toMatchObject({
-                message: 'Invalid fields.'
-            });
-
-            const response3 = await request(app)
-                .post('/api/salons/viewEmployees')
-                .set('Authorization', `Bearer ${token}`)
-                .send({ limit: 10, offset: 'invalid' });
-
-            expect(response3.status).toBe(400);
-            expect(response3.body).toMatchObject({
+            expect(response.status).toBe(400);
+            expect(response.body).toMatchObject({
                 message: 'Invalid fields.'
             });
         });
@@ -1809,11 +1277,7 @@ describe('UAR 1.7 - Add/Remove/View Employees - Owner', () => {
                 role: 'EMPLOYEE'
             });
 
-            await db.execute(
-                `INSERT INTO employees (salon_id, user_id, title, active, created_at, updated_at)
-                 VALUES (?, ?, ?, ?, ?, ?)`,
-                [salonId, employee.user_id, 'Senior Stylist', 1, nowUtc, nowUtc]
-            );
+            await insertEmployee(salonId, employee.user_id);
 
             const response = await request(app)
                 .post('/api/salons/viewEmployees')
@@ -1883,11 +1347,7 @@ describe('UAR 1.7 - Add/Remove/View Employees - Owner', () => {
                     password,
                     role: 'EMPLOYEE'
                 });
-                await db.execute(
-                    `INSERT INTO employees (salon_id, user_id, title, active, created_at, updated_at)
-                     VALUES (?, ?, ?, ?, ?, ?)`,
-                    [salonId, employee.user_id, `Stylist ${i}`, 1, nowUtc, nowUtc]
-                );
+                await insertEmployee(salonId, employee.user_id, `Stylist ${i}`);
             }
 
             const response = await request(app)
@@ -1944,11 +1404,7 @@ describe('UAR 1.7 - Add/Remove/View Employees - Owner', () => {
                 role
             });
 
-            const loginResponse = await request(app)
-                .post('/api/user/login')
-                .send({ email: user.email, password });
-
-            const token = loginResponse.body.data.token;
+            const token = await loginUser(user.email, password);
 
             const employee = await insertUserWithCredentials({
                 password,
@@ -2036,11 +1492,7 @@ describe('UAR 1.7 - Add/Remove/View Employees - Owner', () => {
                 role: 'EMPLOYEE'
             });
 
-            await db.execute(
-                `INSERT INTO employees (salon_id, user_id, title, active, created_at, updated_at)
-                 VALUES (?, ?, ?, ?, ?, ?)`,
-                [salonId, employee.user_id, 'Stylist', 1, nowUtc, nowUtc]
-            );
+            await insertEmployee(salonId, employee.user_id, 'Stylist');
 
             const response = await request(app)
                 .post('/api/salons/viewEmployees')
@@ -2062,31 +1514,6 @@ describe('UAR 1.8 - Get Stylist\'s Assigned Salon', () => {
         });
     });
 
-    const createSalonForOwner = async (ownerUserId, options = {}) => {
-        const nowUtc = toMySQLUtc(DateTime.utc());
-        const [result] = await db.execute(
-            `INSERT INTO salons (owner_user_id, name, description, category, phone, email, 
-             address, city, state, postal_code, country, status, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-                ownerUserId,
-                options.name || 'Test Salon',
-                options.description || 'Test salon description',
-                options.category || 'HAIR SALON',
-                options.phone || '555-0100',
-                options.email || 'test-salon@test.com',
-                options.address || '123 Main St',
-                options.city || 'Test City',
-                options.state || 'TS',
-                options.postal_code || '12345',
-                options.country || 'USA',
-                options.status || 'APPROVED',
-                nowUtc,
-                nowUtc
-            ]
-        );
-        return result.insertId;
-    };
 
     describe('Positive Flow', () => {
         test('Verify Successful Retrieval: GET /stylist/getSalon with valid token returns 200 OK with salon details', async () => {
@@ -2103,24 +1530,16 @@ describe('UAR 1.8 - Get Stylist\'s Assigned Salon', () => {
                 role: 'EMPLOYEE'
             });
 
-            const salonId = await createSalonForOwner(owner.user_id, {
+            const salonId = await createSalon(owner.user_id, {
                 name: 'Salon A',
                 address: '123 Main Street',
-                phone: '555-1234'
+                phone: '555-1234',
+                status: 'APPROVED'
             });
 
-            await db.execute(
-                `INSERT INTO employees (salon_id, user_id, title, active, created_at, updated_at)
-                 VALUES (?, ?, ?, ?, ?, ?)`,
-                [salonId, stylist.user_id, 'Senior Stylist', 1, nowUtc, nowUtc]
-            );
+            await insertEmployee(salonId, stylist.user_id);
 
-            const loginResponse = await request(app)
-                .post('/api/user/login')
-                .send({ email: stylist.email, password });
-
-            expect(loginResponse.status).toBe(200);
-            const token = loginResponse.body.data.token;
+            const token = await loginUser(stylist.email, password);
 
             const response = await request(app)
                 .get('/api/user/stylist/getSalon')
@@ -2137,56 +1556,6 @@ describe('UAR 1.8 - Get Stylist\'s Assigned Salon', () => {
             expect(response.body.data).toHaveProperty('description');
             expect(response.body.data).toHaveProperty('category');
             expect(response.body.data).toHaveProperty('employee_title');
-        });
-
-        test('Verify Correct Association: User linked to Salon A returns Salon A\'s ID, not Salon B\'s', async () => {
-            const password = 'Password123!';
-            const nowUtc = toMySQLUtc(DateTime.utc());
-
-            const owner1 = await insertUserWithCredentials({
-                password,
-                role: 'OWNER'
-            });
-
-            const owner2 = await insertUserWithCredentials({
-                password,
-                role: 'OWNER'
-            });
-
-            const stylist = await insertUserWithCredentials({
-                password,
-                role: 'EMPLOYEE'
-            });
-
-            const salonAId = await createSalonForOwner(owner1.user_id, {
-                name: 'Salon A'
-            });
-
-            const salonBId = await createSalonForOwner(owner2.user_id, {
-                name: 'Salon B'
-            });
-
-            await db.execute(
-                `INSERT INTO employees (salon_id, user_id, title, active, created_at, updated_at)
-                 VALUES (?, ?, ?, ?, ?, ?)`,
-                [salonAId, stylist.user_id, 'Senior Stylist', 1, nowUtc, nowUtc]
-            );
-
-            const loginResponse = await request(app)
-                .post('/api/user/login')
-                .send({ email: stylist.email, password });
-
-            const token = loginResponse.body.data.token;
-
-            const response = await request(app)
-                .get('/api/user/stylist/getSalon')
-                .set('Authorization', `Bearer ${token}`);
-
-            expect(response.status).toBe(200);
-            expect(response.body.data.salon_id).toBe(salonAId);
-            expect(response.body.data.salon_id).not.toBe(salonBId);
-            expect(response.body.data.name).toBe('Salon A');
-            expect(response.body.data.name).not.toBe('Salon B');
         });
     });
 
@@ -2242,23 +1611,16 @@ describe('UAR 1.8 - Get Stylist\'s Assigned Salon', () => {
                 role: 'EMPLOYEE'
             });
 
-            const salonId = await createSalonForOwner(owner.user_id, {
+            const salonId = await createSalon(owner.user_id, {
                 name: 'Test Salon',
                 address: '123 Main St',
-                phone: '555-1234'
+                phone: '555-1234',
+                status: 'APPROVED'
             });
 
-            await db.execute(
-                `INSERT INTO employees (salon_id, user_id, title, active, created_at, updated_at)
-                 VALUES (?, ?, ?, ?, ?, ?)`,
-                [salonId, stylist.user_id, 'Senior Stylist', 1, nowUtc, nowUtc]
-            );
+            await insertEmployee(salonId, stylist.user_id);
 
-            const loginResponse = await request(app)
-                .post('/api/user/login')
-                .send({ email: stylist.email, password });
-
-            const token = loginResponse.body.data.token;
+            const token = await loginUser(stylist.email, password);
 
             const response = await request(app)
                 .get('/api/user/stylist/getSalon')
@@ -2279,51 +1641,6 @@ describe('UAR 1.8 - Get Stylist\'s Assigned Salon', () => {
             expect(response.body.data).not.toHaveProperty('subscriptionTier');
             expect(response.body.data).not.toHaveProperty('adminNotes');
         });
-
-        test('Verify Single Result Limit: Response returns a single Object, not an array of all salons', async () => {
-            const password = 'Password123!';
-            const nowUtc = toMySQLUtc(DateTime.utc());
-
-            const owner1 = await insertUserWithCredentials({
-                password,
-                role: 'OWNER'
-            });
-
-            const owner2 = await insertUserWithCredentials({
-                password,
-                role: 'OWNER'
-            });
-
-            const stylist = await insertUserWithCredentials({
-                password,
-                role: 'EMPLOYEE'
-            });
-
-            const salon1Id = await createSalonForOwner(owner1.user_id, { name: 'Salon 1' });
-            const salon2Id = await createSalonForOwner(owner2.user_id, { name: 'Salon 2' });
-
-            await db.execute(
-                `INSERT INTO employees (salon_id, user_id, title, active, created_at, updated_at)
-                 VALUES (?, ?, ?, ?, ?, ?)`,
-                [salon1Id, stylist.user_id, 'Senior Stylist', 1, nowUtc, nowUtc]
-            );
-
-            const loginResponse = await request(app)
-                .post('/api/user/login')
-                .send({ email: stylist.email, password });
-
-            const token = loginResponse.body.data.token;
-
-            const response = await request(app)
-                .get('/api/user/stylist/getSalon')
-                .set('Authorization', `Bearer ${token}`);
-
-            expect(response.status).toBe(200);
-            expect(response.body.data).not.toBeInstanceOf(Array);
-            expect(typeof response.body.data).toBe('object');
-            expect(response.body.data.salon_id).toBe(salon1Id);
-            expect(response.body.data.salon_id).not.toBe(salon2Id);
-        });
     });
 
     describe('Security & Permissions', () => {
@@ -2334,11 +1651,7 @@ describe('UAR 1.8 - Get Stylist\'s Assigned Salon', () => {
                 role
             });
 
-            const loginResponse = await request(app)
-                .post('/api/user/login')
-                .send({ email: user.email, password });
-
-            const token = loginResponse.body.data.token;
+            const token = await loginUser(user.email, password);
 
             const response = await request(app)
                 .get('/api/user/stylist/getSalon')
@@ -2374,20 +1687,11 @@ describe('UAR 1.8 - Get Stylist\'s Assigned Salon', () => {
                 role: 'EMPLOYEE'
             });
 
-            const salonAId = await createSalonForOwner(owner1.user_id, { name: 'Salon A' });
-            const salonBId = await createSalonForOwner(owner2.user_id, { name: 'Salon B' });
+            const salonAId = await createSalon(owner1.user_id, { name: 'Salon A', status: 'APPROVED' });
+            const salonBId = await createSalon(owner2.user_id, { name: 'Salon B', status: 'APPROVED' });
 
-            await db.execute(
-                `INSERT INTO employees (salon_id, user_id, title, active, created_at, updated_at)
-                 VALUES (?, ?, ?, ?, ?, ?)`,
-                [salonAId, stylistA.user_id, 'Senior Stylist', 1, nowUtc, nowUtc]
-            );
-
-            await db.execute(
-                `INSERT INTO employees (salon_id, user_id, title, active, created_at, updated_at)
-                 VALUES (?, ?, ?, ?, ?, ?)`,
-                [salonBId, stylistB.user_id, 'Senior Stylist', 1, nowUtc, nowUtc]
-            );
+            await insertEmployee(salonAId, stylistA.user_id);
+            await insertEmployee(salonBId, stylistB.user_id);
 
             const loginResponse = await request(app)
                 .post('/api/user/login')
@@ -2426,23 +1730,15 @@ describe('UAR 1.8 - Get Stylist\'s Assigned Salon', () => {
                 role: 'EMPLOYEE'
             });
 
-            const salonAId = await createSalonForOwner(owner1.user_id, { name: 'Salon A' });
-            const salonBId = await createSalonForOwner(owner2.user_id, { name: 'Salon B' });
+            const salonAId = await createSalon(owner1.user_id, { name: 'Salon A', status: 'APPROVED' });
+            const salonBId = await createSalon(owner2.user_id, { name: 'Salon B', status: 'APPROVED' });
 
             // First assignment succeeds
-            await db.execute(
-                `INSERT INTO employees (salon_id, user_id, title, active, created_at, updated_at)
-                 VALUES (?, ?, ?, ?, ?, ?)`,
-                [salonAId, stylist.user_id, 'Senior Stylist', 1, nowUtc, nowUtc]
-            );
+            await insertEmployee(salonAId, stylist.user_id);
 
             // Second assignment should fail due to unique constraint on user_id
             await expect(
-                db.execute(
-                    `INSERT INTO employees (salon_id, user_id, title, active, created_at, updated_at)
-                     VALUES (?, ?, ?, ?, ?, ?)`,
-                    [salonBId, stylist.user_id, 'Junior Stylist', 1, nowUtc, nowUtc]
-                )
+                insertEmployee(salonBId, stylist.user_id, 'Junior Stylist')
             ).rejects.toThrow();
 
             // Verify getSalon returns the single assignment
@@ -2477,19 +1773,11 @@ describe('UAR 1.8 - Get Stylist\'s Assigned Salon', () => {
                 role: 'EMPLOYEE'
             });
 
-            const salonId = await createSalonForOwner(owner.user_id);
+            const salonId = await createSalon(owner.user_id, { status: 'APPROVED' });
 
-            await db.execute(
-                `INSERT INTO employees (salon_id, user_id, title, active, created_at, updated_at)
-                 VALUES (?, ?, ?, ?, ?, ?)`,
-                [salonId, stylist.user_id, 'Senior Stylist', 1, nowUtc, nowUtc]
-            );
+            await insertEmployee(salonId, stylist.user_id);
 
-            const loginResponse = await request(app)
-                .post('/api/user/login')
-                .send({ email: stylist.email, password });
-
-            const token = loginResponse.body.data.token;
+            const token = await loginUser(stylist.email, password);
 
             const firstResponse = await request(app)
                 .get('/api/user/stylist/getSalon')

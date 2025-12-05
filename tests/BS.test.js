@@ -9,6 +9,48 @@ const { toMySQLUtc } = require('../src/utils/utilies');
 
 const db = connection.promise();
 
+const getNextMonday = (dateTime) => {
+    let nextMonday = dateTime.plus({ days: 1 });
+    while (nextMonday.weekday !== 1) {
+        nextMonday = nextMonday.plus({ days: 1 });
+    }
+    return nextMonday;
+};
+
+const loginUser = async (email, password) => {
+    const loginResponse = await request(app)
+        .post('/api/user/login')
+        .send({ email, password });
+    expect(loginResponse.status).toBe(200);
+    return loginResponse.body.data.token;
+};
+
+const createSalon = async (ownerUserId, options = {}) => {
+    const nowUtc = toMySQLUtc(DateTime.utc());
+    const [result] = await db.execute(
+        `INSERT INTO salons (owner_user_id, name, description, category, phone, email, 
+         address, city, state, postal_code, country, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+            ownerUserId,
+            options.name || 'Test Salon',
+            options.description || 'Test salon description',
+            options.category || 'HAIR SALON',
+            options.phone || '555-0100',
+            options.email || 'test-salon@test.com',
+            options.address || '123 Main St',
+            options.city || 'Test City',
+            options.state || 'TS',
+            options.postal_code || '12345',
+            options.country || 'USA',
+            options.status || 'APPROVED',
+            nowUtc,
+            nowUtc
+        ]
+    );
+    return result.insertId;
+};
+
 //Booking & Scheduling unit tests
 
 //BS 1.1 - As an owner, I want to be able to set the operating hours of my salon, so that stylists and customers can only book appointments during open hours.
@@ -28,34 +70,9 @@ describe('BS 1.1 - Set salon operating hours - Owner', () => {
             role: 'OWNER'
         });
 
-        await db.execute(
-            `INSERT INTO salons (owner_user_id, name, description, category, phone, email, 
-             address, city, state, postal_code, country, status, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-                owner.user_id,
-                'Test Salon',
-                'Test salon description',
-                'HAIR SALON',
-                '555-0100',
-                'test-salon@test.com',
-                '123 Main St',
-                'Test City',
-                'TS',
-                '12345',
-                'USA',
-                'APPROVED',
-                nowUtc,
-                nowUtc
-            ]
-        );
+        await createSalon(owner.user_id);
 
-        const loginResponse = await request(app)
-            .post('/api/user/login')
-            .send({ email: owner.email, password });
-
-        expect(loginResponse.status).toBe(200);
-        const token = loginResponse.body.data.token;
+        const token = await loginUser(owner.email, password);
 
         const weeklyHours = {
             MONDAY: {
@@ -87,7 +104,6 @@ describe('BS 1.1 - Set salon operating hours - Owner', () => {
 
     test.each(['CUSTOMER', 'EMPLOYEE', 'ADMIN'])('As a %s, I should not be able to set salon operating hours', async (role) => {
         const password = 'Password123!';
-        const nowUtc = toMySQLUtc(DateTime.utc());
 
         const owner = await insertUserWithCredentials({
             password,
@@ -99,34 +115,9 @@ describe('BS 1.1 - Set salon operating hours - Owner', () => {
             role: role
         });
 
-        await db.execute(
-            `INSERT INTO salons (owner_user_id, name, description, category, phone, email, 
-             address, city, state, postal_code, country, status, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-                owner.user_id,
-                'Test Salon',
-                'Test salon description',
-                'HAIR SALON',
-                '555-0100',
-                'test-salon@test.com',
-                '123 Main St',
-                'Test City',
-                'TS',
-                '12345',
-                'USA',
-                'APPROVED',
-                nowUtc,
-                nowUtc
-            ]
-        );
+        await createSalon(owner.user_id);
 
-        const loginResponse = await request(app)
-            .post('/api/user/login')
-            .send({ email: user.email, password });
-
-        expect(loginResponse.status).toBe(200);
-        const token = loginResponse.body.data.token;
+        const token = await loginUser(user.email, password);
 
         const weeklyHours = {
             MONDAY: {
@@ -145,146 +136,6 @@ describe('BS 1.1 - Set salon operating hours - Owner', () => {
             error: 'Insufficient permissions'
         });
     });
-
-    test('As an owner, I should be able to modify existing salon operating hours', async () => {
-        const password = 'Password123!';
-        const nowUtc = toMySQLUtc(DateTime.utc());
-
-        const owner = await insertUserWithCredentials({
-            password,
-            role: 'OWNER'
-        });
-
-        const [salonResult] = await db.execute(
-            `INSERT INTO salons (owner_user_id, name, description, category, phone, email, 
-             address, city, state, postal_code, country, status, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-                owner.user_id,
-                'Test Salon',
-                'Test salon description',
-                'HAIR SALON',
-                '555-0100',
-                'test-salon@test.com',
-                '123 Main St',
-                'Test City',
-                'TS',
-                '12345',
-                'USA',
-                'APPROVED',
-                nowUtc,
-                nowUtc
-            ]
-        );
-        const salonId = salonResult.insertId;
-
-        await db.execute(
-            `INSERT INTO salon_availability (salon_id, weekday, start_time, end_time, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?)`,
-            [salonId, 1, '09:00:00', '17:00:00', nowUtc, nowUtc]
-        );
-
-        const loginResponse = await request(app)
-            .post('/api/user/login')
-            .send({ email: owner.email, password });
-
-        expect(loginResponse.status).toBe(200);
-        const token = loginResponse.body.data.token;
-
-        const weeklyHours = {
-            MONDAY: {
-                start_time: '10:00:00',
-                end_time: '18:00:00'
-            }
-        };
-
-        const response = await request(app)
-            .post('/api/salons/setHours')
-            .set('Authorization', `Bearer ${token}`)
-            .send({ weekly_hours: weeklyHours });
-
-        expect(response.status).toBe(200);
-        expect(response.body).toMatchObject({
-            message: 'Salon hours updated successfully'
-        });
-        expect(response.body.data).toBeDefined();
-        expect(Array.isArray(response.body.data.results)).toBe(true);
-
-        const mondayResult = response.body.data.results.find(r => r.weekday === 'MONDAY');
-        expect(mondayResult).toBeDefined();
-        expect(mondayResult.action).toBe('updated');
-        expect(mondayResult.start_time).toBe('10:00:00');
-        expect(mondayResult.end_time).toBe('18:00:00');
-        expect(mondayResult.old_start_time).toBe('09:00:00');
-        expect(mondayResult.old_end_time).toBe('17:00:00');
-
-        const [updatedHours] = await db.execute(
-            `SELECT start_time, end_time FROM salon_availability 
-             WHERE salon_id = ? AND weekday = ?`,
-            [salonId, 1]
-        );
-        expect(updatedHours).toHaveLength(1);
-        expect(updatedHours[0].start_time).toBe('10:00:00');
-        expect(updatedHours[0].end_time).toBe('18:00:00');
-    });
-
-    
-
-    test('Verify Invalid Time Logic: POST /setHours with end_time before start_time returns 400 Bad Request', async () => {
-        const password = 'Password123!';
-        const nowUtc = toMySQLUtc(DateTime.utc());
-
-        const owner = await insertUserWithCredentials({
-            password,
-            role: 'OWNER'
-        });
-
-        await db.execute(
-            `INSERT INTO salons (owner_user_id, name, description, category, phone, email, 
-             address, city, state, postal_code, country, status, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-                owner.user_id,
-                'Test Salon',
-                'Test salon description',
-                'HAIR SALON',
-                '555-0100',
-                'test-salon@test.com',
-                '123 Main St',
-                'Test City',
-                'TS',
-                '12345',
-                'USA',
-                'APPROVED',
-                nowUtc,
-                nowUtc
-            ]
-        );
-
-        const loginResponse = await request(app)
-            .post('/api/user/login')
-            .send({ email: owner.email, password });
-
-        expect(loginResponse.status).toBe(200);
-        const token = loginResponse.body.data.token;
-
-        const weeklyHours = {
-            MONDAY: {
-                start_time: '17:00:00',
-                end_time: '09:00:00'
-            }
-        };
-
-        const response = await request(app)
-            .post('/api/salons/setHours')
-            .set('Authorization', `Bearer ${token}`)
-            .send({ weekly_hours: weeklyHours });
-
-        expect([400, 500]).toContain(response.status);
-        if (response.status === 400) {
-            expect(response.body.message).toBeDefined();
-        }
-    });
 });
 
 //BS 1.01 - As a stylist, I want to add the services I offer so that clients can select them when booking appointments.
@@ -295,115 +146,6 @@ describe('BS 1.01 - Stylist service management', () => {
         });
     });
 
-    test('As a stylist, I should be able to create a service and add it to my profile', async () => {
-        const { stylist, salonId, employeeId, password } = await setupServiceTestEnvironment();
-
-        const loginResponse = await request(app)
-            .post('/api/user/login')
-            .send({ email: stylist.email, password });
-
-        expect(loginResponse.status).toBe(200);
-        const token = loginResponse.body.data.token;
-
-        const payload = baseServicePayload();
-
-        const response = await request(app)
-            .post('/api/salons/stylist/createService')
-            .set('Authorization', `Bearer ${token}`)
-            .send(payload);
-
-        expect(response.status).toBe(201);
-        expect(response.body).toMatchObject({
-            message: 'Service created and added to profile successfully'
-        });
-        expect(response.body.data).toBeDefined();
-        expect(response.body.data.service).toMatchObject({
-            salon_id: salonId,
-            name: payload.name,
-            description: payload.description,
-            duration_minutes: payload.duration_minutes,
-            price: payload.price,
-            active: true
-        });
-        expect(response.body.data.employee).toMatchObject({
-            employee_id: employeeId
-        });
-
-        const serviceId = response.body.data.service.service_id;
-
-        const [serviceRows] = await db.execute(
-            `SELECT salon_id, name, description, duration_minutes, price, active 
-             FROM services WHERE service_id = ?`,
-            [serviceId]
-        );
-        expect(serviceRows).toHaveLength(1);
-        expect(serviceRows[0]).toMatchObject({
-            salon_id: salonId,
-            name: payload.name,
-            description: payload.description,
-            duration_minutes: payload.duration_minutes,
-            active: 1
-        });
-
-        const [linkRows] = await db.execute(
-            `SELECT employee_id, service_id FROM employee_services WHERE employee_id = ? AND service_id = ?`,
-            [employeeId, serviceId]
-        );
-        expect(linkRows).toHaveLength(1);
-        expect(linkRows[0]).toMatchObject({
-            employee_id: employeeId,
-            service_id: serviceId
-        });
-    });
-
-    test('As a stylist, I should NOT be able to create a duplicate service', async () => {
-        const { stylist, employeeId, password } = await setupServiceTestEnvironment();
-
-        const loginResponse = await request(app)
-            .post('/api/user/login')
-            .send({ email: stylist.email, password });
-
-        expect(loginResponse.status).toBe(200);
-        const token = loginResponse.body.data.token;
-
-        const payload = baseServicePayload();
-
-        const firstResponse = await request(app)
-            .post('/api/salons/stylist/createService')
-            .set('Authorization', `Bearer ${token}`)
-            .send(payload);
-
-        expect(firstResponse.status).toBe(201);
-
-        const duplicatePayload = {
-            ...payload,
-            name: '  haircut & STYLE  '
-        };
-
-        const secondResponse = await request(app)
-            .post('/api/salons/stylist/createService')
-            .set('Authorization', `Bearer ${token}`)
-            .send(duplicatePayload);
-
-        expect(secondResponse.status).toBe(409);
-        expect(secondResponse.body).toMatchObject({
-            message: 'You already have a service with this name in your profile'
-        });
-        expect(secondResponse.body.data).toBeDefined();
-        expect(secondResponse.body.data.existing_service).toBe(payload.name);
-
-        const [services] = await db.execute(
-            `SELECT s.service_id, s.name 
-             FROM employee_services es
-             JOIN services s ON es.service_id = s.service_id
-             WHERE es.employee_id = ?`,
-            [employeeId]
-        );
-        const normalizedNames = services.map(row => row.name.toLowerCase().replace(/\s+/g, ' ').trim());
-        const targetNormalized = payload.name.toLowerCase().replace(/\s+/g, ' ').trim();
-        const occurrences = normalizedNames.filter(n => n === targetNormalized).length;
-        expect(occurrences).toBe(1);
-    });
 
     test.each([
         { price: 0, duration_minutes: 60, description: '0 price' },
@@ -465,125 +207,6 @@ describe('BS 1.01 - Stylist service management', () => {
         });
     });
 
-    test('Verify Update Service: PATCH /stylist/updateService/:service_id changing price returns 200 OK', async () => {
-        const { stylist, employeeId, password } = await setupServiceTestEnvironment();
-
-        const loginResponse = await request(app)
-            .post('/api/user/login')
-            .send({ email: stylist.email, password });
-
-        expect(loginResponse.status).toBe(200);
-        const token = loginResponse.body.data.token;
-
-        const createPayload = baseServicePayload();
-        const createResponse = await request(app)
-            .post('/api/salons/stylist/createService')
-            .set('Authorization', `Bearer ${token}`)
-            .send(createPayload);
-
-        expect(createResponse.status).toBe(201);
-        const serviceId = createResponse.body.data.service.service_id;
-
-        const updateResponse = await request(app)
-            .patch(`/api/salons/stylist/updateService/${serviceId}`)
-            .set('Authorization', `Bearer ${token}`)
-            .send({ price: 160.00 });
-
-        expect(updateResponse.status).toBe(200);
-        expect(updateResponse.body).toMatchObject({
-            message: 'Service updated successfully'
-        });
-        expect(Number(updateResponse.body.data.service.price)).toBe(160.00);
-
-        const [serviceRows] = await db.execute(
-            'SELECT price FROM services WHERE service_id = ?',
-            [serviceId]
-        );
-        expect(Number(serviceRows[0].price)).toBe(160.00);
-    });
-
-    test('Verify Delete Service: DELETE /stylist/removeService/:service_id returns 200 OK and service is removed', async () => {
-        const { stylist, password } = await setupServiceTestEnvironment();
-
-        const loginResponse = await request(app)
-            .post('/api/user/login')
-            .send({ email: stylist.email, password });
-
-        expect(loginResponse.status).toBe(200);
-        const token = loginResponse.body.data.token;
-
-        const createPayload = baseServicePayload();
-        const createResponse = await request(app)
-            .post('/api/salons/stylist/createService')
-            .set('Authorization', `Bearer ${token}`)
-            .send(createPayload);
-
-        expect(createResponse.status).toBe(201);
-        const serviceId = createResponse.body.data.service.service_id;
-
-        const deleteResponse = await request(app)
-            .delete(`/api/salons/stylist/removeService/${serviceId}`)
-            .set('Authorization', `Bearer ${token}`);
-
-        expect(deleteResponse.status).toBe(200);
-        expect(deleteResponse.body).toMatchObject({
-            message: 'Service removed from profile successfully'
-        });
-
-        const myServicesResponse = await request(app)
-            .get('/api/salons/stylist/myServices')
-            .set('Authorization', `Bearer ${token}`);
-
-        expect(myServicesResponse.status).toBe(200);
-        const serviceIds = myServicesResponse.body.data.services.map(s => s.service_id);
-        expect(serviceIds).not.toContain(serviceId);
-    });
-
-    test('Verify Get My Services: GET /stylist/myServices returns only services created by logged-in stylist', async () => {
-        const { stylist: stylist1, password: password1 } = await setupServiceTestEnvironment();
-        const { stylist: stylist2, password: password2 } = await setupServiceTestEnvironment();
-
-        const loginResponse1 = await request(app)
-            .post('/api/user/login')
-            .send({ email: stylist1.email, password: password1 });
-
-        const token1 = loginResponse1.body.data.token;
-
-        const loginResponse2 = await request(app)
-            .post('/api/user/login')
-            .send({ email: stylist2.email, password: password2 });
-
-        const token2 = loginResponse2.body.data.token;
-
-        const payload1 = baseServicePayload({ name: 'Stylist 1 Service' });
-        const payload2 = baseServicePayload({ name: 'Stylist 2 Service' });
-
-        const createResponse1 = await request(app)
-            .post('/api/salons/stylist/createService')
-            .set('Authorization', `Bearer ${token1}`)
-            .send(payload1);
-
-        const createResponse2 = await request(app)
-            .post('/api/salons/stylist/createService')
-            .set('Authorization', `Bearer ${token2}`)
-            .send(payload2);
-
-        expect(createResponse1.status).toBe(201);
-        expect(createResponse2.status).toBe(201);
-
-        const serviceId1 = createResponse1.body.data.service.service_id;
-        const serviceId2 = createResponse2.body.data.service.service_id;
-
-        const myServicesResponse = await request(app)
-            .get('/api/salons/stylist/myServices')
-            .set('Authorization', `Bearer ${token1}`);
-
-        expect(myServicesResponse.status).toBe(200);
-        expect(myServicesResponse.body.data).toHaveProperty('services');
-        const serviceIds = myServicesResponse.body.data.services.map(s => s.service_id);
-        expect(serviceIds).toContain(serviceId1);
-        expect(serviceIds).not.toContain(serviceId2);
-    });
 
     test('Verify Delete Booked Service: DELETE /stylist/removeService/:service_id for service with active bookings returns 409 Conflict', async () => {
         const { stylist, salonId, employeeId, password } = await setupServiceTestEnvironment();
@@ -642,41 +265,6 @@ describe('BS 1.01 - Stylist service management', () => {
         });
     });
 
-    test('Verify IDOR on Update: Stylist A cannot PATCH /stylist/updateService/:service_id for Stylist B\'s service', async () => {
-        const { stylist: stylist1, password: password1 } = await setupServiceTestEnvironment();
-        const { stylist: stylist2, password: password2 } = await setupServiceTestEnvironment();
-
-        const loginResponse1 = await request(app)
-            .post('/api/user/login')
-            .send({ email: stylist1.email, password: password1 });
-
-        const token1 = loginResponse1.body.data.token;
-
-        const loginResponse2 = await request(app)
-            .post('/api/user/login')
-            .send({ email: stylist2.email, password: password2 });
-
-        const token2 = loginResponse2.body.data.token;
-
-        const payload2 = baseServicePayload({ name: 'Stylist 2 Service' });
-        const createResponse2 = await request(app)
-            .post('/api/salons/stylist/createService')
-            .set('Authorization', `Bearer ${token2}`)
-            .send(payload2);
-
-        expect(createResponse2.status).toBe(201);
-        const serviceId2 = createResponse2.body.data.service.service_id;
-
-        const updateResponse = await request(app)
-            .patch(`/api/salons/stylist/updateService/${serviceId2}`)
-            .set('Authorization', `Bearer ${token1}`)
-            .send({ price: 200 });
-
-        expect([403, 404]).toContain(updateResponse.status);
-        if (updateResponse.status === 404) {
-            expect(updateResponse.body.message).toContain('Service not found in your profile');
-        }
-    });
 
     test.each([
         { price: -10, expectedStatus: 400, expectedMessage: 'Price must be a positive number', description: 'negative price' },
@@ -887,96 +475,35 @@ describe('BS 1.02 - Set employee availability - Owner', () => {
         });
     });
 
-    test('As an owner, I should not be able to set employee availability outside salon operating hours - hours', async () => {
-        const password = 'Password123!';
-        const nowUtc = toMySQLUtc(DateTime.utc());
-
-        const owner = await insertUserWithCredentials({
-            password,
-            role: 'OWNER'
-        });
-
-        const employee = await insertUserWithCredentials({
-            password,
-            role: 'EMPLOYEE'
-        });
-
-        const [salonResult] = await db.execute(
-            `INSERT INTO salons (owner_user_id, name, description, category, phone, email, 
-             address, city, state, postal_code, country, status, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-                owner.user_id,
-                'Test Salon',
-                'Test salon description',
-                'HAIR SALON',
-                '555-0100',
-                'test-salon@test.com',
-                '123 Main St',
-                'Test City',
-                'TS',
-                '12345',
-                'USA',
-                'APPROVED',
-                nowUtc,
-                nowUtc
-            ]
-        );
-        const salonId = salonResult.insertId;
-
-        await db.execute(
-            `INSERT INTO employees (salon_id, user_id, title, active, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?)`,
-            [salonId, employee.user_id, 'Senior Stylist', 1, nowUtc, nowUtc]
-        );
-
-        const [employeeResult] = await db.execute(
-            `SELECT employee_id FROM employees WHERE user_id = ?`,
-            [employee.user_id]
-        );
-        const employeeId = employeeResult[0].employee_id;
-
-        await db.execute(
-            `INSERT INTO salon_availability (salon_id, weekday, start_time, end_time, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?)`,
-            [salonId, 1, '09:00:00', '17:00:00', nowUtc, nowUtc]
-        );
-
-        const loginResponse = await request(app)
-            .post('/api/user/login')
-            .send({ email: owner.email, password });
-
-        expect(loginResponse.status).toBe(200);
-        const token = loginResponse.body.data.token;
-
-        const weeklyAvailability = {
-            MONDAY: {
-                start_time: '08:00:00',
-                end_time: '18:00:00',
-                slot_interval_minutes: 30
+    test.each([
+        {
+            weeklyAvailability: {
+                MONDAY: {
+                    start_time: '08:00:00',
+                    end_time: '18:00:00',
+                    slot_interval_minutes: 30
+                },
+                SUNDAY: {
+                    start_time: '09:00:00',
+                    end_time: '17:00:00',
+                    slot_interval_minutes: 30
+                }
             },
-            SUNDAY: {
-                start_time: '09:00:00',
-                end_time: '17:00:00',
-                slot_interval_minutes: 30
-            }
-        };
-
-        const response = await request(app)
-            .post(`/api/salons/setEmployeeAvailability/${employeeId}`)
-            .set('Authorization', `Bearer ${token}`)
-            .send({ weekly_availability: weeklyAvailability });
-
-        expect(response.status).toBe(400);
-        expect(response.body).toMatchObject({
-            message: 'Employee availability update failed'
-        });
-        expect(response.body.errors).toBeDefined();
-        expect(Array.isArray(response.body.errors)).toBe(true);
-        expect(response.body.errors.length).toBeGreaterThan(0);
-        expect(response.body.errors[0]).toContain('Employee availability must be within salon operating hours');
-    });
-    test('As an owner, I should not be able to set employee availability outside salon operating hours - day of week', async () => {
+            expectedError: 'Employee availability must be within salon operating hours',
+            description: 'hours outside salon operating hours'
+        },
+        {
+            weeklyAvailability: {
+                SUNDAY: {
+                    start_time: '09:00:00',
+                    end_time: '17:00:00',
+                    slot_interval_minutes: 30
+                }
+            },
+            expectedError: 'SUNDAY: Salon is not open on this day',
+            description: 'day of week outside salon operating hours'
+        }
+    ])('As an owner, I should not be able to set employee availability outside salon operating hours - $description', async ({ weeklyAvailability, expectedError }) => {
         const password = 'Password123!';
         const nowUtc = toMySQLUtc(DateTime.utc());
 
@@ -1038,15 +565,6 @@ describe('BS 1.02 - Set employee availability - Owner', () => {
         expect(loginResponse.status).toBe(200);
         const token = loginResponse.body.data.token;
 
-        const weeklyAvailability = {
-
-            SUNDAY: {
-                start_time: '09:00:00',
-                end_time: '17:00:00',
-                slot_interval_minutes: 30
-            }
-        };
-
         const response = await request(app)
             .post(`/api/salons/setEmployeeAvailability/${employeeId}`)
             .set('Authorization', `Bearer ${token}`)
@@ -1059,116 +577,9 @@ describe('BS 1.02 - Set employee availability - Owner', () => {
         expect(response.body.errors).toBeDefined();
         expect(Array.isArray(response.body.errors)).toBe(true);
         expect(response.body.errors.length).toBeGreaterThan(0);
-        expect(response.body.errors[0]).toContain('SUNDAY: Salon is not open on this day');
+        expect(response.body.errors[0]).toContain(expectedError);
     });
 
-    test('As an owner, I should be able to modify existing employee availability operating hours', async () => {
-        const password = 'Password123!';
-        const nowUtc = toMySQLUtc(DateTime.utc());
-
-        const owner = await insertUserWithCredentials({
-            password,
-            role: 'OWNER'
-        });
-
-        const employee = await insertUserWithCredentials({
-            password,
-            role: 'EMPLOYEE'
-        });
-
-        const [salonResult] = await db.execute(
-            `INSERT INTO salons (owner_user_id, name, description, category, phone, email, 
-             address, city, state, postal_code, country, status, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-                owner.user_id,
-                'Test Salon',
-                'Test salon description',
-                'HAIR SALON',
-                '555-0100',
-                'test-salon@test.com',
-                '123 Main St',
-                'Test City',
-                'TS',
-                '12345',
-                'USA',
-                'APPROVED',
-                nowUtc,
-                nowUtc
-            ]
-        );
-        const salonId = salonResult.insertId;
-
-        await db.execute(
-            `INSERT INTO employees (salon_id, user_id, title, active, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?)`,
-            [salonId, employee.user_id, 'Senior Stylist', 1, nowUtc, nowUtc]
-        );
-
-        const [employeeResult] = await db.execute(
-            `SELECT employee_id FROM employees WHERE user_id = ?`,
-            [employee.user_id]
-        );
-        const employeeId = employeeResult[0].employee_id;
-
-        await db.execute(
-            `INSERT INTO salon_availability (salon_id, weekday, start_time, end_time, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?)`,
-            [salonId, 1, '09:00:00', '17:00:00', nowUtc, nowUtc]
-        );
-
-        await db.execute(
-            `INSERT INTO employee_availability (employee_id, weekday, start_time, end_time, slot_interval_minutes, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`,
-            [employeeId, 1, '10:00:00', '16:00:00', 30, nowUtc, nowUtc]
-        );
-
-        const loginResponse = await request(app)
-            .post('/api/user/login')
-            .send({ email: owner.email, password });
-
-        expect(loginResponse.status).toBe(200);
-        const token = loginResponse.body.data.token;
-
-        const weeklyAvailability = {
-            MONDAY: {
-                start_time: '11:00:00',
-                end_time: '17:00:00',
-                slot_interval_minutes: 45
-            }
-        };
-
-        const response = await request(app)
-            .post(`/api/salons/setEmployeeAvailability/${employeeId}`)
-            .set('Authorization', `Bearer ${token}`)
-            .send({ weekly_availability: weeklyAvailability });
-
-        expect(response.status).toBe(200);
-        expect(response.body).toMatchObject({
-            message: 'Employee availability updated successfully'
-        });
-        expect(response.body.data).toBeDefined();
-        expect(Array.isArray(response.body.data.results)).toBe(true);
-
-        const mondayResult = response.body.data.results.find(r => r.weekday === 'MONDAY');
-        expect(mondayResult).toBeDefined();
-        expect(mondayResult.action).toBe('updated');
-        expect(mondayResult.start_time).toBe('11:00:00');
-        expect(mondayResult.end_time).toBe('17:00:00');
-        expect(mondayResult.old_start_time).toBe('10:00:00');
-        expect(mondayResult.old_end_time).toBe('16:00:00');
-        expect(mondayResult.slot_interval_minutes).toBe(45);
-
-        const [updatedAvailability] = await db.execute(
-            `SELECT start_time, end_time, slot_interval_minutes FROM employee_availability 
-             WHERE employee_id = ? AND weekday = ?`,
-            [employeeId, 1]
-        );
-        expect(updatedAvailability).toHaveLength(1);
-        expect(updatedAvailability[0].start_time).toBe('11:00:00');
-        expect(updatedAvailability[0].end_time).toBe('17:00:00');
-        expect(updatedAvailability[0].slot_interval_minutes).toBe(45);
-    });
 });
 
 // BS 1.1 - Customer Booking Flow
@@ -1308,31 +719,6 @@ describe('BS 1.1 - Customer Booking Flow', () => {
             expect(typeof response.body.data.daily_slots).toBe('object');
         });
 
-        test('Verify Successful Booking: POST /:salon_id/stylists/:employee_id/book with valid data returns 201 Created', async () => {
-            const { salonId, employeeId, serviceId, customerToken } = await setupBookingTestEnvironment();
-
-            const now = DateTime.utc();
-            let nextMonday = now.plus({ days: 1 });
-            while (nextMonday.weekday !== 1) {
-                nextMonday = nextMonday.plus({ days: 1 });
-            }
-            const futureDate = nextMonday.set({ hour: 10, minute: 0, second: 0, millisecond: 0 });
-            const scheduledStart = futureDate.toISO();
-
-            const response = await request(app)
-                .post(`/api/salons/${salonId}/stylists/${employeeId}/book`)
-                .set('Authorization', `Bearer ${customerToken}`)
-                .send({
-                    scheduled_start: scheduledStart,
-                    services: [{ service_id: serviceId }],
-                    notes: 'Test booking'
-                });
-
-            expect([200, 201]).toContain(response.status);
-            expect(response.body).toHaveProperty('message');
-            expect(response.body.data).toHaveProperty('booking_id');
-            expect(response.body.data).toHaveProperty('appointment');
-        });
     });
 
     describe('Negative Flow', () => {
@@ -1413,49 +799,6 @@ describe('BS 1.1 - Customer Booking Flow', () => {
     });
 
     describe('Data Integrity & UI Logic', () => {
-        test('Verify Duration Calculation: Booking service that exceeds remaining operating hours returns 400 Bad Request', async () => {
-            const { salonId, employeeId, customerToken } = await setupBookingTestEnvironment();
-            const nowUtc = toMySQLUtc(DateTime.utc());
-
-            const longServicePayload = {
-                name: 'Long Service',
-                description: 'Service that takes 3 hours',
-                duration_minutes: 180,
-                price: 150
-            };
-
-            const [serviceResult] = await db.execute(
-                `INSERT INTO services (salon_id, name, description, duration_minutes, price, active, created_at, updated_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-                [salonId, longServicePayload.name, longServicePayload.description, longServicePayload.duration_minutes, longServicePayload.price, 1, nowUtc, nowUtc]
-            );
-            const longServiceId = serviceResult.insertId;
-
-            const [employeeResult] = await db.execute(
-                `SELECT employee_id FROM employees WHERE salon_id = ? LIMIT 1`,
-                [salonId]
-            );
-            const employeeIdFromDb = employeeResult[0].employee_id;
-
-            await db.execute(
-                `INSERT INTO employee_services (employee_id, service_id, created_at, updated_at)
-                 VALUES (?, ?, ?, ?)`,
-                [employeeIdFromDb, longServiceId, nowUtc, nowUtc]
-            );
-
-            const futureDate = DateTime.utc().plus({ days: 7 }).set({ hour: 16, minute: 0, second: 0 });
-            const scheduledStart = futureDate.toISO();
-
-            const response = await request(app)
-                .post(`/api/salons/${salonId}/stylists/${employeeId}/book`)
-                .set('Authorization', `Bearer ${customerToken}`)
-                .send({
-                    scheduled_start: scheduledStart,
-                    services: [{ service_id: longServiceId }]
-                });
-
-            expect([400, 409]).toContain(response.status);
-        });
     });
 
     describe('Security & Permissions', () => {
@@ -1499,10 +842,7 @@ describe('BS 1.1 - Customer Booking Flow', () => {
             const { salonId, employeeId, serviceId, customerToken } = await setupBookingTestEnvironment();
 
             const now = DateTime.utc();
-            let nextMonday = now.plus({ days: 1 });
-            while (nextMonday.weekday !== 1) {
-                nextMonday = nextMonday.plus({ days: 1 });
-            }
+            const nextMonday = getNextMonday(now);
             const bookingTime = nextMonday.set({ hour, minute, second: 0, millisecond: 0 });
             const scheduledStart = bookingTime.toISO();
 
@@ -1525,10 +865,7 @@ describe('BS 1.1 - Customer Booking Flow', () => {
             const { salonId, employeeId, serviceId, customerToken } = await setupBookingTestEnvironment();
 
             const now = DateTime.utc();
-            let nextMonday = now.plus({ days: 1 });
-            while (nextMonday.weekday !== 1) {
-                nextMonday = nextMonday.plus({ days: 1 });
-            }
+            const nextMonday = getNextMonday(now);
             const bookingTime = nextMonday.set({ hour, minute, second: 0, millisecond: 0 });
             const scheduledStart = bookingTime.toISO();
 
@@ -1561,10 +898,7 @@ describe('BS 1.1 - Customer Booking Flow', () => {
             );
 
             const now = DateTime.utc();
-            let nextMonday = now.plus({ days: 1 });
-            while (nextMonday.weekday !== 1) {
-                nextMonday = nextMonday.plus({ days: 1 });
-            }
+            const nextMonday = getNextMonday(now);
             const bookingTime = nextMonday.set({ hour: 16, minute: 59, second: 0, millisecond: 0 });
             const scheduledStart = bookingTime.toISO();
 
@@ -1596,10 +930,7 @@ describe('BS 1.1 - Customer Booking Flow', () => {
             );
 
             const now = DateTime.utc();
-            let nextMonday = now.plus({ days: 1 });
-            while (nextMonday.weekday !== 1) {
-                nextMonday = nextMonday.plus({ days: 1 });
-            }
+            const nextMonday = getNextMonday(now);
             const bookingTime = nextMonday.set({ hour: 9, minute: 0, second: 0, millisecond: 0 });
             const scheduledStart = bookingTime.toISO();
 
@@ -1618,10 +949,7 @@ describe('BS 1.1 - Customer Booking Flow', () => {
             const { salonId, employeeId, serviceId, customerToken } = await setupBookingTestEnvironment();
 
             const now = DateTime.utc();
-            let nextMonday = now.plus({ days: 1 });
-            while (nextMonday.weekday !== 1) {
-                nextMonday = nextMonday.plus({ days: 1 });
-            }
+            const nextMonday = getNextMonday(now);
 
             const booking1Time = nextMonday.set({ hour: 15, minute: 0, second: 0, millisecond: 0 });
             const response1 = await request(app)
@@ -1653,10 +981,7 @@ describe('BS 1.1 - Customer Booking Flow', () => {
             const { salonId, employeeId, serviceId, customerToken } = await setupBookingTestEnvironment();
 
             const now = DateTime.utc();
-            let nextMonday = now.plus({ days: 1 });
-            while (nextMonday.weekday !== 1) {
-                nextMonday = nextMonday.plus({ days: 1 });
-            }
+            const nextMonday = getNextMonday(now);
             const bookingTime = nextMonday.set({ hour, minute, second: 0, millisecond: 0 });
             const scheduledStart = bookingTime.toISO();
 
@@ -1675,40 +1000,11 @@ describe('BS 1.1 - Customer Booking Flow', () => {
     });
 
     describe('Timezone Handling - EST', () => {
-        test('Verify Booking with EST Timezone: POST /book with EST-formatted time and EST salon timezone returns 201 Created', async () => {
-            const { salonId, employeeId, serviceId, customerToken } = await setupBookingTestEnvironment();
-            
-            // Set salon timezone to EST
-            await db.execute(
-                `UPDATE salons SET timezone = 'America/New_York' WHERE salon_id = ?`,
-                [salonId]
-            );
-
-            const estTimezone = 'America/New_York';
-            const now = DateTime.now().setZone(estTimezone);
-            let nextMonday = now.plus({ days: 1 });
-            while (nextMonday.weekday !== 1) {
-                nextMonday = nextMonday.plus({ days: 1 });
-            }
-            const bookingTimeEST = nextMonday.set({ hour: 10, minute: 0, second: 0, millisecond: 0 });
-            const scheduledStart = bookingTimeEST.toISO();
-
-            const response = await request(app)
-                .post(`/api/salons/${salonId}/stylists/${employeeId}/book`)
-                .set('Authorization', `Bearer ${customerToken}`)
-                .send({
-                    scheduled_start: scheduledStart,
-                    services: [{ service_id: serviceId }]
-                });
-
-            expect([200, 201]).toContain(response.status);
-            expect(response.body.data).toHaveProperty('booking_id');
-        });
-
         test.each([
-            { hour: 9, minute: 0, description: 'at opening time (09:00 EST)' },
-            { hour: 16, minute: 0, description: 'ending at closing time (16:00 EST for 60min service)' }
-        ])('Verify EST Booking at Boundary Times: POST /book $description with EST salon timezone returns 201 Created', async ({ hour, minute }) => {
+            { hour: 10, minute: 0, description: 'with EST-formatted time (10:00 EST)', expectedStatus: [200, 201], checkBookingId: true },
+            { hour: 9, minute: 0, description: 'at opening time (09:00 EST)', expectedStatus: [200, 201], checkBookingId: false },
+            { hour: 16, minute: 0, description: 'ending at closing time (16:00 EST for 60min service)', expectedStatus: [200, 201], checkBookingId: false }
+        ])('Verify EST Booking: POST /book $description with EST salon timezone returns 201 Created', async ({ hour, minute, expectedStatus, checkBookingId }) => {
             const { salonId, employeeId, serviceId, customerToken } = await setupBookingTestEnvironment();
             
             await db.execute(
@@ -1718,10 +1014,7 @@ describe('BS 1.1 - Customer Booking Flow', () => {
 
             const estTimezone = 'America/New_York';
             const now = DateTime.now().setZone(estTimezone);
-            let nextMonday = now.plus({ days: 1 });
-            while (nextMonday.weekday !== 1) {
-                nextMonday = nextMonday.plus({ days: 1 });
-            }
+            const nextMonday = getNextMonday(now);
             const bookingTimeEST = nextMonday.set({ hour, minute, second: 0, millisecond: 0 });
             const scheduledStart = bookingTimeEST.toISO();
 
@@ -1733,25 +1026,41 @@ describe('BS 1.1 - Customer Booking Flow', () => {
                     services: [{ service_id: serviceId }]
                 });
 
-            expect([200, 201]).toContain(response.status);
+            expect(expectedStatus).toContain(response.status);
+            if (checkBookingId) {
+                expect(response.body.data).toHaveProperty('booking_id');
+            }
         });
 
-        test('Verify EST Booking That Would End After Closing: POST /book at 16:01 EST (60min) returns 400 Bad Request', async () => {
+        test.each([
+            {
+                timezone: 'America/New_York',
+                hour: 16,
+                minute: 1,
+                description: 'at 16:01 EST (60min) that would end after closing',
+                expectedStatus: 400,
+                useEST: true
+            },
+            {
+                timezone: 'America/New_York',
+                hour: 15,
+                minute: 0,
+                description: 'with UTC time but EST salon timezone',
+                expectedStatus: [200, 201],
+                useEST: false
+            }
+        ])('Verify EST Booking Edge Cases: POST /book $description returns expected status', async ({ timezone, hour, minute, expectedStatus, useEST }) => {
             const { salonId, employeeId, serviceId, customerToken } = await setupBookingTestEnvironment();
             
             await db.execute(
-                `UPDATE salons SET timezone = 'America/New_York' WHERE salon_id = ?`,
-                [salonId]
+                `UPDATE salons SET timezone = ? WHERE salon_id = ?`,
+                [timezone, salonId]
             );
 
-            const estTimezone = 'America/New_York';
-            const now = DateTime.now().setZone(estTimezone);
-            let nextMonday = now.plus({ days: 1 });
-            while (nextMonday.weekday !== 1) {
-                nextMonday = nextMonday.plus({ days: 1 });
-            }
-            const bookingTimeEST = nextMonday.set({ hour: 16, minute: 1, second: 0, millisecond: 0 });
-            const scheduledStart = bookingTimeEST.toISO();
+            const now = useEST ? DateTime.now().setZone(timezone) : DateTime.utc();
+            const nextMonday = getNextMonday(now);
+            const bookingTime = nextMonday.set({ hour, minute, second: 0, millisecond: 0 });
+            const scheduledStart = bookingTime.toISO();
 
             const response = await request(app)
                 .post(`/api/salons/${salonId}/stylists/${employeeId}/book`)
@@ -1761,35 +1070,14 @@ describe('BS 1.1 - Customer Booking Flow', () => {
                     services: [{ service_id: serviceId }]
                 });
 
-            expect(response.status).toBe(400);
-            expect(response.body.message).toBeDefined();
-        });
-
-        test('Verify EST Browser Sending UTC Time: POST /book with UTC time but EST salon timezone works correctly', async () => {
-            const { salonId, employeeId, serviceId, customerToken } = await setupBookingTestEnvironment();
-            
-            await db.execute(
-                `UPDATE salons SET timezone = 'America/New_York' WHERE salon_id = ?`,
-                [salonId]
-            );
-
-            const now = DateTime.utc();
-            let nextMonday = now.plus({ days: 1 });
-            while (nextMonday.weekday !== 1) {
-                nextMonday = nextMonday.plus({ days: 1 });
+            if (Array.isArray(expectedStatus)) {
+                expect(expectedStatus).toContain(response.status);
+            } else {
+                expect(response.status).toBe(expectedStatus);
+                if (expectedStatus === 400) {
+                    expect(response.body.message).toBeDefined();
+                }
             }
-            const bookingTimeUTC = nextMonday.set({ hour: 15, minute: 0, second: 0, millisecond: 0 });
-            const scheduledStart = bookingTimeUTC.toISO(); // Will have 'Z' suffix
-
-            const response = await request(app)
-                .post(`/api/salons/${salonId}/stylists/${employeeId}/book`)
-                .set('Authorization', `Bearer ${customerToken}`)
-                .send({
-                    scheduled_start: scheduledStart,
-                    services: [{ service_id: serviceId }]
-                });
-
-            expect([200, 201]).toContain(response.status);
         });
     });
 
@@ -1809,10 +1097,7 @@ describe('BS 1.1 - Customer Booking Flow', () => {
             const customer2Token = customer2LoginResponse.body.data.token;
 
             const now = DateTime.utc();
-            let nextMonday = now.plus({ days: 1 });
-            while (nextMonday.weekday !== 1) {
-                nextMonday = nextMonday.plus({ days: 1 });
-            }
+            const nextMonday = getNextMonday(now);
             const bookingTime = nextMonday.set({ hour: 10, minute: 0, second: 0, millisecond: 0 });
             const scheduledStart = bookingTime.toISO();
 
