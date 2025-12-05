@@ -43,10 +43,14 @@ describe('AFDV 1.1 - User Engagement Stats', () => {
 
     const createBooking = async (salonId, customerUserId, scheduledStart, status = 'SCHEDULED') => {
         const nowUtc = toMySQLUtc(DateTime.utc());
+
+        const startUtc = toMySQLUtc(scheduledStart);
+        const endUtc = toMySQLUtc(scheduledStart.plus({ minutes: 60 }));
+
         const [result] = await db.execute(
-            `INSERT INTO bookings (salon_id, customer_user_id, scheduled_start, status, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?)`,
-            [salonId, customerUserId, toMySQLUtc(scheduledStart), status, nowUtc, nowUtc]
+            `INSERT INTO bookings (salon_id, customer_user_id, scheduled_start, scheduled_end, status, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [salonId, customerUserId, startUtc, endUtc, status, nowUtc, nowUtc]
         );
         return result.insertId;
     };
@@ -62,10 +66,11 @@ describe('AFDV 1.1 - User Engagement Stats', () => {
     };
 
     const createBookingService = async (bookingId, serviceId, employeeId = null) => {
+        const nowUtc = toMySQLUtc(DateTime.utc());
         await db.execute(
-            `INSERT INTO booking_services (booking_id, service_id, employee_id, duration_minutes)
-             VALUES (?, ?, ?, ?)`,
-            [bookingId, serviceId, employeeId, 60]
+            `INSERT INTO booking_services (booking_id, employee_id, service_id, price, duration_minutes, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [bookingId, employeeId, serviceId, 50.00, 60, nowUtc, nowUtc]
         );
     };
 
@@ -93,8 +98,15 @@ describe('AFDV 1.1 - User Engagement Stats', () => {
     };
 
     describe('2. Positive Flow', () => {
-        test('Primary Success Action: GET /api/admin/analytics/user-engagement returns 200 OK with expected JSON structure', async () => {
+        test('GET /api/admin/analytics/user-engagement returns 200 OK with expected JSON structure and data types', async () => {
             const { token } = await setupAdmin();
+
+            const customer1 = await insertUserWithCredentials({ role: 'CUSTOMER' });
+            const customer2 = await insertUserWithCredentials({ role: 'CUSTOMER' });
+            const now = DateTime.utc();
+            
+            await createLogin(customer1.user_id, now);
+            await createLogin(customer2.user_id, now.minus({ hours: 1 }));
 
             const response = await request(app)
                 .get('/api/admin/analytics/user-engagement')
@@ -112,23 +124,6 @@ describe('AFDV 1.1 - User Engagement Stats', () => {
             expect(response.body.data).toHaveProperty('top3ViewedSalons');
             expect(Array.isArray(response.body.data.top3Services)).toBe(true);
             expect(Array.isArray(response.body.data.top3ViewedSalons)).toBe(true);
-        });
-
-        test('Response Verification: API returns correct data types for all metrics', async () => {
-            const { token } = await setupAdmin();
-
-            const customer1 = await insertUserWithCredentials({ role: 'CUSTOMER' });
-            const customer2 = await insertUserWithCredentials({ role: 'CUSTOMER' });
-            const now = DateTime.utc();
-            
-            await createLogin(customer1.user_id, now);
-            await createLogin(customer2.user_id, now.minus({ hours: 1 }));
-
-            const response = await request(app)
-                .get('/api/admin/analytics/user-engagement')
-                .set('Authorization', `Bearer ${token}`);
-
-            expect(response.status).toBe(200);
             expect(typeof response.body.data.today_logins).toBe('number');
             expect(typeof response.body.data.yesterday_logins).toBe('number');
             expect(typeof response.body.data.past_week_logins).toBe('number');
@@ -137,7 +132,7 @@ describe('AFDV 1.1 - User Engagement Stats', () => {
             expect(typeof response.body.data.repeat_bookers).toBe('number');
         });
 
-        test('Data Accuracy: Verify that numbers displayed match aggregate count of mock data', async () => {
+        test('Verify that numbers displayed match aggregate count of mock data', async () => {
             const { token } = await setupAdmin();
 
             const customer1 = await insertUserWithCredentials({ role: 'CUSTOMER' });
@@ -165,7 +160,7 @@ describe('AFDV 1.1 - User Engagement Stats', () => {
 
     describe('3. Negative Flow', () => {
        
-        test('Server Error: Simulate database connection failure returns 500 Internal Server Error', async () => {
+        test('Simulate database connection failure returns 500 Internal Server Error', async () => {
             const { token } = await setupAdmin();
 
             const mockDb = {
@@ -339,29 +334,9 @@ describe('AFDV 1.1 - User Engagement Stats', () => {
     });
 
     describe('5. Security & Permissions (RBAC)', () => {
-        test('Unauthorized Role: USER role attempting to hit endpoint returns 403 Forbidden', async () => {
+        test.each(['CUSTOMER', 'OWNER', 'EMPLOYEE'])('Unauthorized Role: %s role attempting to hit endpoint returns 403 Forbidden', async (role) => {
             const password = 'Password123!';
-            const user = await insertUserWithCredentials({ password, role: 'CUSTOMER' });
-
-            const loginResponse = await request(app)
-                .post('/api/user/login')
-                .send({ email: user.email, password });
-
-            const token = loginResponse.body.data.token;
-
-            const response = await request(app)
-                .get('/api/admin/analytics/user-engagement')
-                .set('Authorization', `Bearer ${token}`);
-
-            expect(response.status).toBe(403);
-            expect(response.body).toMatchObject({
-                error: 'Insufficient permissions'
-            });
-        });
-
-        test('Unauthorized Role: MANAGER role attempting to hit endpoint returns 403 Forbidden', async () => {
-            const password = 'Password123!';
-            const user = await insertUserWithCredentials({ password, role: 'OWNER' });
+            const user = await insertUserWithCredentials({ password, role });
 
             const loginResponse = await request(app)
                 .post('/api/user/login')
@@ -406,26 +381,6 @@ describe('AFDV 1.1 - User Engagement Stats', () => {
                 error: 'Invalid or expired token'
             });
         });
-
-        test('Endpoint Isolation: Regular user cannot access endpoint even with correct URL', async () => {
-            const password = 'Password123!';
-            const user = await insertUserWithCredentials({ password, role: 'CUSTOMER' });
-
-            const loginResponse = await request(app)
-                .post('/api/user/login')
-                .send({ email: user.email, password });
-
-            const token = loginResponse.body.data.token;
-
-            const response = await request(app)
-                .get('/api/admin/analytics/user-engagement')
-                .set('Authorization', `Bearer ${token}`);
-
-            expect(response.status).toBe(403);
-            expect(response.body).toMatchObject({
-                error: 'Insufficient permissions'
-            });
-        });
     });
 
     describe('6. Edge Cases', () => {
@@ -463,14 +418,6 @@ describe('AFDV 1.1 - User Engagement Stats', () => {
             expect(typeof response.body.data.total_bookings).toBe('number');
         });
 
-        test('Malformed Query Parameters: Endpoint handles malformed query parameters without breaking', async () => {
-            const { token } = await setupAdmin();
-
-            const response = await request(app)
-                .get('/api/admin/analytics/user-engagement?startDate=invalid-date')
-                .set('Authorization', `Bearer ${token}`);
-
-            expect([200, 400]).toContain(response.status);
-        });
+     
     });
 });

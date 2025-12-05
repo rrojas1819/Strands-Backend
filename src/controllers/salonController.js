@@ -457,12 +457,28 @@ exports.addEmployee = async (req, res) => {
       return res.status(409).json({ message: 'Employee does not exist.' });
     }
 
+    const employeeUserId = existingEmployee[0].user_id;
+
+    // Check if employee is already assigned to this salon
+    const checkDuplicateQuery = `
+      SELECT e.employee_id 
+      FROM employees e
+      JOIN salons s ON e.salon_id = s.salon_id
+      WHERE e.user_id = ? AND s.owner_user_id = ? AND e.active = 1
+    `;
+    
+    const [duplicateCheck] = await db.execute(checkDuplicateQuery, [employeeUserId, owner_user_id]);
+
+    if (duplicateCheck.length > 0) {
+      return res.status(409).json({ message: 'User is already an employee of this salon.' });
+    }
+
     const nowUtc = toMySQLUtc(DateTime.utc());
     const assignEmployeeQuery = 
     `INSERT INTO employees (salon_id, user_id, title, active, created_at, updated_at)
-    VALUES((SELECT salon_id FROM salons WHERE owner_user_id = ?), (SELECT user_id FROM users WHERE email = ?), ?, 1, ?, ?);`;
+    VALUES((SELECT salon_id FROM salons WHERE owner_user_id = ?), ?, ?, 1, ?, ?);`;
 
-    const [result] = await db.execute(assignEmployeeQuery, [owner_user_id, email, title, nowUtc, nowUtc]);
+    const [result] = await db.execute(assignEmployeeQuery, [owner_user_id, employeeUserId, title, nowUtc, nowUtc]);
 
     if (result.affectedRows === 0) {
       return res.status(404).json({ message: 'Salon not found' });
@@ -506,6 +522,12 @@ exports.addEmployee = async (req, res) => {
 
   } catch (err) {
     console.error('addEmployee error:', err);
+    
+    // Handle duplicate entry error from database constraint
+    if (err.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({ message: 'User is already an employee of this salon.' });
+    }
+    
     return res.status(500).json({ message: 'Internal server error' });
   }
 };
@@ -2454,6 +2476,41 @@ exports.bookTimeSlot = async (req, res) => {
       });
     }
 
+    const requestStartStr = toMySQLUtc(startDate);
+    const requestEndStr   = toMySQLUtc(endDate);
+    logUtcDebug('salonController.bookTimeSlot requestStartStr', requestStartStr);
+    logUtcDebug('salonController.bookTimeSlot requestEndStr', requestEndStr);
+
+    const [conflictsResult] = await db.execute(
+      `SELECT b.booking_id, 
+              DATE_FORMAT(b.scheduled_start, '%Y-%m-%d %H:%i:%s') AS scheduled_start,
+              DATE_FORMAT(b.scheduled_end, '%Y-%m-%d %H:%i:%s') AS scheduled_end
+       FROM bookings b
+       JOIN booking_services bs ON b.booking_id = bs.booking_id
+       WHERE bs.employee_id = ?
+         AND b.status NOT IN ('CANCELED', 'NO_SHOW')
+         AND b.scheduled_start < ?
+         AND b.scheduled_end > ?`,
+      [employee_id, requestEndStr, requestStartStr]
+    );
+
+    if (conflictsResult.length > 0) {
+      logUtcDebug('salonController.bookTimeSlot conflict detected', {
+        existing_start: conflictsResult[0].scheduled_start,
+        existing_end: conflictsResult[0].scheduled_end,
+        new_start: requestStartStr,
+        new_end: requestEndStr
+      });
+      return res.status(400).json({
+        message: 'Time slot is no longer available',
+        conflicting_booking: {
+          booking_id: conflictsResult[0].booking_id,
+          scheduled_start: formatDateTime(conflictsResult[0].scheduled_start),
+          scheduled_end: formatDateTime(conflictsResult[0].scheduled_end)
+        }
+      });
+    }
+
     // Pull all weekday availability for stylist
     const [availabilityResult] = await db.execute(
       `SELECT weekday, start_time, end_time
@@ -2510,37 +2567,6 @@ exports.bookTimeSlot = async (req, res) => {
 
     logUtcDebug('salonController.bookTimeSlot computed startDate', startDate);
     logUtcDebug('salonController.bookTimeSlot computed endDate', endDate);
-
-    // Format as UTC for database storage
-    const requestStartStr = toMySQLUtc(startDate);
-    const requestEndStr   = toMySQLUtc(endDate);
-    logUtcDebug('salonController.bookTimeSlot requestStartStr', requestStartStr);
-    logUtcDebug('salonController.bookTimeSlot requestEndStr', requestEndStr);
-
-    // Check conflicts with existing bookings
-    const [conflictsResult] = await db.execute(
-      `SELECT b.booking_id, b.scheduled_start, b.scheduled_end
-       FROM bookings b
-       JOIN booking_services bs ON b.booking_id = bs.booking_id
-       WHERE bs.employee_id = ?
-         AND b.status NOT IN ('CANCELED', 'NO_SHOW')
-         AND b.scheduled_start < ?
-         AND b.scheduled_end > ?`,
-      [employee_id, requestEndStr, requestStartStr]
-    );
-
-    if (conflictsResult.length > 0) {
-      const conflictStart = DateTime.fromSQL(conflictsResult[0].scheduled_start, { zone: 'utc' });
-      logUtcDebug('salonController.bookTimeSlot raw scheduled_start', conflictStart);
-      return res.status(409).json({
-        message: 'Time slot is no longer available. Please select a different time.',
-        conflicting_booking: {
-          booking_id: conflictsResult[0].booking_id,
-          scheduled_start: formatDateTime(conflictsResult[0].scheduled_start),
-          scheduled_end: formatDateTime(conflictsResult[0].scheduled_end)
-        }
-      });
-    }
 
     await db.query('START TRANSACTION');
     try {
