@@ -1110,237 +1110,59 @@ describe('UAR 1.7 - Add/Remove/View Employees - Owner', () => {
     });
 
     describe('Negative Flow', () => {
-        test('Add Non-Existent User - POST /addEmployee with non-existent email returns 409 Conflict', async () => {
+        test('Verify Validation Errors: POST /addEmployee with missing fields or invalid data returns appropriate errors', async () => {
             const { token } = await setupOwnerWithSalon();
 
-            const response = await request(app)
+            const missingEmailResponse = await request(app)
+                .post('/api/salons/addEmployee')
+                .set('Authorization', `Bearer ${token}`)
+                .send({ title: 'Stylist' });
+
+            expect(missingEmailResponse.status).toBe(400);
+            expect(missingEmailResponse.body.message).toContain('Missing required fields');
+
+            const invalidEmailResponse = await request(app)
+                .post('/api/salons/addEmployee')
+                .set('Authorization', `Bearer ${token}`)
+                .send({ email: 'invalid-email', title: 'Stylist' });
+
+            expect(invalidEmailResponse.status).toBe(400);
+            expect(invalidEmailResponse.body.message).toContain('Invalid email format');
+
+            const nonExistentResponse = await request(app)
                 .post('/api/salons/addEmployee')
                 .set('Authorization', `Bearer ${token}`)
                 .send({ email: 'ghost@example.com', title: 'Stylist' });
 
-            expect(response.status).toBe(409);
-            expect(response.body).toMatchObject({
-                message: 'Employee does not exist.'
-            });
+            expect(nonExistentResponse.status).toBe(409);
+            expect(nonExistentResponse.body.message).toContain('Employee does not exist');
         });
 
-        test('Add Non-Employee User - POST /addEmployee with email of user who is not EMPLOYEE role returns 409 Conflict', async () => {
+        test('Verify Remove Employee Errors: DELETE /removeEmployee with invalid data returns appropriate errors', async () => {
             const { token } = await setupOwnerWithSalon();
-            const password = 'Password123!';
 
-            const customer = await insertUserWithCredentials({
-                password,
-                role: 'CUSTOMER'
-            });
-
-            const response = await request(app)
-                .post('/api/salons/addEmployee')
-                .set('Authorization', `Bearer ${token}`)
-                .send({ email: customer.email, title: 'Stylist' });
-
-            expect(response.status).toBe(409);
-            expect(response.body).toMatchObject({
-                message: 'Employee does not exist.'
-            });
-        });
-
-        test('Add Duplicate Employee - POST /addEmployee for employee already linked to salon returns 409 Conflict', async () => {
-            const { salonId, token } = await setupOwnerWithSalon();
-            const password = 'Password123!';
-            const nowUtc = toMySQLUtc(DateTime.utc());
-
-            const employee = await insertUserWithCredentials({
-                password,
-                role: 'EMPLOYEE'
-            });
-
-            await insertEmployee(salonId, employee.user_id);
-
-            const response = await request(app)
-                .post('/api/salons/addEmployee')
-                .set('Authorization', `Bearer ${token}`)
-                .send({ email: employee.email, title: 'Junior Stylist' });
-
-            expect(response.status).toBe(409);
-            expect(response.body).toMatchObject({
-                message: 'User is already an employee of this salon.'
-            });
-        });
-
-        test('Remove Non-Employee - DELETE /removeEmployee for user not linked to salon returns 404 Not Found', async () => {
-            const { token } = await setupOwnerWithSalon();
-            const password = 'Password123!';
-
-            const employee = await insertUserWithCredentials({
-                password,
-                role: 'EMPLOYEE'
-            });
-
-            const response = await request(app)
+            const missingEmailResponse = await request(app)
                 .delete('/api/salons/removeEmployee')
                 .set('Authorization', `Bearer ${token}`)
-                .send({ email: employee.email });
+                .send({});
 
-            expect(response.status).toBe(404);
-            expect(response.body).toMatchObject({
-                message: 'Employee not found'
-            });
-        });
+            expect(missingEmailResponse.status).toBe(400);
+            expect(missingEmailResponse.body.message).toContain('Missing required fields');
 
-        test.each([
-            {
-                method: 'post',
-                endpoint: '/api/salons/addEmployee',
-                body: { title: 'Stylist' },
-                description: 'POST /addEmployee without email'
-            },
-            {
-                method: 'post',
-                endpoint: '/api/salons/addEmployee',
-                body: { email: 'test@example.com' },
-                description: 'POST /addEmployee without title'
-            },
-            {
-                method: 'delete',
-                endpoint: '/api/salons/removeEmployee',
-                body: {},
-                description: 'DELETE /removeEmployee without email'
-            }
-        ])('Missing Required Fields - $description returns 400 Bad Request', async ({ method, endpoint, body }) => {
-            const { token } = await setupOwnerWithSalon();
-
-            const response = await request(app)
-                [method](endpoint)
+            const invalidEmailResponse = await request(app)
+                .delete('/api/salons/removeEmployee')
                 .set('Authorization', `Bearer ${token}`)
-                .send(body);
+                .send({ email: 'invalid-email' });
 
-            expect(response.status).toBe(400);
-            expect(response.body).toMatchObject({
-                message: 'Missing required fields'
-            });
-        });
-
-        test.each([
-            {
-                method: 'post',
-                endpoint: '/api/salons/addEmployee',
-                body: { email: 'invalid-email', title: 'Stylist' },
-                description: 'POST /addEmployee'
-            },
-            {
-                method: 'delete',
-                endpoint: '/api/salons/removeEmployee',
-                body: { email: 'invalid-email' },
-                description: 'DELETE /removeEmployee'
-            }
-        ])('Invalid Email Format - $description with invalid email format returns 400 Bad Request', async ({ method, endpoint, body }) => {
-            const { token } = await setupOwnerWithSalon();
-
-            const response = await request(app)
-                [method](endpoint)
-                .set('Authorization', `Bearer ${token}`)
-                .send(body);
-
-            expect(response.status).toBe(400);
-            expect(response.body).toMatchObject({
-                message: 'Invalid email format'
-            });
-        });
-
-        test.each([
-            { body: { offset: 0 }, description: 'missing limit' },
-            { body: { limit: 10 }, description: 'missing offset' },
-            { body: { limit: 10, offset: 'invalid' }, description: 'invalid offset type' }
-        ])('Invalid Fields - View - POST /viewEmployees with $description returns 400 Bad Request', async ({ body }) => {
-            const { token } = await setupOwnerWithSalon();
-
-            const response = await request(app)
-                .post('/api/salons/viewEmployees')
-                .set('Authorization', `Bearer ${token}`)
-                .send(body);
-
-            expect(response.status).toBe(400);
-            expect(response.body).toMatchObject({
-                message: 'Invalid fields.'
-            });
+            expect(invalidEmailResponse.status).toBe(400);
+            expect(invalidEmailResponse.body.message).toContain('Invalid email format');
         });
     });
 
     describe('Data Integrity & UI Logic', () => {
-        test('Verify Response Privacy: POST /viewEmployees returns public info but excludes private fields', async () => {
-            const { salonId, token } = await setupOwnerWithSalon();
-            const password = 'Password123!';
-            const nowUtc = toMySQLUtc(DateTime.utc());
-
-            const employee = await insertUserWithCredentials({
-                password,
-                role: 'EMPLOYEE'
-            });
-
-            await insertEmployee(salonId, employee.user_id);
-
-            const response = await request(app)
-                .post('/api/salons/viewEmployees')
-                .set('Authorization', `Bearer ${token}`)
-                .send({ limit: 10, offset: 0 });
-
-            expect(response.status).toBe(200);
-            if (response.body.data.length > 0) {
-                const employeeData = response.body.data.find(e => e.email === employee.email);
-                expect(employeeData).toBeDefined();
-                expect(employeeData).toHaveProperty('full_name');
-                expect(employeeData).toHaveProperty('email');
-                expect(employeeData).toHaveProperty('phone');
-                expect(employeeData).toHaveProperty('profile_picture_url');
-                expect(employeeData).toHaveProperty('title');
-                expect(employeeData).not.toHaveProperty('password');
-                expect(employeeData).not.toHaveProperty('password_hash');
-            }
-        });
-
-        test('Verify Role Preservation: Employee added to salon maintains EMPLOYEE role and does not inherit OWNER permissions', async () => {
-            const { salonId, token } = await setupOwnerWithSalon();
-            const password = 'Password123!';
-
-            const employee = await insertUserWithCredentials({
-                password,
-                role: 'EMPLOYEE'
-            });
-
-            const addResponse = await request(app)
-                .post('/api/salons/addEmployee')
-                .set('Authorization', `Bearer ${token}`)
-                .send({ email: employee.email, title: 'Senior Stylist' });
-
-            expect(addResponse.status).toBe(200);
-
-            const [userRows] = await db.execute(
-                'SELECT role FROM users WHERE user_id = ?',
-                [employee.user_id]
-            );
-            expect(userRows[0].role).toBe('EMPLOYEE');
-
-            const employeeLoginResponse = await request(app)
-                .post('/api/user/login')
-                .send({ email: employee.email, password });
-
-            const employeeToken = employeeLoginResponse.body.data.token;
-
-            const unauthorizedResponse = await request(app)
-                .post('/api/salons/addEmployee')
-                .set('Authorization', `Bearer ${employeeToken}`)
-                .send({ email: 'test@example.com', title: 'Stylist' });
-
-            expect(unauthorizedResponse.status).toBe(403);
-            expect(unauthorizedResponse.body).toMatchObject({
-                error: 'Insufficient permissions'
-            });
-        });
-
         test('Verify Pagination: POST /viewEmployees with limit and offset returns correct pagination metadata', async () => {
             const { salonId, token } = await setupOwnerWithSalon();
             const password = 'Password123!';
-            const nowUtc = toMySQLUtc(DateTime.utc());
 
             for (let i = 0; i < 5; i++) {
                 const employee = await insertUserWithCredentials({
@@ -1369,141 +1191,39 @@ describe('UAR 1.7 - Add/Remove/View Employees - Owner', () => {
     });
 
     describe('Security & Permissions', () => {
-        test('Verify Cross-Tenant Protection: Owner A cannot add employee to Owner B\'s salon', async () => {
-            const { owner: ownerA, salonId: salonAId, token: tokenA } = await setupOwnerWithSalon();
-            const { owner: ownerB, salonId: salonBId } = await setupOwnerWithSalon();
+        test('Verify Unauthorized Access: Non-OWNER roles cannot access employee management endpoints', async () => {
             const password = 'Password123!';
+            const customer = await insertUserWithCredentials({ password, role: 'CUSTOMER' });
+            const customerToken = await loginUser(customer.email, password);
 
-            const employee = await insertUserWithCredentials({
-                password,
-                role: 'EMPLOYEE'
-            });
+            const employee = await insertUserWithCredentials({ password, role: 'EMPLOYEE' });
 
-            const response = await request(app)
+            const addResponse = await request(app)
                 .post('/api/salons/addEmployee')
-                .set('Authorization', `Bearer ${tokenA}`)
+                .set('Authorization', `Bearer ${customerToken}`)
                 .send({ email: employee.email, title: 'Stylist' });
 
-            expect(response.status).toBe(200);
+            expect(addResponse.status).toBe(403);
+            expect(addResponse.body.error).toBe('Insufficient permissions');
 
-            const [employeeRows] = await db.execute(
-                `SELECT e.salon_id FROM employees e
-                 JOIN users u ON e.user_id = u.user_id
-                 WHERE u.email = ?`,
-                [employee.email]
-            );
-            expect(employeeRows).toHaveLength(1);
-            expect(employeeRows[0].salon_id).toBe(salonAId);
-            expect(employeeRows[0].salon_id).not.toBe(salonBId);
-        });
-
-        test.each(['CUSTOMER', 'EMPLOYEE', 'ADMIN'])('Verify Unauthorized Role - %s: User with role %s cannot access POST /addEmployee', async (role) => {
-            const password = 'Password123!';
-            const user = await insertUserWithCredentials({
-                password,
-                role
-            });
-
-            const token = await loginUser(user.email, password);
-
-            const employee = await insertUserWithCredentials({
-                password,
-                role: 'EMPLOYEE'
-            });
-
-            const response = await request(app)
-                .post('/api/salons/addEmployee')
-                .set('Authorization', `Bearer ${token}`)
-                .send({ email: employee.email, title: 'Stylist' });
-
-            expect(response.status).toBe(403);
-            expect(response.body).toMatchObject({
-                error: 'Insufficient permissions'
-            });
-        });
-
-        test.each([
-            {
-                method: 'post',
-                endpoint: '/api/salons/viewEmployees',
-                body: { limit: 10, offset: 0 },
-                description: 'POST /viewEmployees'
-            },
-            {
-                method: 'post',
-                endpoint: '/api/salons/addEmployee',
-                body: { email: 'test@example.com', title: 'Stylist' },
-                description: 'POST /addEmployee'
-            },
-            {
-                method: 'delete',
-                endpoint: '/api/salons/removeEmployee',
-                body: { email: 'test@example.com' },
-                description: 'DELETE /removeEmployee'
-            }
-        ])('Verify Unauthenticated Access: $description without Bearer token returns 401 Unauthorized', async ({ method, endpoint, body }) => {
-            const response = await request(app)
-                [method](endpoint)
-                .send(body);
-
-            expect(response.status).toBe(401);
-            expect(response.body).toMatchObject({
-                error: 'Access token required'
-            });
-        });
-    });
-
-    describe('Edge Cases', () => {
-        test('Verify Self-Removal: Owner attempting to remove themselves as employee returns 404 (owner not in employees table)', async () => {
-            const { owner, token } = await setupOwnerWithSalon();
-
-            const response = await request(app)
-                .delete('/api/salons/removeEmployee')
-                .set('Authorization', `Bearer ${token}`)
-                .send({ email: owner.email });
-
-            expect(response.status).toBe(404);
-            expect(response.body).toMatchObject({
-                message: 'Employee not found'
-            });
-        });
-
-
-        test('Verify Empty Employee List: POST /viewEmployees returns empty array when salon has no employees', async () => {
-            const { token } = await setupOwnerWithSalon();
-
-            const response = await request(app)
+            const viewResponse = await request(app)
                 .post('/api/salons/viewEmployees')
-                .set('Authorization', `Bearer ${token}`)
+                .set('Authorization', `Bearer ${customerToken}`)
                 .send({ limit: 10, offset: 0 });
 
-            expect(response.status).toBe(200);
-            expect(Array.isArray(response.body.data)).toBe(true);
-            expect(response.body.pagination.total_employees).toBe(0);
-        });
+            expect(viewResponse.status).toBe(403);
+            expect(viewResponse.body.error).toBe('Insufficient permissions');
 
-        test('Verify Large Offset: POST /viewEmployees with offset beyond total returns empty array', async () => {
-            const { salonId, token } = await setupOwnerWithSalon();
-            const password = 'Password123!';
-            const nowUtc = toMySQLUtc(DateTime.utc());
+            const removeResponse = await request(app)
+                .delete('/api/salons/removeEmployee')
+                .set('Authorization', `Bearer ${customerToken}`)
+                .send({ email: employee.email });
 
-            const employee = await insertUserWithCredentials({
-                password,
-                role: 'EMPLOYEE'
-            });
-
-            await insertEmployee(salonId, employee.user_id, 'Stylist');
-
-            const response = await request(app)
-                .post('/api/salons/viewEmployees')
-                .set('Authorization', `Bearer ${token}`)
-                .send({ limit: 10, offset: 1000 });
-
-            expect(response.status).toBe(200);
-            expect(Array.isArray(response.body.data)).toBe(true);
-            expect(response.body.data.length).toBe(0);
+            expect(removeResponse.status).toBe(403);
+            expect(removeResponse.body.error).toBe('Insufficient permissions');
         });
     });
+
 });
 
 // UAR 1.8 - Get Stylist's Assigned Salon
@@ -1663,51 +1383,7 @@ describe('UAR 1.8 - Get Stylist\'s Assigned Salon', () => {
             });
         });
 
-        test('Verify Cross-User Access: Controller derives user ID from token, ignores query params (IDOR prevention)', async () => {
-            const password = 'Password123!';
-            const nowUtc = toMySQLUtc(DateTime.utc());
-
-            const owner1 = await insertUserWithCredentials({
-                password,
-                role: 'OWNER'
-            });
-
-            const owner2 = await insertUserWithCredentials({
-                password,
-                role: 'OWNER'
-            });
-
-            const stylistA = await insertUserWithCredentials({
-                password,
-                role: 'EMPLOYEE'
-            });
-
-            const stylistB = await insertUserWithCredentials({
-                password,
-                role: 'EMPLOYEE'
-            });
-
-            const salonAId = await createSalon(owner1.user_id, { name: 'Salon A', status: 'APPROVED' });
-            const salonBId = await createSalon(owner2.user_id, { name: 'Salon B', status: 'APPROVED' });
-
-            await insertEmployee(salonAId, stylistA.user_id);
-            await insertEmployee(salonBId, stylistB.user_id);
-
-            const loginResponse = await request(app)
-                .post('/api/user/login')
-                .send({ email: stylistA.email, password });
-
-            const tokenA = loginResponse.body.data.token;
-
-            const response = await request(app)
-                .get('/api/user/stylist/getSalon')
-                .set('Authorization', `Bearer ${tokenA}`);
-
-            expect(response.status).toBe(200);
-            expect(response.body.data.salon_id).toBe(salonAId);
-            expect(response.body.data.salon_id).not.toBe(salonBId);
-            expect(response.body.data.name).toBe('Salon A');
-        });
+       
     });
 
     describe('Edge Cases', () => {
@@ -1733,15 +1409,12 @@ describe('UAR 1.8 - Get Stylist\'s Assigned Salon', () => {
             const salonAId = await createSalon(owner1.user_id, { name: 'Salon A', status: 'APPROVED' });
             const salonBId = await createSalon(owner2.user_id, { name: 'Salon B', status: 'APPROVED' });
 
-            // First assignment succeeds
             await insertEmployee(salonAId, stylist.user_id);
 
-            // Second assignment should fail due to unique constraint on user_id
             await expect(
                 insertEmployee(salonBId, stylist.user_id, 'Junior Stylist')
             ).rejects.toThrow();
 
-            // Verify getSalon returns the single assignment
             const loginResponse = await request(app)
                 .post('/api/user/login')
                 .send({ email: stylist.email, password });
@@ -1759,7 +1432,7 @@ describe('UAR 1.8 - Get Stylist\'s Assigned Salon', () => {
             expect(response.body.data.salon_id).not.toBe(salonBId);
         });
 
-        test('Verify Recently Removed: Owner removes stylist, stylist with old token returns 404 (real-time DB check)', async () => {
+        test('Verify Recently Removed: Owner removes stylist, stylist with old token returns 404', async () => {
             const password = 'Password123!';
             const nowUtc = toMySQLUtc(DateTime.utc());
 

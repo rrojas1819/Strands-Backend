@@ -699,7 +699,7 @@ describe('BS 1.1 - Customer Booking Flow', () => {
         });
     });
 
-    describe('Edge Cases - Salon Hours Boundaries', () => {
+    describe('Edge Cases', () => {
         test.each([
             { hour: 9, minute: 0, description: 'exactly at opening time (09:00:00)' },
             { hour: 16, minute: 0, description: 'ending exactly at closing time (16:00:00 for 60min service)' }
@@ -866,7 +866,7 @@ describe('BS 1.1 - Customer Booking Flow', () => {
 
     });
 
-    describe('Timezone Handling - EST', () => {
+    describe('Timezone Handling', () => {
         test.each([
             { hour: 10, minute: 0, description: 'with EST-formatted time (10:00 EST)', expectedStatus: [200, 201], checkBookingId: true },
             { hour: 9, minute: 0, description: 'at opening time (09:00 EST)', expectedStatus: [200, 201], checkBookingId: false },

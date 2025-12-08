@@ -48,7 +48,7 @@ exports.addProduct = async (req, res) => {
                 });
             } catch (notifError) {
                 if (process.env.NODE_ENV !== 'test') {
-                    console.error('Failed to send product added notification:', notifError);
+                console.error('Failed to send product added notification:', notifError);
                 }
             }
         }
@@ -99,7 +99,7 @@ exports.getProducts = async (req, res) => {
 
     } catch (error) {
         if (process.env.NODE_ENV !== 'test') {
-            console.error('getProducts error:', error);
+        console.error('getProducts error:', error);
         }
         res.status(500).json({
             message: "Internal server error"
@@ -150,7 +150,7 @@ exports.deleteProduct = async (req, res) => {
                 });
             } catch (notifError) {
                 if (process.env.NODE_ENV !== 'test') {
-                    console.error('Failed to send product deleted notification:', notifError);
+                console.error('Failed to send product deleted notification:', notifError);
                 }
             }
         }
@@ -160,7 +160,7 @@ exports.deleteProduct = async (req, res) => {
         });
     } catch (error) {
         if (process.env.NODE_ENV !== 'test') {
-            console.error('deleteProduct error:', error);
+        console.error('deleteProduct error:', error);
         }
         res.status(500).json({
             message: "Internal server error"
@@ -219,7 +219,7 @@ exports.updateProduct = async (req, res) => {
                 });
             } catch (notifError) {
                 if (process.env.NODE_ENV !== 'test') {
-                    console.error('Failed to send product restocked notification:', notifError);
+                console.error('Failed to send product restocked notification:', notifError);
                 }
             }
         }
@@ -230,7 +230,7 @@ exports.updateProduct = async (req, res) => {
 
     } catch (error) {
         if (process.env.NODE_ENV !== 'test') {
-            console.error('updateProduct error:', error);
+        console.error('updateProduct error:', error);
         }
         res.status(500).json({
             message: "Internal server error"
@@ -319,7 +319,7 @@ exports.addToCart = async (req, res) => {
 
     } catch (error) {
         if (process.env.NODE_ENV !== 'test') {
-            console.error('addToCart error:', error);
+        console.error('addToCart error:', error);
         }
         res.status(500).json({
             message: "Internal server error"
@@ -353,7 +353,7 @@ exports.viewCart = async (req, res) => {
 
     } catch (error) {
         if (process.env.NODE_ENV !== 'test') {
-            console.error('viewCart error:', error);
+        console.error('viewCart error:', error);
         }
         res.status(500).json({
             message: "Internal server error"
@@ -387,7 +387,7 @@ exports.removeFromCart = async (req, res) => {
         });
     } catch (error) {
         if (process.env.NODE_ENV !== 'test') {
-            console.error('removeFromCart error:', error);
+        console.error('removeFromCart error:', error);
         }
         res.status(500).json({
             message: "Internal server error"
@@ -425,7 +425,7 @@ exports.updateCart = async (req, res) => {
 
     } catch (error) {
         if (process.env.NODE_ENV !== 'test') {
-            console.error('updateCart error:', error);
+        console.error('updateCart error:', error);
         }
         res.status(500).json({
             message: "Internal server error"
@@ -574,7 +574,7 @@ exports.checkout = async (req, res) => {
                     });
                 } catch (notifError) {
                     if (process.env.NODE_ENV !== 'test') {
-                        console.error('Failed to send product purchase notification:', notifError);
+                    console.error('Failed to send product purchase notification:', notifError);
                     }
                 }
             }
@@ -630,14 +630,14 @@ exports.checkout = async (req, res) => {
         } catch (transactionError) {
             await db.query('ROLLBACK');
             if (process.env.NODE_ENV !== 'test') {
-                console.error('checkoutCart error:', transactionError);
+            console.error('checkoutCart error:', transactionError);
             }
             return res.status(500).json({ message: 'Transaction failed' });
         }
 
     } catch (error) {
         if (process.env.NODE_ENV !== 'test') {
-            console.error('checkoutCart error:', error);
+        console.error('checkoutCart error:', error);
         }
         res.status(500).json({
             message: 'Internal server error'
@@ -708,7 +708,7 @@ exports.viewUserOrders = async (req, res) => {
 
   } catch (err) {
     if (process.env.NODE_ENV !== 'test') {
-      console.error('viewPastOrders error:', err);
+    console.error('viewPastOrders error:', err);
     }
     return res.status(500).json({ message: 'Internal server error' });
   }
@@ -775,7 +775,7 @@ exports.viewSalonOrders = async (req, res) => {
 
   } catch (err) {
     if (process.env.NODE_ENV !== 'test') {
-      console.error('viewPastSalonOrders error:', err);
+    console.error('viewPastSalonOrders error:', err);
     }
     return res.status(500).json({ message: 'Internal server error' });
   }

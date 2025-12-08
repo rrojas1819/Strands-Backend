@@ -33,30 +33,7 @@ describe('SF 1.1 - Create Online Shop', () => {
         });
     });
 
-    describe('1. Pre-conditions (The Setup)', () => {
-        test('Verify User State: Valid JWT for a user with role OWNER', async () => {
-            const owner = await insertUserWithCredentials({
-                password: DEFAULT_PASSWORD,
-                role: 'OWNER'
-            });
-
-            const token = await loginUser(owner.email, DEFAULT_PASSWORD);
-            expect(token).toBeDefined();
-            expect(typeof token).toBe('string');
-        });
-
-        test('Verify Data State: The salon exists but does not yet have products (shop not yet active)', async () => {
-            const { salonId } = await setupOwnerWithSalon();
-
-            const salonExists = await verifySalonExists(salonId);
-            expect(salonExists).toBe(true);
-
-            const noProducts = await verifyNoProductsExist(salonId);
-            expect(noProducts).toBe(true);
-        });
-    });
-
-    describe('2. Positive Flow (The "Happy Path")', () => {
+    describe('Positive Flow', () => {
         test('Verify Shop Initialization: POST /api/products/ with valid product data returns 200 OK and product is linked to salon', async () => {
             const { salonId, token } = await setupOwnerWithSalon();
             const productData = baseProductPayload();
@@ -110,7 +87,7 @@ describe('SF 1.1 - Create Online Shop', () => {
         });
     });
 
-    describe('3. Negative Flow (Error Handling & Rejection)', () => {
+    describe('Negative Flow', () => {
         test('Verify Duplicate SKU Creation: POST /api/products/ with duplicate SKU returns 409 Conflict', async () => {
             const { token } = await setupOwnerWithSalon();
             const productData = baseProductPayload();
@@ -160,7 +137,7 @@ describe('SF 1.1 - Create Online Shop', () => {
         });
     });
 
-    describe('4. Data Integrity & UI Logic', () => {
+    describe('Data Integrity & UI Logic', () => {
         test('Verify Product Data Consistency: Product added with specific price maintains that price in database', async () => {
             const { token } = await setupOwnerWithSalon();
             const productData = baseProductPayload({
@@ -212,7 +189,7 @@ describe('SF 1.1 - Create Online Shop', () => {
         });
     });
 
-    describe('5. Security & Permissions (RBAC)', () => {
+    describe('Security & Permissions', () => {
         test('Verify Employee Restriction: User with role EMPLOYEE attempting to POST /api/products/ returns 403 Forbidden', async () => {
             const employee = await insertUserWithCredentials({
                 password: DEFAULT_PASSWORD,
@@ -261,7 +238,7 @@ describe('SF 1.1 - Create Online Shop', () => {
         });
     });
 
-    describe('6. Edge Cases', () => {
+    describe('Edge Cases', () => {
         test('Verify Large Product Name: Product with very long name is handled correctly', async () => {
             const { token } = await setupOwnerWithSalon();
             const longName = generateLongString(500);

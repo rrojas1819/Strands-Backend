@@ -97,7 +97,7 @@ describe('AFDV 1.1 - User Engagement Stats', () => {
         return { admin, token, password };
     };
 
-    describe('2. Positive Flow', () => {
+    describe('Positive Flow', () => {
         test('GET /api/admin/analytics/user-engagement returns 200 OK with expected JSON structure and data types', async () => {
             const { token } = await setupAdmin();
 
@@ -158,7 +158,7 @@ describe('AFDV 1.1 - User Engagement Stats', () => {
         });
     });
 
-    describe('3. Negative Flow', () => {
+    describe('Negative Flow', () => {
        
         test('Simulate database connection failure returns 500 Internal Server Error', async () => {
             const { token } = await setupAdmin();
@@ -182,7 +182,7 @@ describe('AFDV 1.1 - User Engagement Stats', () => {
         });
     });
 
-    describe('4. Data Integrity & UI Logic', () => {
+    describe('Data Integrity & UI Logic', () => {
         test('Calculation Verification: If there are 5 distinct users who logged in today, today_logins metric is at least 5', async () => {
             const { token } = await setupAdmin();
 
@@ -333,7 +333,7 @@ describe('AFDV 1.1 - User Engagement Stats', () => {
         });
     });
 
-    describe('5. Security & Permissions (RBAC)', () => {
+    describe('Security & Permissions', () => {
         test.each(['CUSTOMER', 'OWNER', 'EMPLOYEE'])('Unauthorized Role: %s role attempting to hit endpoint returns 403 Forbidden', async (role) => {
             const password = 'Password123!';
             const user = await insertUserWithCredentials({ password, role });
@@ -383,7 +383,7 @@ describe('AFDV 1.1 - User Engagement Stats', () => {
         });
     });
 
-    describe('6. Edge Cases', () => {
+    describe('Edge Cases', () => {
 
         test('Empty Arrays: Verify top3Services and top3ViewedSalons return empty arrays when no data exists', async () => {
             const { token } = await setupAdmin();
@@ -419,5 +419,237 @@ describe('AFDV 1.1 - User Engagement Stats', () => {
         });
 
      
+    });
+});
+
+// AFDV 1.2 - Appointment Trends & Peak Hours
+describe('AFDV 1.2 - Appointment Trends & Peak Hours', () => {
+    const createBooking = async (salonId, customerUserId, scheduledStart, status = 'SCHEDULED') => {
+        const nowUtc = toMySQLUtc(DateTime.utc());
+        const startUtc = toMySQLUtc(scheduledStart);
+        const endUtc = toMySQLUtc(scheduledStart.plus({ minutes: 60 }));
+
+        const [result] = await db.execute(
+            `INSERT INTO bookings (salon_id, customer_user_id, scheduled_start, scheduled_end, status, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [salonId, customerUserId, startUtc, endUtc, status, nowUtc, nowUtc]
+        );
+        return result.insertId;
+    };
+
+    const createBookingService = async (bookingId, serviceId, durationMinutes = 60) => {
+        const nowUtc = toMySQLUtc(DateTime.utc());
+        await db.execute(
+            `INSERT INTO booking_services (booking_id, service_id, price, duration_minutes, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+            [bookingId, serviceId, 50.00, durationMinutes, nowUtc, nowUtc]
+        );
+    };
+
+    const createSalon = async (ownerUserId, options = {}) => {
+        const nowUtc = toMySQLUtc(DateTime.utc());
+        const [result] = await db.execute(
+            `INSERT INTO salons (owner_user_id, name, description, category, phone, email, 
+             address, city, state, postal_code, country, status, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+                ownerUserId,
+                options.name || 'Test Salon',
+                options.description || 'Test salon description',
+                options.category || 'HAIR SALON',
+                options.phone || '555-0100',
+                options.email || 'test-salon@test.com',
+                options.address || '123 Main St',
+                options.city || 'Test City',
+                options.state || 'TS',
+                options.postal_code || '12345',
+                options.country || 'USA',
+                options.status || 'APPROVED',
+                nowUtc,
+                nowUtc
+            ]
+        );
+        return result.insertId;
+    };
+
+    const createService = async (salonId, serviceName) => {
+        const nowUtc = toMySQLUtc(DateTime.utc());
+        const [result] = await db.execute(
+            `INSERT INTO services (salon_id, name, description, price, duration_minutes, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [salonId, serviceName, 'Test service', 50.00, 60, nowUtc, nowUtc]
+        );
+        return result.insertId;
+    };
+
+    const setupAdmin = async () => {
+        const password = 'Password123!';
+        const admin = await insertUserWithCredentials({ password, role: 'ADMIN' });
+
+        const loginResponse = await request(app)
+            .post('/api/user/login')
+            .send({ email: admin.email, password });
+
+        expect(loginResponse.status).toBe(200);
+        const token = loginResponse.body.data.token;
+
+        return { admin, token, password };
+    };
+
+    const getAppointmentAnalyticsViaAPI = async (token) => {
+        return await request(app)
+            .get('/api/admin/analytics/appointment-analytics')
+            .set('Authorization', `Bearer ${token}`);
+    };
+
+    describe('Positive Flow', () => {
+        test('Verify GET /appointment-analytics returns 200 OK with expected structure', async () => {
+            const { token } = await setupAdmin();
+
+            const response = await getAppointmentAnalyticsViaAPI(token);
+
+            expect(response.status).toBe(200);
+            expect(response.body).toHaveProperty('appointmentsByDay');
+            expect(response.body).toHaveProperty('peakHours');
+            expect(response.body).toHaveProperty('avgDurationInMin');
+            expect(typeof response.body.appointmentsByDay).toBe('object');
+            expect(typeof response.body.peakHours).toBe('object');
+            expect(response.body.avgDurationInMin === null || !isNaN(Number(response.body.avgDurationInMin))).toBe(true);
+        });
+
+        test('Verify Peak Hours Calculation: Appointments at specific hours are correctly counted', async () => {
+            const { token } = await setupAdmin();
+
+            const owner = await insertUserWithCredentials({ role: 'OWNER' });
+            const customer1 = await insertUserWithCredentials({ role: 'CUSTOMER' });
+            const customer2 = await insertUserWithCredentials({ role: 'CUSTOMER' });
+            
+            const salonId = await createSalon(owner.user_id);
+            const now = DateTime.utc();
+
+            const booking1 = await createBooking(salonId, customer1.user_id, now.set({ hour: 10, minute: 0 }), 'SCHEDULED');
+            const booking2 = await createBooking(salonId, customer2.user_id, now.set({ hour: 10, minute: 30 }), 'COMPLETED');
+
+            const response = await getAppointmentAnalyticsViaAPI(token);
+
+            expect(response.status).toBe(200);
+            expect(response.body.peakHours).toHaveProperty('10 AM');
+            expect(Number(response.body.peakHours['10 AM'])).toBeGreaterThanOrEqual(2);
+        });
+
+        test('Verify Day of Week Calculation: Appointments grouped by day are correctly counted', async () => {
+            const { token } = await setupAdmin();
+
+            const owner = await insertUserWithCredentials({ role: 'OWNER' });
+            const customer = await insertUserWithCredentials({ role: 'CUSTOMER' });
+            
+            const salonId = await createSalon(owner.user_id);
+            const now = DateTime.utc();
+            const monday = now.startOf('week').plus({ days: 0 });
+
+            await createBooking(salonId, customer.user_id, monday.set({ hour: 14, minute: 0 }), 'SCHEDULED');
+            await createBooking(salonId, customer.user_id, monday.set({ hour: 15, minute: 0 }), 'COMPLETED');
+
+            const response = await getAppointmentAnalyticsViaAPI(token);
+
+            expect(response.status).toBe(200);
+            expect(response.body.appointmentsByDay).toHaveProperty('Monday');
+            expect(Number(response.body.appointmentsByDay['Monday'])).toBeGreaterThanOrEqual(2);
+        });
+    });
+
+    describe('Negative Flow', () => {
+        test('Verify Database Error Handling: Returns 500 on database failure', async () => {
+            const { token } = await setupAdmin();
+
+            const mockDb = {
+                execute: jest.fn().mockRejectedValue(new Error('Database connection failed'))
+            };
+            
+            const promiseSpy = jest.spyOn(connection, 'promise').mockReturnValue(mockDb);
+
+            const response = await getAppointmentAnalyticsViaAPI(token);
+
+            expect(response.status).toBe(500);
+            expect(response.body).toMatchObject({
+                message: 'Internal server error'
+            });
+
+            promiseSpy.mockRestore();
+        });
+    });
+
+    describe('Data Integrity & UI Logic', () => {
+        test('Verify Average Duration Calculation: Correctly calculates average appointment duration', async () => {
+            const { token } = await setupAdmin();
+
+            const owner = await insertUserWithCredentials({ role: 'OWNER' });
+            const customer = await insertUserWithCredentials({ role: 'CUSTOMER' });
+            
+            const salonId = await createSalon(owner.user_id);
+            const serviceId = await createService(salonId, 'Haircut');
+            const now = DateTime.utc();
+
+            const booking1 = await createBooking(salonId, customer.user_id, now.plus({ days: 1 }), 'SCHEDULED');
+            await createBookingService(booking1, serviceId, 60);
+
+            const booking2 = await createBooking(salonId, customer.user_id, now.plus({ days: 2 }), 'COMPLETED');
+            await createBookingService(booking2, serviceId, 90);
+
+            const response = await getAppointmentAnalyticsViaAPI(token);
+
+            expect(response.status).toBe(200);
+            expect(response.body.avgDurationInMin).toBeDefined();
+            if (response.body.avgDurationInMin !== null) {
+                const avgDuration = Number(response.body.avgDurationInMin);
+                expect(avgDuration).toBeGreaterThan(0);
+                expect(avgDuration).toBeLessThanOrEqual(1000);
+            }
+        });
+
+        test('Verify Peak Hours Format: All 24 hours are present in peakHours response', async () => {
+            const { token } = await setupAdmin();
+
+            const response = await getAppointmentAnalyticsViaAPI(token);
+
+            expect(response.status).toBe(200);
+            const hourLabels = ['12 AM', '1 AM', '2 AM', '3 AM', '4 AM', '5 AM', '6 AM', '7 AM', '8 AM', '9 AM', '10 AM', '11 AM',
+                                '12 PM', '1 PM', '2 PM', '3 PM', '4 PM', '5 PM', '6 PM', '7 PM', '8 PM', '9 PM', '10 PM', '11 PM'];
+            
+            hourLabels.forEach(hour => {
+                expect(response.body.peakHours).toHaveProperty(hour);
+                expect(typeof response.body.peakHours[hour]).toBe('number');
+            });
+        });
+    });
+
+    describe('Security & Permissions', () => {
+        test.each(['CUSTOMER', 'OWNER', 'EMPLOYEE'])('Verify Unauthorized Access: %s role returns 403 Forbidden', async (role) => {
+            const password = 'Password123!';
+            const user = await insertUserWithCredentials({ password, role });
+
+            const loginResponse = await request(app)
+                .post('/api/user/login')
+                .send({ email: user.email, password });
+
+            const token = loginResponse.body.data.token;
+
+            const response = await getAppointmentAnalyticsViaAPI(token);
+
+            expect(response.status).toBe(403);
+            expect(response.body).toMatchObject({
+                error: 'Insufficient permissions'
+            });
+        });
+
+        test('Verify Unauthenticated Access: Request without token returns 401 Unauthorized', async () => {
+            const response = await request(app)
+                .get('/api/admin/analytics/appointment-analytics');
+
+            expect(response.status).toBe(401);
+            expect(response.body).toMatchObject({
+                error: 'Access token required'
+            });
+        });
     });
 });

@@ -4,7 +4,7 @@
   "description": "Our project, Strands, is a web app that brings together salon owners, employees, customers, and admins in one place to make salon management easier.",
   "main": "src/server.js",
   "scripts": {
-    "test": "cross-env NODE_ENV=test jest --runInBand --coverage",
+    "test": "cross-env NODE_ENV=test jest --coverage ",
     "start": "node src/server.js",
     "dev": "nodemon src/server.js"
   },

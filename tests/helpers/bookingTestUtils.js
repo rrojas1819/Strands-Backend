@@ -171,6 +171,91 @@ const createBookingWithServices = async (salonId, customerUserId, employeeId, se
     return bookingId;
 };
 
+// Salon Setup Helpers
+const setupSecondSalon = async (ownerUserId, options = {}) => {
+    const nowUtc = toMySQLUtc(DateTime.utc());
+    
+    const [salonResult] = await db.execute(
+        `INSERT INTO salons (owner_user_id, name, description, category, phone, email, 
+         address, city, state, postal_code, country, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+            ownerUserId,
+            options.name || 'Salon Y',
+            options.description || 'Test salon Y',
+            options.category || 'HAIR SALON',
+            options.phone || '555-0101',
+            options.email || 'salon-y@test.com',
+            options.address || '456 Oak St',
+            options.city || 'Test City',
+            options.state || 'TS',
+            options.postal_code || '12345',
+            options.country || 'USA',
+            options.status || 'APPROVED',
+            nowUtc,
+            nowUtc
+        ]
+    );
+    const salonId = salonResult.insertId;
+    
+    await db.execute(
+        `UPDATE salons SET timezone = ? WHERE salon_id = ?`,
+        [options.timezone || 'UTC', salonId]
+    );
+    
+    const employee = await insertUserWithCredentials({
+        password: options.password || DEFAULT_PASSWORD,
+        role: 'EMPLOYEE',
+        ...options.employeeOverrides
+    });
+    
+    await db.execute(
+        `INSERT INTO employees (salon_id, user_id, title, active, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [salonId, employee.user_id, options.employeeTitle || 'Stylist', 1, nowUtc, nowUtc]
+    );
+    
+    const [employeeResult] = await db.execute(
+        'SELECT employee_id FROM employees WHERE user_id = ?',
+        [employee.user_id]
+    );
+    const employeeId = employeeResult[0].employee_id;
+    
+    const weekday = options.weekday !== undefined ? options.weekday : 1;
+    await db.execute(
+        `INSERT INTO salon_availability (salon_id, weekday, start_time, end_time, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [salonId, weekday, options.salonStartTime || '09:00:00', options.salonEndTime || '17:00:00', nowUtc, nowUtc]
+    );
+    
+    await db.execute(
+        `INSERT INTO employee_availability (employee_id, weekday, start_time, end_time, slot_interval_minutes, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [employeeId, weekday, options.employeeStartTime || '09:00:00', options.employeeEndTime || '17:00:00', options.slotInterval || 30, nowUtc, nowUtc]
+    );
+    
+    const [serviceResult] = await db.execute(
+        `INSERT INTO services (salon_id, name, description, duration_minutes, price, active, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [salonId, options.serviceName || 'Haircut', options.serviceDescription || 'Basic haircut', options.durationMinutes || 60, options.servicePrice || 50, 1, nowUtc, nowUtc]
+    );
+    const serviceId = serviceResult.insertId;
+    
+    await db.execute(
+        `INSERT INTO employee_services (employee_id, service_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?)`,
+        [employeeId, serviceId, nowUtc, nowUtc]
+    );
+    
+    return {
+        salonId,
+        employeeId,
+        serviceId,
+        employee
+    };
+};
+
+// API Request Helpers
 const rescheduleBookingViaAPI = async (token, bookingId, scheduledStart, notes = '') => {
     return await request(app)
         .post('/api/bookings/reschedule')
@@ -189,10 +274,11 @@ const cancelBookingViaAPI = async (token, bookingId) => {
         .send({ booking_id: bookingId });
 };
 
-const getMyAppointmentsViaAPI = async (token) => {
+const getMyAppointmentsViaAPI = async (token, queryParams = {}) => {
     return await request(app)
         .get('/api/bookings/myAppointments')
-        .set('Authorization', `Bearer ${token}`);
+        .set('Authorization', `Bearer ${token}`)
+        .query(queryParams);
 };
 
 const getBookingById = async (bookingId) => {
@@ -423,6 +509,7 @@ module.exports = {
     DEFAULT_TIMEZONE,
     
     setupBookingTestEnvironment,
+    setupSecondSalon,
     loginUser,
     
     createBooking,

@@ -577,7 +577,7 @@ exports.rescheduleBooking = async (req, res) => {
         }
     } catch (error) {
         if (process.env.NODE_ENV !== 'test') {
-            console.error('rescheduleBooking error:', error);
+        console.error('rescheduleBooking error:', error);
         }
         return res.status(500).json({ message: 'Internal server error' });
     }
