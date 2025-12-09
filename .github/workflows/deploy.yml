@@ -17,6 +17,7 @@ jobs:
 
       - name: Run unit tests
         env:
+          TEST_VERBOSE: '1'
           APP_PORT: ${{ secrets.PORT }}
           UTC_DEBUG: ${{ secrets.UTC_DEBUG }}
           DB_HOST: ${{ secrets.DB_HOST }}
