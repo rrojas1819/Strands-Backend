@@ -270,7 +270,7 @@ exports.browseSalons = async (req, res) => {
     const isAdmin = role === "ADMIN";
 
     //URL params
-    let {status = 'all', sort = 'recent'} = req.query;
+    let {status = 'all', sort = 'recent', category} = req.query;
     let limit = req.query.limit;
     let offset = req.query.offset;
 
@@ -309,7 +309,10 @@ exports.browseSalons = async (req, res) => {
       where.push(`s.status = 'APPROVED'`);
     }
 
-    if (category) { where.push(`s.category = ?`); params.push(category); }
+    if (category && category.trim()) { 
+      where.push(`s.category = ?`); 
+      params.push(category.trim()); 
+    }
 
     const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "WHERE 1=1";
 
@@ -366,20 +369,31 @@ exports.browseSalons = async (req, res) => {
         }
       }
 
-      const urlEntries = await Promise.all(
-        Object.entries(keyBySalonId).map(async ([sid, key]) => {
-          try {
-            const { url } = await getFilePresigned(key);
-            return [Number(sid), url || null];
-          } catch {
-            return [Number(sid), null];
-          }
-        })
-      );
+      const hasAwsCredentials = process.env.AWS_ACCESS_KEY_ID && 
+                                 process.env.AWS_SECRET_ACCESS_KEY && 
+                                 process.env.AWS_S3_BUCKET;
 
-      urlEntries.forEach(([sid, url]) => {
-        photoMap[sid] = url;
-      });
+      if (hasAwsCredentials && Object.keys(keyBySalonId).length > 0) {
+        const urlEntries = await Promise.all(
+          Object.entries(keyBySalonId).map(async ([sid, key]) => {
+            try {
+              const result = await getFilePresigned(key);
+              if (result.error) {
+                return [Number(sid), null];
+              }
+              return [Number(sid), result.url || null];
+            } catch (err) {
+              return [Number(sid), null];
+            }
+          })
+        );
+
+        urlEntries.forEach(([sid, url]) => {
+          if (url) {
+            photoMap[sid] = url;
+          }
+        });
+      }
     }
 
     //weekly hours

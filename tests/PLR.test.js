@@ -953,12 +953,15 @@ describe('PLR 1.3 - Earn Loyalty Points', () => {
 
             expect(response.status).toBe(200);
             expect(response.body).toHaveProperty('userData');
-            expect(response.body.userData).toHaveProperty('visits_count');
-            expect(response.body.userData).toHaveProperty('total_visits_count');
-            expect(response.body.userData).toHaveProperty('target_visits');
-            expect(Number(response.body.userData.visits_count)).toBe(3);
-            expect(Number(response.body.userData.total_visits_count)).toBe(3);
-            expect(Number(response.body.userData.target_visits)).toBe(5);
+            expect(Array.isArray(response.body.userData)).toBe(true);
+            expect(response.body.userData.length).toBeGreaterThan(0);
+            const userData = response.body.userData[0];
+            expect(userData).toHaveProperty('visits_count');
+            expect(userData).toHaveProperty('total_visits_count');
+            expect(userData).toHaveProperty('target_visits');
+            expect(Number(userData.visits_count)).toBe(3);
+            expect(Number(userData.total_visits_count)).toBe(3);
+            expect(Number(userData.target_visits)).toBe(5);
         });
 
         test('Verify Reward Earned: User earns reward when reaching target visits', async () => {
@@ -1098,7 +1101,10 @@ describe('PLR 1.3 - Earn Loyalty Points', () => {
 
             expect(response.status).toBe(200);
             expect(response.body).toHaveProperty('userData');
-            const totalVisits = Number(response.body.userData.total_visits_count || response.body.userData.visits_count || 0);
+            expect(Array.isArray(response.body.userData)).toBe(true);
+            expect(response.body.userData.length).toBeGreaterThan(0);
+            const userData = response.body.userData[0];
+            const totalVisits = Number(userData.total_visits_count || userData.visits_count || 0);
             expect(totalVisits).toBeGreaterThanOrEqual(5);
         });
     });

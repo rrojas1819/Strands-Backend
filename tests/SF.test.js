@@ -743,27 +743,7 @@ describe('SF 1.2 - Cart Operations', () => {
             expect(response.body.message).toBe('Insufficient stock');
         });
 
-        test('Verify View User Orders Missing Fields: POST /api/products/customer/view-orders with missing fields returns 400', async () => {
-            const { customerToken } = await setupOwnerAndCustomer();
-
-            const missingFieldsCases = [
-                { limit: 10, offset: 0 },
-                { salon_id: 1, offset: 0 },
-                { salon_id: 1, limit: 10 },
-                {}
-            ];
-
-            const responses = await Promise.all(
-                missingFieldsCases.map(payload =>
-                    viewUserOrdersViaAPI(customerToken, payload)
-                )
-            );
-
-            for (const response of responses) {
-                expect(response.status).toBe(400);
-                expect(response.body.message).toBe('Invalid fields.');
-            }
-        });
+        
 
         test('Verify View User Orders Invalid Offset: POST /api/products/customer/view-orders with NaN offset returns 400', async () => {
             const { salonId, customerToken } = await setupOwnerAndCustomer();

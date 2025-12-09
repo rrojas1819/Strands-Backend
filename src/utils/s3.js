@@ -109,6 +109,14 @@ async function getFileStream(key) {
 
 async function getFilePresigned(key) {
 	try {
+		if (!process.env.AWS_ACCESS_KEY_ID || !process.env.AWS_SECRET_ACCESS_KEY || !process.env.AWS_S3_BUCKET) {
+			return { error: "AWS credentials not configured" };
+		}
+
+		if (!key) {
+			return { error: "Missing key" };
+		}
+
 		const command = new GetObjectCommand({
 		  Bucket: process.env.AWS_S3_BUCKET,
 		  Key: key
@@ -117,7 +125,12 @@ async function getFilePresigned(key) {
 		const url = await getSignedUrl(s3, command, { expiresIn: 120 });
 		return { url };
 	  } catch (err) {
-		console.error("Presigned error:", err);
+		// Silently fail in test/production - don't log sensitive errors
+		if (process.env.NODE_ENV === 'test') {
+			// In test mode, fail silently
+		} else {
+			console.error("Presigned error:", err);
+		}
 		return { error: "Failed to generate presigned URL" };
 	  }
 };
