@@ -1,5 +1,6 @@
 const connection = require('../config/databaseConnection');
 const { formatDateTime } = require('../utils/utilies');
+const { createNotification } = require('./notificationsController');
 
 //helper function to check for pagination offset
 function parseLimitOffset(q) {
@@ -71,6 +72,31 @@ exports.createStaffReview = async (req, res) => {
                                              FROM staff_reviews sr JOIN users u ON u.user_id = sr.user_id WHERE sr.staff_review_id = ?`, [ins.insertId]
             );
 
+            const [[employeeInfo]] = await db.execute(
+                `SELECT e.user_id, e.salon_id, u.email, u.full_name as employee_name, s.name as salon_name
+                 FROM employees e
+                 JOIN users u ON e.user_id = u.user_id
+                 JOIN salons s ON e.salon_id = s.salon_id
+                 WHERE e.employee_id = ?`,
+                [employeeId]
+            );
+
+            if (employeeInfo) {
+                try {
+                    await createNotification(db, {
+                        user_id: employeeInfo.user_id,
+                        salon_id: employeeInfo.salon_id,
+                        employee_id: employeeId,
+                        email: employeeInfo.email,
+                        type_code: 'STAFF_REVIEW_CREATED',
+                        message: `${row.user_name} left a ${rating}-star review for you${message ? ': ' + message.substring(0, 100) + (message.length > 100 ? '...' : '') : '.'}`,
+                        sender_email: row.user_name || 'SYSTEM'
+                    });
+                } catch (notifError) {
+                    console.error('Failed to send staff review created notification:', notifError);
+                }
+            }
+
             return res.status(201).json({
                 message: 'Staff review created',
                 data: {
@@ -113,7 +139,7 @@ exports.updateStaffReview = async (req, res) => {
         if (rating !== undefined && !isHalfStar(rating)) return res.status(400).json({ message: 'rating must be 0.0–5.0 in 0.5 steps' });
 
         //ensure rating belongs to the user so they can update
-        const [[own]] = await db.execute(`SELECT staff_review_id FROM staff_reviews WHERE staff_review_id = ? AND user_id = ?`, [staff_review_id, authUserId]);
+        const [[own]] = await db.execute(`SELECT staff_review_id, employee_id FROM staff_reviews WHERE staff_review_id = ? AND user_id = ?`, [staff_review_id, authUserId]);
         if (!own) return res.status(404).json({ message: 'Staff review not found' });
 
         //building SQL query to update review
@@ -129,6 +155,32 @@ exports.updateStaffReview = async (req, res) => {
         const [[row]] = await db.execute(`SELECT sr.staff_review_id, sr.employee_id, sr.user_id, sr.rating, sr.message, sr.created_at, sr.updated_at, u.full_name AS user_name
                                          FROM staff_reviews sr JOIN users u ON u.user_id = sr.user_id WHERE sr.staff_review_id = ?`, [staff_review_id]
         );
+
+        // Get staff member (employee) info for notification
+        const [[employeeInfo]] = await db.execute(
+            `SELECT e.user_id, e.salon_id, u.email, u.full_name as employee_name, s.name as salon_name
+             FROM employees e
+             JOIN users u ON e.user_id = u.user_id
+             JOIN salons s ON e.salon_id = s.salon_id
+             WHERE e.employee_id = ?`,
+            [own.employee_id]
+        );
+
+        if (employeeInfo) {
+            try {
+                await createNotification(db, {
+                    user_id: employeeInfo.user_id,
+                    salon_id: employeeInfo.salon_id,
+                    employee_id: own.employee_id,
+                    email: employeeInfo.email,
+                    type_code: 'STAFF_REVIEW_UPDATED',
+                    message: `${row.user_name} updated their review for you - ${row.rating} stars${row.message ? ': ' + row.message.substring(0, 100) + (row.message.length > 100 ? '...' : '') : '.'}`,
+                    sender_email: row.user_name || 'SYSTEM'
+                });
+            } catch (notifError) {
+                console.error('Failed to send staff review updated notification:', notifError);
+            }
+        }
 
         return res.status(200).json({
             message: 'Staff review updated',
@@ -345,6 +397,33 @@ exports.createStaffReply = async (req, res) => {
                                          FROM staff_review_replies rr JOIN users u ON u.user_id = rr.author_user_id WHERE rr.staff_reply_id = ?`, [ins.insertId]
         );
 
+        // Get review author (customer) info for notification
+        const [[reviewAuthor]] = await db.execute(
+            `SELECT sr.user_id, u.email, u.full_name as customer_name, e.salon_id, s.name as salon_name
+             FROM staff_reviews sr
+             JOIN users u ON sr.user_id = u.user_id
+             JOIN employees e ON sr.employee_id = e.employee_id
+             JOIN salons s ON e.salon_id = s.salon_id
+             WHERE sr.staff_review_id = ?`,
+            [srid]
+        );
+
+        if (reviewAuthor) {
+            try {
+                await createNotification(db, {
+                    user_id: reviewAuthor.user_id,
+                    salon_id: reviewAuthor.salon_id,
+                    employee_id: myEmp.employee_id,
+                    email: reviewAuthor.email,
+                    type_code: 'STAFF_REVIEW_REPLY_CREATED',
+                    message: `${row.author_name} replied to your review: ${message.trim().substring(0, 100)}${message.trim().length > 100 ? '...' : ''}`,
+                    sender_email: row.author_name || 'SYSTEM'
+                });
+            } catch (notifError) {
+                console.error('Failed to send staff review reply created notification:', notifError);
+            }
+        }
+
         return res.status(201).json({
             message: 'Staff reply created',
             data: {
@@ -382,7 +461,7 @@ exports.updateStaffReply = async (req, res) => {
         //check to ensure this employee can actually update this reply
         const myEmp = await employeeIdForUser(db, authUserId);
         if (!myEmp) return res.status(404).json({ message: 'Employee profile not found' });
-        const [[rr]] = await db.execute(`SELECT rr.staff_reply_id, rr.author_user_id, sr.employee_id FROM staff_review_replies rr
+        const [[rr]] = await db.execute(`SELECT rr.staff_reply_id, rr.staff_review_id, rr.author_user_id, sr.employee_id FROM staff_review_replies rr
                                         JOIN staff_reviews sr ON sr.staff_review_id = rr.staff_review_id WHERE rr.staff_reply_id = ?`, [staff_reply_id]
         );
         if (!rr) return res.status(404).json({ message: 'Reply not found' });
@@ -395,6 +474,33 @@ exports.updateStaffReply = async (req, res) => {
         const [[row]] = await db.execute(`SELECT rr.staff_reply_id, rr.staff_review_id, rr.message, rr.created_at, rr.updated_at, u.user_id, u.full_name AS author_name
                                          FROM staff_review_replies rr JOIN users u ON u.user_id = rr.author_user_id WHERE rr.staff_reply_id = ?`, [staff_reply_id]
         );
+
+        // Get review author (customer) info for notification
+        const [[reviewAuthor]] = await db.execute(
+            `SELECT sr.user_id, u.email, u.full_name as customer_name, e.salon_id, s.name as salon_name
+             FROM staff_reviews sr
+             JOIN users u ON sr.user_id = u.user_id
+             JOIN employees e ON sr.employee_id = e.employee_id
+             JOIN salons s ON e.salon_id = s.salon_id
+             WHERE sr.staff_review_id = ?`,
+            [rr.staff_review_id]
+        );
+
+        if (reviewAuthor) {
+            try {
+                await createNotification(db, {
+                    user_id: reviewAuthor.user_id,
+                    salon_id: reviewAuthor.salon_id,
+                    employee_id: myEmp.employee_id,
+                    email: reviewAuthor.email,
+                    type_code: 'STAFF_REVIEW_REPLY_UPDATED',
+                    message: `${row.author_name} updated their reply to your review.`,
+                    sender_email: row.author_name || 'SYSTEM'
+                });
+            } catch (notifError) {
+                console.error('Failed to send staff review reply updated notification:', notifError);
+            }
+        }
 
         return res.status(200).json({
             message: 'Staff reply updated',

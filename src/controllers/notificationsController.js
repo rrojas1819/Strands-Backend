@@ -45,7 +45,11 @@ exports.getNotifications = async (req, res) => {
                 'REVIEW_DELETED',
                 'REVIEW_REPLY_CREATED',
                 'REVIEW_REPLY_UPDATED',
-                'REVIEW_REPLY_DELETED'
+                'REVIEW_REPLY_DELETED',
+                'STAFF_REVIEW_CREATED',
+                'STAFF_REVIEW_UPDATED',
+                'STAFF_REVIEW_REPLY_CREATED',
+                'STAFF_REVIEW_REPLY_UPDATED'
             ]
         };
 

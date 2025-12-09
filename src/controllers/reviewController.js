@@ -156,7 +156,7 @@ exports.updateReview = async (req, res) => {
                     review_id: review_id,
                     email: salonOwner.email,
                     type_code: 'REVIEW_UPDATED',
-                    message: `${row.user_name} updated their review for ${salonOwner.salon_name}.`,
+                    message: `${row.user_name} updated their review for ${salonOwner.salon_name} - ${row.rating} stars${row.message ? ': ' + row.message.substring(0, 100) + (row.message.length > 100 ? '...' : '') : '.'}`,
                     sender_email: row.user_name || 'SYSTEM'
                 });
             } catch (notifError) {
