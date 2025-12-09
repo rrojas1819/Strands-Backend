@@ -25,33 +25,11 @@ const promotionsRoutes = require('./routes/promotions');
 const fileUploadRoutes = require('./routes/fileUpload');
 const notificationsRoutes = require('./routes/notifications');
 
-const db = require('./config/databaseConnection');
-const {
-    startTokenCleanup,
-    startBookingsAutoComplete,
-    startLoyaltySeenUpdate,
-    startAppointmentReminders,
-    startUnusedOffersReminders,
-    startExpirePromoCodes,
-    startTempCreditCardCleanup
-} = require('./utils/utilies');
-
 const app = express();
 
 app.use(cors());
 app.use(express.json());
 
-const shouldRunBackgroundJobs = process.env.NODE_ENV !== 'test';
-
-if (shouldRunBackgroundJobs) {
-    startTokenCleanup(db);
-    startBookingsAutoComplete(db);
-    startLoyaltySeenUpdate(db);
-    startAppointmentReminders(db);
-    startUnusedOffersReminders(db);
-    startExpirePromoCodes(db);
-    startTempCreditCardCleanup(db);
-}
 
 app.use('/api', healthRoutes);
 app.use('/api/user', userRoutes);
