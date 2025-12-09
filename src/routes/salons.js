@@ -59,4 +59,7 @@ router.post('/track-salon-event', authenticateToken, roleAuthorization(['CUSTOME
 // PLR 1.2 View Salon Metrics
 router.get('/top-metrics', authenticateToken, roleAuthorization(['OWNER']), salonController.getTopSalonMetrics);
 
+// OPT Check Salon Status
+router.get('/check-salon-status', authenticateToken, roleAuthorization(['CUSTOMER']), salonController.checkSalonStatus);
+
 module.exports = router;

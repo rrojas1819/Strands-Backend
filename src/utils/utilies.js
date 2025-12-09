@@ -1,4 +1,5 @@
 const { DateTime } = require('luxon');
+const notificationSecurity = require('./notificationsSecurity');
 
 function logUtcDebug(label, value) {
     if (process.env.UTC_DEBUG === '1') {
@@ -143,7 +144,7 @@ function startBookingsAutoComplete(connection) {
         try {
             const db = connection.promise();
             //Small grace period
-            const nowMinusGrace = DateTime.utc().minus({ minutes: 2 });
+            const nowMinusGrace = DateTime.utc().minus({ minutes: 0.1 });
             const currentUtc = toMySQLUtc(nowMinusGrace);
 
             const updateQuery = `
@@ -157,7 +158,7 @@ function startBookingsAutoComplete(connection) {
         } catch (error) {
             console.error('Bookings auto-complete job failed:', error);
         }
-    }, 1 * 60 * 1000); 
+    }, 1 * 60 * 1000);
 }
 
 // Job to update loyalty_seen for completed bookings with past end times every 15 minutes
@@ -192,8 +193,8 @@ function startLoyaltySeenUpdate(connection) {
                     if (membership.length === 0) {
                         const nowUtc = toMySQLUtc(DateTime.utc());
                         const insertMembershipQuery = `
-                            INSERT INTO loyalty_memberships (user_id, salon_id, visits_count, created_at, updated_at)
-                            VALUES (?, ?, 0, ?, ?)
+                            INSERT INTO loyalty_memberships (user_id, salon_id, visits_count, total_visits_count, created_at, updated_at)
+                            VALUES (?, ?, 0, 0, ?, ?)
                         `;
                         await db.execute(insertMembershipQuery, [booking.customer_user_id, booking.salon_id, nowUtc, nowUtc]);
                     }
@@ -201,7 +202,9 @@ function startLoyaltySeenUpdate(connection) {
                     const nowUtc = toMySQLUtc(DateTime.utc());
                     const incrementVisitsQuery = `
                         UPDATE loyalty_memberships
-                        SET visits_count = visits_count + 1, updated_at = ?
+                        SET visits_count = visits_count + 1,
+                            total_visits_count = COALESCE(total_visits_count, 0) + 1,
+                            updated_at = ?
                         WHERE user_id = ? AND salon_id = ?
                     `;
                     await db.execute(incrementVisitsQuery, [nowUtc, booking.customer_user_id, booking.salon_id]);
@@ -412,6 +415,14 @@ function startAppointmentReminders(connection) {
                             message = message.substring(0, 497) + '...';
                         }
 
+                        let encryptedMessage;
+                        try {
+                            encryptedMessage = notificationSecurity.encryptMessage(message.trim());
+                        } catch (encryptError) {
+                            console.error('Failed to encrypt appointment reminder notification message:', encryptError);
+                            throw new Error('Failed to encrypt notification message');
+                        }
+
                         const nowUtc = toMySQLUtc(now);
                         await db.execute(
                             `INSERT INTO notifications_inbox 
@@ -423,7 +434,7 @@ function startAppointmentReminders(connection) {
                                 booking.email,
                                 booking.booking_id,
                                 reminderType,
-                                message.trim(),
+                                encryptedMessage,
                                 nowUtc
                             ]
                         );

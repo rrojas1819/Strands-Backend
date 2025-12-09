@@ -297,12 +297,7 @@ exports.getStylistSalon = async (req, res) => {
       if (!user_id) {
         return res.status(401).json({ message: 'No user found' });
       }
-  
-      if (role !== 'EMPLOYEE') {
-        return res.status(403).json({ message: 'Access denied.' });
-      }
-  
-  
+
       // Query to get the salon where this employee works
       const getStylistSalonQuery = 
       `SELECT s.salon_id, s.name, s.description, s.category, s.phone, s.email, 
@@ -745,9 +740,8 @@ exports.viewLoyaltyProgram = async (req, res) => {
 
   try {
       const user_id = req.user?.user_id;
-      const salon_id = req.query.salon_id;
 
-      if (!user_id || !salon_id) {
+      if (!user_id) {
           return res.status(401).json({ message: 'Invalid fields.' });
       }
 
@@ -756,9 +750,9 @@ exports.viewLoyaltyProgram = async (req, res) => {
       FROM loyalty_memberships lm
       JOIN loyalty_programs lp ON lm.salon_id = lp.salon_id
       JOIN salons s ON s.salon_id = lp.salon_id
-      WHERE lm.salon_id = ? and lm.user_id = ? and lp.active = 1;`;
+      WHERE lm.user_id = ? and lp.active = 1;`;
 
-      const [result] = await db.execute(getLoyaltyProgramQuery, [salon_id, user_id]);
+      const [result] = await db.execute(getLoyaltyProgramQuery, [user_id]);
 
       if (result.length === 0) {
           return res.status(404).json({ 
@@ -772,8 +766,57 @@ exports.viewLoyaltyProgram = async (req, res) => {
       const getTotalVisitsQuery = `SELECT SUM(COALESCE(total_visits_count, visits_count, 0)) as total_visits FROM loyalty_memberships WHERE user_id = ?;`;
       const [totalVisits] = await db.execute(getTotalVisitsQuery, [user_id]);
 
-      const getUserRewardsQuery = `SELECT reward_id, creationDate AS earned_at, active, redeemed_at, discount_percentage, note FROM available_rewards WHERE salon_id = ? AND user_id = ?;`;
-      const [userRewards] = await db.execute(getUserRewardsQuery, [salon_id, user_id]);
+      const getUserRewardsQuery = `SELECT reward_id, creationDate AS earned_at, active, redeemed_at, discount_percentage, note FROM available_rewards WHERE user_id = ?;`;
+      const [userRewards] = await db.execute(getUserRewardsQuery, [user_id]);
+  
+      return res.status(200).json({ 
+          userData: result,
+          goldenSalons: goldenSalons[0].golden_salons,
+          totalVisits: totalVisits[0].total_visits,
+          userRewards: userRewards
+      }); 
+
+  } catch (err) {
+    console.error('viewLoyaltyProgram error:', err);
+    return res.status(500).json({ message: 'Internal Server Error' });
+  }
+};
+
+exports.viewSingleLoyaltyProgram = async (req, res) => {
+  const db = connection.promise();
+
+  try {
+      const { salon_id } = req.query;
+      const user_id = req.user?.user_id;
+
+
+      if (!user_id || !salon_id) {
+          return res.status(401).json({ message: 'Invalid fields.' });
+      }
+
+      const getLoyaltyProgramQuery = 
+      `SELECT lm.visits_count, lm.total_visits_count, lp.target_visits, lp.discount_percentage, lp.note, s.name as salon_name
+      FROM loyalty_memberships lm
+      JOIN loyalty_programs lp ON lm.salon_id = lp.salon_id
+      JOIN salons s ON s.salon_id = lp.salon_id
+      WHERE lm.user_id = ? AND lm.salon_id = ? AND lp.active = 1;`;
+
+      const [result] = await db.execute(getLoyaltyProgramQuery, [user_id, salon_id]);
+
+      if (result.length === 0) {
+          return res.status(404).json({ 
+              message: 'No Loyalty Program found.' 
+          });
+      }
+
+      const getGoldenSalonsQuery = `SELECT COUNT(*) as golden_salons FROM loyalty_memberships WHERE user_id = ? and COALESCE(total_visits_count, visits_count, 0) >= 5;`;
+      const [goldenSalons] = await db.execute(getGoldenSalonsQuery, [user_id]);    
+  
+      const getTotalVisitsQuery = `SELECT SUM(COALESCE(total_visits_count, visits_count, 0)) as total_visits FROM loyalty_memberships WHERE user_id = ?;`;
+      const [totalVisits] = await db.execute(getTotalVisitsQuery, [user_id]);
+
+      const getUserRewardsQuery = `SELECT reward_id, creationDate AS earned_at, active, redeemed_at, discount_percentage, note FROM available_rewards WHERE user_id = ?;`;
+      const [userRewards] = await db.execute(getUserRewardsQuery, [user_id]);
   
       return res.status(200).json({ 
           userData: result[0],
@@ -799,11 +842,28 @@ exports.viewStylistMetrics = async (req, res) => {
       return res.status(401).json({ message: 'Invalid fields.' });
     }
 
-    // Calculate date ranges using Luxon
-    const now = DateTime.utc();
-    const todayStart = toMySQLUtc(now.startOf('day'));
-    const todayEnd = toMySQLUtc(now.endOf('day'));
-    const weekAgoStart = toMySQLUtc(now.minus({ days: 7 }).startOf('day'));
+    const getEmployeeQuery = 'SELECT employee_id, salon_id FROM employees WHERE user_id = ? AND active = 1';
+    const [employeeResult] = await db.execute(getEmployeeQuery, [user_id]);
+
+    if (employeeResult.length === 0) {
+      return res.status(404).json({ message: 'Employee not found' });
+    }
+
+    const employee_id = employeeResult[0].employee_id;
+    const salon_id = employeeResult[0].salon_id;
+
+    const getSalonTimezoneQuery = 'SELECT timezone FROM salons WHERE salon_id = ?';
+    const [salonTimezoneResult] = await db.execute(getSalonTimezoneQuery, [salon_id]);
+    const salonTimezone = salonTimezoneResult[0]?.timezone || 'America/New_York';
+
+    const nowInSalonTz = DateTime.now().setZone(salonTimezone);
+    const todayStartInSalonTz = nowInSalonTz.startOf('day');
+    const tomorrowStartInSalonTz = nowInSalonTz.plus({ days: 1 }).startOf('day'); 
+    const weekAgoStartInSalonTz = nowInSalonTz.minus({ days: 7 }).startOf('day');
+
+    const todayStart = toMySQLUtc(todayStartInSalonTz.toUTC());
+    const tomorrowStart = toMySQLUtc(tomorrowStartInSalonTz.toUTC()); 
+    const weekAgoStart = toMySQLUtc(weekAgoStartInSalonTz.toUTC());
 
     const revenueMetricsQuery = 
     `SELECT
@@ -812,9 +872,9 @@ exports.viewStylistMetrics = async (req, res) => {
       JOIN bookings b ON b.booking_id = p.booking_id
       JOIN booking_services bs ON bs.booking_id = b.booking_id
       WHERE p.status = 'SUCCEEDED'
-        AND p.created_at >= ?
-        AND p.created_at < ?
-        AND bs.employee_id = (SELECT employee_id FROM employees WHERE user_id = ?)
+        AND b.scheduled_start >= ?
+        AND b.scheduled_start < ?
+        AND bs.employee_id = ?
     ) AS revenue_today,
 
     (SELECT COALESCE(SUM(p.amount), 0)
@@ -822,9 +882,9 @@ exports.viewStylistMetrics = async (req, res) => {
       JOIN bookings b ON b.booking_id = p.booking_id
       JOIN booking_services bs ON bs.booking_id = b.booking_id
       WHERE p.status = 'SUCCEEDED'
-        AND p.created_at >= ?
-        AND p.created_at < ?
-        AND bs.employee_id = (SELECT employee_id FROM employees WHERE user_id = ?)
+        AND b.scheduled_start >= ?
+        AND b.scheduled_start < ?
+        AND bs.employee_id = ?
     ) AS revenue_past_week,
 
     (SELECT COALESCE(SUM(p.amount), 0)
@@ -832,13 +892,13 @@ exports.viewStylistMetrics = async (req, res) => {
       JOIN bookings b ON b.booking_id = p.booking_id
       JOIN booking_services bs ON bs.booking_id = b.booking_id
       WHERE p.status = 'SUCCEEDED'
-        AND bs.employee_id = (SELECT employee_id FROM employees WHERE user_id = ?)
+        AND bs.employee_id = ?
     ) AS revenue_all_time;`;
 
     const [revenueMetrics] = await db.execute(revenueMetricsQuery, [
-      todayStart, todayEnd, user_id,  // revenue_today
-      weekAgoStart, todayEnd, user_id,  // revenue_past_week
-      user_id  // revenue_all_time (if exists)
+      todayStart, tomorrowStart, employee_id,  
+      weekAgoStart, tomorrowStart, employee_id,  
+      employee_id  // revenue_all_time
     ]);
 
     return res.status(200).json({
@@ -867,12 +927,12 @@ exports.viewTotalRewards = async (req, res) => {
     const [totalRewards] = await db.execute(getTotalRewardsQuery, [user_id]);
 
     if (totalRewards.length === 0) {
-      res.status(200).json({
+      return res.status(200).json({
         totalRewards: "You have no rewards."
       });
     }
 
-    res.status(200).json({
+    return res.status(200).json({
       totalRewards: totalRewards[0].total_rewards
     });
     
@@ -901,12 +961,12 @@ exports.getAllRewards = async (req, res) => {
     const [totalRewards] = await db.execute(getTotalRewardsQuery, [user_id]);
 
     if (totalRewards.length === 0) {
-      res.status(200).json({
-        totalRewards: "You have no rewards."
+      return res.status(200).json({
+        totalRewards: []
       });
     }
 
-    res.status(200).json({
+    return res.status(200).json({
       totalRewards: totalRewards
     });
     

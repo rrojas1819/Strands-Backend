@@ -1,6 +1,7 @@
 const connection = require('../config/databaseConnection');
 const { DateTime } = require('luxon');
 const { toMySQLUtc, formatDateTime } = require('../utils/utilies');
+const notificationSecurity = require('../utils/notificationsSecurity');
 
 const PROMO_TYPE_CODE = 'LOYALTY_PROMO';
 
@@ -143,6 +144,14 @@ GROUP BY users.user_id, users.full_name`,
                 message = message.slice(0, 397) + '...';
             }
 
+            let encryptedMessage;
+            try {
+                encryptedMessage = notificationSecurity.encryptMessage(message.trim());
+            } catch (encryptError) {
+                console.error('Failed to encrypt promotion notification message:', encryptError);
+                throw new Error('Failed to encrypt notification message');
+            }
+
             const [notificationResult] = await db.execute(
                 `INSERT INTO notifications_inbox
                     (user_id, salon_id, sender_email, email, type_code, promo_code, user_promo_id, status, message, created_at)
@@ -155,7 +164,7 @@ GROUP BY users.user_id, users.full_name`,
                     PROMO_TYPE_CODE,
                     promoCode,
                     userPromoId,
-                    message.trim(),
+                    encryptedMessage,
                     issuedAt
                 ]
             );
@@ -282,6 +291,14 @@ exports.issueLoyalCustomerPromotions = async (req, res) => {
                     message = message.slice(0, 397) + '...';
                 }
 
+                let encryptedMessage;
+                try {
+                    encryptedMessage = notificationSecurity.encryptMessage(message.trim());
+                } catch (encryptError) {
+                    console.error('Failed to encrypt promotion notification message:', encryptError);
+                    throw new Error('Failed to encrypt notification message');
+                }
+
                 const [notificationResult] = await db.execute(
                     `INSERT INTO notifications_inbox
                         (user_id, salon_id, sender_email, email, type_code, promo_code, user_promo_id, status, message, created_at)
@@ -294,7 +311,7 @@ exports.issueLoyalCustomerPromotions = async (req, res) => {
                         PROMO_TYPE_CODE,
                         promoCode,
                         userPromoId,
-                        message.trim(),
+                        encryptedMessage,
                         issuedAt
                     ]
                 );

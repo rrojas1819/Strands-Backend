@@ -3,6 +3,7 @@ const paymentSecurity = require('../utils/paymentSecurity');
 const { toMySQLUtc, formatDateTime } = require('../utils/utilies');
 const { DateTime } = require('luxon');
 const { createNotification } = require('./notificationsController');
+const notificationSecurity = require('../utils/notificationsSecurity');
 
 // PLR 1.5 Get available rewards for a salon
 exports.getAvailableRewards = async (req, res) => {
@@ -86,7 +87,7 @@ exports.processPayment = async (req, res) => {
 
     try {
         const user_id = req.user?.user_id;
-        const { 
+        const {
             credit_card_id,
             billing_address_id,
             amount,
@@ -99,15 +100,15 @@ exports.processPayment = async (req, res) => {
 
         // Validate required fields
         if (!credit_card_id || !billing_address_id || !amount) {
-            return res.status(400).json({ 
-                message: 'Required fields: credit_card_id, billing_address_id, amount' 
+            return res.status(400).json({
+                message: 'Required fields: credit_card_id, billing_address_id, amount'
             });
         }
 
         // Constraint requires exactly one of booking_id or order_id to be set
         if ((!booking_id && !order_id) || (booking_id && order_id)) {
-            return res.status(400).json({ 
-                message: 'Exactly one of booking_id or order_id must be provided' 
+            return res.status(400).json({
+                message: 'Exactly one of booking_id or order_id must be provided'
             });
         }
 
@@ -120,7 +121,7 @@ exports.processPayment = async (req, res) => {
         if (isNaN(paymentAmount) || paymentAmount <= 0) {
             return res.status(400).json({ message: 'Invalid amount. Must be a positive number' });
         }
-        
+
         // Round to 2 decimal places for currency and ensure minimum amount
         const roundedAmount = Math.round(paymentAmount * 100) / 100;
         if (roundedAmount < 0.01) {
@@ -166,18 +167,18 @@ exports.processPayment = async (req, res) => {
                 'SELECT booking_id, status, customer_user_id, salon_id FROM bookings WHERE booking_id = ?',
                 [booking_id]
             );
-            
+
             if (bookingRows.length === 0) {
                 return res.status(404).json({ message: 'Booking not found' });
             }
-            
+
             if (bookingRows[0].customer_user_id !== user_id) {
                 return res.status(403).json({ message: 'Booking does not belong to you' });
             }
-            
+
             if (bookingRows[0].status !== 'PENDING') {
-                return res.status(400).json({ 
-                    message: `Cannot process payment for booking with status '${bookingRows[0].status}'. Booking must be in PENDING status.` 
+                return res.status(400).json({
+                    message: `Cannot process payment for booking with status '${bookingRows[0].status}'. Booking must be in PENDING status.`
                 });
             }
 
@@ -236,7 +237,7 @@ exports.processPayment = async (req, res) => {
             }
 
             const promo = promoRows[0];
-            
+
             if (promo.expires_at) {
                 const expiresAt = DateTime.fromSQL(promo.expires_at, { zone: 'utc' });
                 const now = DateTime.utc();
@@ -266,8 +267,8 @@ exports.processPayment = async (req, res) => {
             }
         }
 
- 
-        
+
+
         await db.query('START TRANSACTION');
         try {
             // Create payment record
@@ -313,7 +314,7 @@ exports.processPayment = async (req, res) => {
                      WHERE ar.reward_id = ? AND ar.user_id = ? AND ar.salon_id = ?`,
                     [rewardId, user_id, salon_id]
                 );
-                
+
                 const redeemedAt = toMySQLUtc(DateTime.utc());
                 const [updateRewardResult] = await db.execute(
                     `UPDATE available_rewards
@@ -333,24 +334,24 @@ exports.processPayment = async (req, res) => {
                             );
                         } catch (_) {}
                     }
-                    return res.status(400).json({ 
-                        message: 'Cannot redeem loyalty discount: reward no longer available' 
+                    return res.status(400).json({
+                        message: 'Cannot redeem loyalty discount: reward no longer available'
                     });
                 }
-                
+
                 if (rewardDetails.length > 0) {
                     const reward = rewardDetails[0];
                     const [userInfo] = await db.execute(
                         'SELECT email FROM users WHERE user_id = ?',
                         [user_id]
                     );
-                    
+
                     if (userInfo.length > 0) {
                         try {
-                            const rewardMessage = reward.note 
+                            const rewardMessage = reward.note
                                 ? `You have successfully redeemed your ${reward.discount_percentage}% loyalty reward at ${reward.salon_name}. ${reward.note}`
                                 : `You have successfully redeemed your ${reward.discount_percentage}% loyalty reward at ${reward.salon_name}. Thank you for your loyalty!`;
-                            
+
                             await createNotification(db, {
                                 user_id: user_id,
                                 salon_id: salon_id,
@@ -388,8 +389,8 @@ exports.processPayment = async (req, res) => {
                             );
                         } catch (_) {}
                     }
-                    return res.status(400).json({ 
-                        message: 'Cannot redeem promo code: code no longer available or already redeemed' 
+                    return res.status(400).json({
+                        message: 'Cannot redeem promo code: code no longer available or already redeemed'
                     });
                 }
 
@@ -404,7 +405,7 @@ exports.processPayment = async (req, res) => {
                 let bookingInfo = null;
                 let employeeId = null;
                 let stylistName = null;
-                
+
                 if (booking_id) {
                     // Get salon timezone for proper date formatting
                     const [salonTimezoneResult] = await db.execute(
@@ -412,7 +413,7 @@ exports.processPayment = async (req, res) => {
                         [salon_id]
                     );
                     const salonTimezone = salonTimezoneResult.length > 0 ? salonTimezoneResult[0].timezone : 'America/New_York';
-                    
+
                     const [bookingDetails] = await db.execute(
                         `SELECT DATE_FORMAT(scheduled_start, '%Y-%m-%d %H:%i:%s') AS scheduled_start,
                                 DATE_FORMAT(scheduled_end, '%Y-%m-%d %H:%i:%s') AS scheduled_end
@@ -420,20 +421,20 @@ exports.processPayment = async (req, res) => {
                          WHERE booking_id = ?`,
                         [booking_id]
                     );
-                    
+
                     if (bookingDetails.length > 0) {
                         // Parse SQL format datetime as UTC
                         const scheduledStart = DateTime.fromSQL(bookingDetails[0].scheduled_start, { zone: 'utc' });
                         const scheduledEnd = DateTime.fromSQL(bookingDetails[0].scheduled_end, { zone: 'utc' });
-                        
+
                         if (scheduledStart.isValid && scheduledEnd.isValid) {
                             const bookingStartLocal = scheduledStart.setZone(salonTimezone);
                             const bookingEndLocal = scheduledEnd.setZone(salonTimezone);
-                            
+
                             const appointmentDate = bookingStartLocal.toFormat('EEEE, MMMM d, yyyy');
                             const appointmentTime = bookingStartLocal.toFormat('h:mm a');
                             const appointmentEndTime = bookingEndLocal.toFormat('h:mm a');
-                            
+
                             bookingInfo = {
                                 scheduled_start: `Date: ${appointmentDate}\nTime: ${appointmentTime} - ${appointmentEndTime}`
                             };
@@ -465,15 +466,21 @@ exports.processPayment = async (req, res) => {
                 const userEmail = userInfo.length > 0 ? userInfo[0].email : null;
 
                 let notificationMessage = `You successfully used promo code ${promoCodeUsed} for ${promoDiscountPercentage}% off your payment at ${salonName}.`;
-                
+
                 if (bookingInfo) {
                     notificationMessage += `\n\nYour appointment is scheduled for:\n${bookingInfo.scheduled_start}`;
                 }
-                
+
                 if (stylistName) {
                     notificationMessage += `\n\nYour stylist is ${stylistName}.`;
                 }
-
+                let encryptedMessage;
+                try {
+                    encryptedMessage = notificationSecurity.encryptMessage(notificationMessage.trim());
+                } catch (encryptError) {
+                    console.error('Failed to encrypt promo code notification message:', encryptError);
+                    throw new Error('Failed to encrypt notification message');
+                }
                 await db.execute(
                     `INSERT INTO notifications_inbox
                         (user_id, salon_id, booking_id, employee_id, payment_id, type_code, promo_code, user_promo_id, status, message, sender_email, email, created_at)
@@ -486,7 +493,7 @@ exports.processPayment = async (req, res) => {
                         paymentResults.insertId,
                         promoCodeUsed,
                         userPromoId,
-                        notificationMessage,
+                        encryptedMessage,
                         userEmail,
                         nowUtc
                     ]
@@ -511,91 +518,91 @@ exports.processPayment = async (req, res) => {
                             [booking_id, user_id]
                         );
                     } catch (_) {}
-                    return res.status(500).json({ 
-                        message: 'Payment created but failed to update booking status' 
+                    return res.status(500).json({
+                        message: 'Payment created but failed to update booking status'
                     });
                 }
 
                 const [bookingDetails] = await db.execute(
-                  `SELECT b.salon_id, b.customer_user_id, 
+                    `SELECT b.salon_id, b.customer_user_id, 
                    DATE_FORMAT(b.scheduled_start, '%Y-%m-%d %H:%i:%s') AS scheduled_start,
                    DATE_FORMAT(b.scheduled_end, '%Y-%m-%d %H:%i:%s') AS scheduled_end,
                    s.timezone, s.name as salon_name
                    FROM bookings b
                    JOIN salons s ON b.salon_id = s.salon_id
                    WHERE b.booking_id = ?`,
-                  [booking_id]
+                    [booking_id]
                 );
 
                 if (bookingDetails.length > 0) {
-                  const bookingDetail = bookingDetails[0];
-                  const salonTimezone = bookingDetail.timezone || 'America/New_York';
-                  
-                  const bookingStart = DateTime.fromSQL(bookingDetail.scheduled_start, { zone: 'utc' });
-                  const bookingStartLocal = bookingStart.setZone(salonTimezone);
-                  const bookingDateStr = bookingStartLocal.toFormat('EEE, MMM d, yyyy h:mm a');
-                  
-                  // Get customer and stylist information
-                  const [customerInfo] = await db.execute(
-                    'SELECT user_id, email, full_name FROM users WHERE user_id = ?',
-                    [bookingDetail.customer_user_id]
-                  );
+                    const bookingDetail = bookingDetails[0];
+                    const salonTimezone = bookingDetail.timezone || 'America/New_York';
 
-                  // Get services and stylist information
-                  const [bookingServices] = await db.execute(
-                    `SELECT bs.employee_id, bs.service_id, s.name as service_name
+                    const bookingStart = DateTime.fromSQL(bookingDetail.scheduled_start, { zone: 'utc' });
+                    const bookingStartLocal = bookingStart.setZone(salonTimezone);
+                    const bookingDateStr = bookingStartLocal.toFormat('EEE, MMM d, yyyy h:mm a');
+
+                    // Get customer and stylist information
+                    const [customerInfo] = await db.execute(
+                        'SELECT user_id, email, full_name FROM users WHERE user_id = ?',
+                        [bookingDetail.customer_user_id]
+                    );
+
+                    // Get services and stylist information
+                    const [bookingServices] = await db.execute(
+                        `SELECT bs.employee_id, bs.service_id, s.name as service_name
                      FROM booking_services bs
                      JOIN services s ON bs.service_id = s.service_id
                      WHERE bs.booking_id = ?`,
-                    [booking_id]
-                  );
+                        [booking_id]
+                    );
 
-                  const employeeIds = [...new Set(bookingServices.map(bs => bs.employee_id))];
-                  const servicesList = bookingServices.map(bs => bs.service_name).join(', ');
+                    const employeeIds = [...new Set(bookingServices.map(bs => bs.employee_id))];
+                    const servicesList = bookingServices.map(bs => bs.service_name).join(', ');
 
-                  const [stylistsInfo] = await db.execute(
-                    `SELECT DISTINCT e.employee_id, e.user_id, u.email, u.full_name 
+                    const [stylistsInfo] = await db.execute(
+                        `SELECT DISTINCT e.employee_id, e.user_id, u.email, u.full_name 
                      FROM employees e 
                      JOIN users u ON e.user_id = u.user_id 
                      WHERE e.employee_id IN (${employeeIds.map(() => '?').join(',')})`,
-                    employeeIds
-                  );
+                        employeeIds
+                    );
 
-                  if (customerInfo.length > 0 && stylistsInfo.length > 0) {
-                    try {
-                      await createNotification(db, {
-                        user_id: customerInfo[0].user_id,
-                        salon_id: bookingDetail.salon_id,
-                        employee_id: stylistsInfo[0].employee_id,
-                        booking_id: booking_id,
-                        payment_id: paymentResults.insertId,
-                        email: customerInfo[0].email,
-                        type_code: 'BOOKING_CREATED',
-                        message: `Your appointment has been booked with ${stylistsInfo[0].full_name} at ${bookingDetail.salon_name} on ${bookingDateStr}. Services: ${servicesList}.`,
-                        sender_email: stylistsInfo[0].email || 'SYSTEM'
-                      });
-                    } catch (notifError) {
-                      console.error('Failed to send booking created notification to customer:', notifError);
+                    if (customerInfo.length > 0 && stylistsInfo.length > 0) {
+                        try {
+                            await createNotification(db, {
+                                user_id: customerInfo[0].user_id,
+                                salon_id: bookingDetail.salon_id,
+                                employee_id: stylistsInfo[0].employee_id,
+                                booking_id: booking_id,
+                                payment_id: paymentResults.insertId,
+                                email: customerInfo[0].email,
+                                type_code: 'BOOKING_CREATED',
+                                message: `Your appointment has been booked with ${stylistsInfo[0].full_name} at ${bookingDetail.salon_name} on ${bookingDateStr}. Services: ${servicesList}.`,
+                                sender_email: stylistsInfo[0].email || 'SYSTEM'
+                            });
+                        } catch (notifError) {
+                            console.error('Failed to send booking created notification to customer:', notifError);
+                        }
                     }
-                  }
 
-                  for (const stylist of stylistsInfo) {
-                    try {
-                      await createNotification(db, {
-                        user_id: stylist.user_id,
-                        salon_id: bookingDetail.salon_id,
-                        employee_id: stylist.employee_id,
-                        booking_id: booking_id,
-                        payment_id: paymentResults.insertId,
-                        email: stylist.email,
-                        type_code: 'BOOKING_CREATED',
-                        message: `New appointment booked: ${customerInfo[0]?.full_name || 'Customer'} on ${bookingDateStr}. Services: ${servicesList}.`,
-                        sender_email: customerInfo[0]?.email || 'SYSTEM'
-                      });
-                    } catch (notifError) {
-                      console.error('Failed to send booking created notification to stylist:', notifError);
+                    for (const stylist of stylistsInfo) {
+                        try {
+                            await createNotification(db, {
+                                user_id: stylist.user_id,
+                                salon_id: bookingDetail.salon_id,
+                                employee_id: stylist.employee_id,
+                                booking_id: booking_id,
+                                payment_id: paymentResults.insertId,
+                                email: stylist.email,
+                                type_code: 'BOOKING_CREATED',
+                                message: `New appointment booked: ${customerInfo[0]?.full_name || 'Customer'} on ${bookingDateStr}. Services: ${servicesList}.`,
+                                sender_email: customerInfo[0]?.email || 'SYSTEM'
+                            });
+                        } catch (notifError) {
+                            console.error('Failed to send booking created notification to stylist:', notifError);
+                        }
                     }
-                  }
                 }
             }
 
@@ -710,19 +717,19 @@ exports.saveCreditCard = async (req, res) => {
                     'UPDATE credit_cards SET is_temporary = FALSE, updated_at = ? WHERE credit_card_id = ?',
                     [nowUtc, existingCard[0].credit_card_id]
                 );
-                
+
                 // Return the existing card (now converted to permanent)
                 const [updatedCard] = await db.execute(
                     `SELECT credit_card_id, brand, last4, pan_length, exp_month, exp_year
                      FROM credit_cards WHERE credit_card_id = ?`,
                     [existingCard[0].credit_card_id]
                 );
-                
+
                 const [userInfo] = await db.execute(
                     'SELECT email, full_name FROM users WHERE user_id = ?',
                     [user_id]
                 );
-                
+
                 if (userInfo.length > 0) {
                     try {
                         await createNotification(db, {
@@ -736,7 +743,7 @@ exports.saveCreditCard = async (req, res) => {
                         console.error('Failed to send payment method saved notification:', notifError);
                     }
                 }
-                
+
                 return res.status(200).json({
                     message: 'Credit card saved successfully',
                     data: {
@@ -750,8 +757,8 @@ exports.saveCreditCard = async (req, res) => {
                 });
             } else {
                 // It's already a permanent card
-                return res.status(400).json({ 
-                    message: 'This credit card is already saved' 
+                return res.status(400).json({
+                    message: 'This credit card is already saved'
                 });
             }
         }
@@ -762,12 +769,12 @@ exports.saveCreditCard = async (req, res) => {
         if (expMonth < 1 || expMonth > 12) {
             return res.status(400).json({ message: 'Invalid expiration month' });
         }
-        
+
         // Check if card is expired (expiration date is in the past)
         // Credit cards expire at the end of the expiration month
         const expirationDate = DateTime.utc(expYear, expMonth).endOf('month');
         const now = DateTime.utc();
-        
+
         if (expirationDate < now) {
             return res.status(400).json({ message: 'Credit card has expired' });
         }
@@ -807,7 +814,7 @@ exports.saveCreditCard = async (req, res) => {
             'SELECT email, full_name FROM users WHERE user_id = ?',
             [user_id]
         );
-        
+
         if (userInfo.length > 0) {
             try {
                 await createNotification(db, {
@@ -890,10 +897,10 @@ exports.saveTempCreditCard = async (req, res) => {
             'SELECT credit_card_id FROM credit_cards WHERE user_id = ? AND card_hash = ? AND (is_temporary IS NULL OR is_temporary = FALSE)',
             [user_id, card_hash]
         );
-        
+
         if (existingPermanentCard.length > 0) {
-            return res.status(400).json({ 
-                message: 'You already have a saved credit card. Please use your saved card instead of using a temporary one.' 
+            return res.status(400).json({
+                message: 'You already have a saved credit card. Please use your saved card instead of using a temporary one.'
             });
         }
 
@@ -919,12 +926,12 @@ exports.saveTempCreditCard = async (req, res) => {
         if (expMonth < 1 || expMonth > 12) {
             return res.status(400).json({ message: 'Invalid expiration month' });
         }
-        
+
         // Check if card is expired (expiration date is in the past)
         // Credit cards expire at the end of the expiration month
         const expirationDate = DateTime.utc(expYear, expMonth).endOf('month');
         const now = DateTime.utc();
-        
+
         if (expirationDate < now) {
             return res.status(400).json({ message: 'Credit card has expired' });
         }
@@ -1096,8 +1103,8 @@ exports.createBillingAddress = async (req, res) => {
         );
 
         if (existingAddress.length > 0) {
-            return res.status(400).json({ 
-                message: 'Billing address already exists. Use update endpoint to modify it.' 
+            return res.status(400).json({
+                message: 'Billing address already exists. Use update endpoint to modify it.'
             });
         }
 
@@ -1123,7 +1130,7 @@ exports.createBillingAddress = async (req, res) => {
         if (results.affectedRows === 0) {
             return res.status(500).json({ message: 'Failed to save billing address' });
         }
-        
+
         return res.status(200).json({
             message: 'Billing address created successfully'
         });
