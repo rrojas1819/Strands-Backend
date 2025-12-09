@@ -8,7 +8,7 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
 
-    # 1. Add MySQL Service Container for isolated testing
+    # 1. Start a fresh, empty MySQL database for testing
     services:
       mysql:
         image: mysql:8.0
@@ -30,18 +30,34 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      # 2. Load your schema into the empty Service Container
+      - name: Initialize Database Schema
+        run: |
+          # Wait for MySQL to be ready (just in case)
+          until mysqladmin ping -h 127.0.0.1 -P 3306 --user=root --password=root --silent; do
+            echo "Waiting for MySQL..."
+            sleep 1
+          done
+
+          # Run the schema file to create tables
+          mysql -h 127.0.0.1 -P 3306 -u root -proot localTest < schema.sql
+        env:
+          # The mysql client is pre-installed on ubuntu-latest runners
+          MYSQL_PWD: root 
+
+      # 3. Run Tests against the Service Container
       - name: Run unit tests
         env:
-          # 2. Configure Tests to use the Service Container (Localhost inside Action)
+          # Database Config (Points to Service Container)
           DB_HOST: 127.0.0.1
           DB_USER: root
           DB_PASSWORD: root
           DB_NAME: localTest
           DB_PORT: 3306
           NODE_ENV: test
-          TEST_VERBOSE: '1' # Shows error logs if tests fail
+          TEST_VERBOSE: '1' # Show full logs if tests fail
 
-          # Secrets required for app logic
+          # Application Secrets from GitHub Actions
           APP_PORT: ${{ secrets.PORT }}
           UTC_DEBUG: ${{ secrets.UTC_DEBUG }}
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
