@@ -693,8 +693,8 @@ exports.viewUserOrders = async (req, res) => {
       });
     }
 
-    const limitInt = Math.max(0, limitNum);
-    const offsetInt = Math.max(0, offsetNum);
+    const limitInt = Math.max(1, Math.floor(limitNum)); 
+    const offsetInt = Math.max(0, Math.floor(offsetNum)); 
 
     const viewUserOrdersQueryParams = [owner_user_id];
     if (salon_filter) {
@@ -708,9 +708,8 @@ exports.viewUserOrders = async (req, res) => {
     JOIN products p ON oi.product_id = p.product_id
     JOIN salons s ON o.salon_id = s.salon_id
     WHERE o.user_id = ? ${salon_filter}
-    LIMIT ? OFFSET ?`;
+    LIMIT ${limitInt} OFFSET ${offsetInt}`;
 
-    viewUserOrdersQueryParams.push(limitInt, offsetInt);
     const [ordersResults] = await db.execute(viewUserOrdersQuery, viewUserOrdersQueryParams);
 
     if (ordersResults.length === 0) {
