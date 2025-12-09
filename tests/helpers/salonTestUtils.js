@@ -1,6 +1,6 @@
 const request = require('supertest');
 const app = require('../../src/app');
-const { insertUserWithCredentials } = require('./authTestUtils');
+const { insertUserWithCredentials, generateTestToken } = require('./authTestUtils');
 
 const baseSalonPayload = (overrides = {}) => ({
     name: overrides.name || 'Test Salon091384723',
@@ -23,14 +23,7 @@ const setupOwnerWithoutSalon = async () => {
         role: 'OWNER'
     });
 
-    const loginResponse = await request(app)
-        .post('/api/user/login')
-        .send({ email: owner.email, password });
-
-    if (loginResponse.status !== 200) {
-        throw new Error(`Login failed with status ${loginResponse.status}`);
-    }
-    const token = loginResponse.body.data.token;
+    const token = generateTestToken(owner);
 
     return { owner, token, password };
 };

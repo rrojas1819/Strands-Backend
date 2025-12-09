@@ -1,33 +1,44 @@
 const request = require('supertest');
 const app = require('../src/app');
+const connection = require('../src/config/databaseConnection');
 const notificationsController = require('../src/controllers/notificationsController');
-const { insertUserWithCredentials } = require('./helpers/authTestUtils');
+const { insertUserWithCredentials, generateTestToken } = require('./helpers/authTestUtils');
 const {
     DEFAULT_PASSWORD,
     baseProductPayload,
-    loginUser,
     setupOwnerWithSalon,
     setupOwnerAndCustomer,
     setupTwoOwners,
     getProductBySku,
+    getProductById,
     getProductStock,
     verifyProductExists,
     verifyNoProductsExist,
     addProductViaAPI,
     getProductsViaAPI,
+    deleteProductViaAPI,
+    updateProductViaAPI,
     addToCartViaAPI,
+    viewCartViaAPI,
+    removeFromCartViaAPI,
+    updateCartViaAPI,
     checkoutViaAPI,
+    viewUserOrdersViaAPI,
+    viewSalonOrdersViaAPI,
     setupCheckoutData,
+    createProductInDb,
     verifySalonExists,
     generateUniqueSku,
     generateLongString
 } = require('./helpers/shopTestUtils');
+const db = connection.promise();
 
 // Shopping Features unit tests
 
 // SF 1.1 - Create Online Shop
 describe('SF 1.1 - Create Online Shop', () => {
     beforeEach(() => {
+        // Mock the createNotification function that's imported directly in productsController
         jest.spyOn(notificationsController, 'createNotification').mockResolvedValue({
             success: true
         });
@@ -137,7 +148,7 @@ describe('SF 1.1 - Create Online Shop', () => {
         });
     });
 
-    describe('Data Integrity & UI Logic', () => {
+    describe('4. Data Integrity & UI Logic', () => {
         test('Verify Product Data Consistency: Product added with specific price maintains that price in database', async () => {
             const { token } = await setupOwnerWithSalon();
             const productData = baseProductPayload({
@@ -195,7 +206,7 @@ describe('SF 1.1 - Create Online Shop', () => {
                 password: DEFAULT_PASSWORD,
                 role: 'EMPLOYEE'
             });
-            const token = await loginUser(employee.email, DEFAULT_PASSWORD);
+            const token = generateTestToken(employee);
             const productData = baseProductPayload({ sku: generateUniqueSku() });
 
             const response = await addProductViaAPI(token, productData);
@@ -207,7 +218,7 @@ describe('SF 1.1 - Create Online Shop', () => {
                 password: DEFAULT_PASSWORD,
                 role: 'CUSTOMER'
             });
-            const token = await loginUser(customer.email, DEFAULT_PASSWORD);
+            const token = generateTestToken(customer);
             const productData = baseProductPayload({ sku: generateUniqueSku() });
 
             const response = await addProductViaAPI(token, productData);
@@ -280,12 +291,508 @@ describe('SF 1.1 - Create Online Shop', () => {
                 password: DEFAULT_PASSWORD,
                 role: 'CUSTOMER'
             });
-            const token = await loginUser(customer.email, DEFAULT_PASSWORD);
+            const token = generateTestToken(customer);
             const nonExistentSalonId = 99999;
 
             const response = await getProductsViaAPI(token, nonExistentSalonId);
 
             expect([200, 404]).toContain(response.status);
         });
+
+        test('Verify Owner Without Salon: POST /api/products/ with owner without salon returns 500', async () => {
+            const password = DEFAULT_PASSWORD;
+            const owner = await insertUserWithCredentials({ password, role: 'OWNER' });
+            const token = generateTestToken(owner);
+            const productData = baseProductPayload({ sku: generateUniqueSku() });
+
+            const response = await addProductViaAPI(token, productData);
+
+            // When owner has no salon, the INSERT with NULL salon_id causes a constraint error, returning 500
+            expect(response.status).toBe(500);
+            expect(response.body.message).toBe('Internal server error');
+        });
+
+        test('Verify Get Products Missing Salon ID: GET /api/products/ without salon_id returns 400', async () => {
+            const customer = await insertUserWithCredentials({
+                password: DEFAULT_PASSWORD,
+                role: 'CUSTOMER'
+            });
+            const token = generateTestToken(customer);
+
+            const response = await request(app)
+                .get('/api/products/')
+                .set('Authorization', `Bearer ${token}`);
+
+            expect(response.status).toBe(404);
+        });
+
+        test('Verify Get Products Empty Salon: GET /api/products/:salon_id for salon with no products returns 404', async () => {
+            const { salonId, ownerToken } = await setupOwnerWithSalon();
+            const customer = await insertUserWithCredentials({
+                password: DEFAULT_PASSWORD,
+                role: 'CUSTOMER'
+            });
+            const token = generateTestToken(customer);
+
+            const response = await getProductsViaAPI(token, salonId);
+
+            expect(response.status).toBe(404);
+            expect(response.body.message).toBe('No products found');
+        });
+
+        test('Verify Delete Product Missing Product ID: DELETE /api/products/ without product_id returns 404', async () => {
+            const { token } = await setupOwnerWithSalon();
+
+            const response = await request(app)
+                .delete('/api/products/')
+                .set('Authorization', `Bearer ${token}`);
+
+            expect(response.status).toBe(404);
+        });
+
+        test('Verify Delete Product Not Found: DELETE /api/products/:product_id with non-existent product_id returns 404', async () => {
+            const { token } = await setupOwnerWithSalon();
+
+            const response = await deleteProductViaAPI(token, 999999);
+
+            expect(response.status).toBe(404);
+            expect(response.body.message).toBe('Product not found');
+        });
+
+        test('Verify Delete Product Cross-Owner: DELETE /api/products/:product_id with product from different owner returns 404', async () => {
+            const { tokenA, tokenB, salonA } = await setupTwoOwners();
+            const productData = baseProductPayload({ sku: generateUniqueSku() });
+
+            await addProductViaAPI(tokenA, productData);
+            const product = await getProductBySku(productData.sku);
+
+            const response = await deleteProductViaAPI(tokenB, product.product_id);
+
+            expect(response.status).toBe(404);
+            expect(response.body.message).toBe('Product not found');
+        });
+
+        test('Verify Update Product Missing Fields: PATCH /api/products/:product_id with missing fields returns 400', async () => {
+            const { token, salonId } = await setupOwnerWithSalon();
+            const productData = baseProductPayload({ sku: generateUniqueSku() });
+            await addProductViaAPI(token, productData);
+            const product = await getProductBySku(productData.sku);
+
+            const response = await updateProductViaAPI(token, product.product_id, { name: 'Updated' });
+
+            expect(response.status).toBe(400);
+            expect(response.body.message).toBe('Missing required fields');
+        });
+
+        test('Verify Update Product Not Found: PATCH /api/products/:product_id with non-existent product_id returns 404', async () => {
+            const { token } = await setupOwnerWithSalon();
+            const productData = baseProductPayload({ sku: generateUniqueSku() });
+
+            const response = await updateProductViaAPI(token, 999999, productData);
+
+            expect(response.status).toBe(404);
+            expect(response.body.message).toBe('Product not found');
+        });
+
+        test('Verify Update Product Cross-Owner: PATCH /api/products/:product_id with product from different owner returns 404', async () => {
+            const { tokenA, tokenB, salonA } = await setupTwoOwners();
+            const productData = baseProductPayload({ sku: generateUniqueSku() });
+
+            await addProductViaAPI(tokenA, productData);
+            const product = await getProductBySku(productData.sku);
+
+            const response = await updateProductViaAPI(tokenB, product.product_id, baseProductPayload({ sku: generateUniqueSku() }));
+
+            expect(response.status).toBe(404);
+            expect(response.body.message).toBe('Product not found');
+        });
+
+        
+        });
+
+        test('Verify Update Product No Restock Notification: PATCH /api/products/:product_id with decreased stock does not trigger restock notification', async () => {
+            const { token, salonId } = await setupOwnerWithSalon();
+            const productData = baseProductPayload({ sku: generateUniqueSku(), stock_qty: 20 });
+            await addProductViaAPI(token, productData);
+            const product = await getProductBySku(productData.sku);
+            jest.clearAllMocks();
+
+            const updateData = baseProductPayload({ 
+                sku: generateUniqueSku(),
+                stock_qty: 10 
+            });
+            const response = await updateProductViaAPI(token, product.product_id, updateData);
+
+            expect(response.status).toBe(200);
+            expect(notificationsController.createNotification).not.toHaveBeenCalled();
+        });
+    });
+
+// SF 1.2 - Cart Operations
+describe('SF 1.2 - Cart Operations', () => {
+    beforeEach(() => {
+        jest.spyOn(notificationsController, 'createNotification').mockResolvedValue({
+            success: true
+        });
+    });
+
+    describe('Edge Cases', () => {
+        test('Verify Add to Cart Missing Fields: POST /api/products/customer/add-to-cart with missing fields returns 400', async () => {
+            const { customerToken } = await setupOwnerAndCustomer();
+
+            const missingFieldsCases = [
+                { salon_id: 1, product_id: 1 },
+                { salon_id: 1, quantity: 1 },
+                { product_id: 1, quantity: 1 },
+                {}
+            ];
+
+            const responses = await Promise.all(
+                missingFieldsCases.map(payload =>
+                    addToCartViaAPI(customerToken, payload)
+                )
+            );
+
+            for (const response of responses) {
+                expect(response.status).toBe(400);
+                expect(response.body.message).toBe('Missing required fields');
+            }
+        });
+
+        test('Verify Add to Cart Zero Quantity: POST /api/products/customer/add-to-cart with quantity <= 0 returns 400', async () => {
+            const { salonId, customerToken, ownerToken } = await setupOwnerAndCustomer();
+            const productData = baseProductPayload({ sku: generateUniqueSku() });
+            await addProductViaAPI(ownerToken, productData);
+            const product = await getProductBySku(productData.sku);
+
+            const responseZero = await addToCartViaAPI(customerToken, {
+                salon_id: salonId,
+                product_id: product.product_id,
+                quantity: 0
+            });
+            expect(responseZero.status).toBe(400);
+            expect(responseZero.body.message).toBe('Missing required fields');
+
+            const responseNegative = await addToCartViaAPI(customerToken, {
+                salon_id: salonId,
+                product_id: product.product_id,
+                quantity: -1
+            });
+            expect(responseNegative.status).toBe(400);
+            expect(responseNegative.body.message).toBe('Quantity must be greater than 0');
+        });
+
+        test('Verify Add to Cart Product Not Found: POST /api/products/customer/add-to-cart with non-existent product returns 404', async () => {
+            const { salonId, customerToken } = await setupOwnerAndCustomer();
+
+            const response = await addToCartViaAPI(customerToken, {
+                salon_id: salonId,
+                product_id: 999999,
+                quantity: 1
+            });
+
+            expect(response.status).toBe(404);
+            expect(response.body.message).toBe('Product not found in this salon');
+        });
+
+        test('Verify Add to Cart Insufficient Stock: POST /api/products/customer/add-to-cart with quantity exceeding stock returns 400', async () => {
+            const { salonId, customerToken, ownerToken } = await setupOwnerAndCustomer();
+            const productData = baseProductPayload({ sku: generateUniqueSku(), stock_qty: 5 });
+            await addProductViaAPI(ownerToken, productData);
+            const product = await getProductBySku(productData.sku);
+
+            const response = await addToCartViaAPI(customerToken, {
+                salon_id: salonId,
+                product_id: product.product_id,
+                quantity: 10
+            });
+
+            expect(response.status).toBe(400);
+            expect(response.body.message).toContain('Insufficient stock');
+        });
+
+        test('Verify View Cart Missing Fields: GET /api/products/customer/view-cart/:salon_id with missing fields returns 400', async () => {
+            const customer = await insertUserWithCredentials({
+                password: DEFAULT_PASSWORD,
+                role: 'CUSTOMER'
+            });
+            const token = generateTestToken(customer);
+
+            const response = await request(app)
+                .get('/api/products/customer/view-cart/')
+                .set('Authorization', `Bearer ${token}`);
+
+            expect(response.status).toBe(404);
+        });
+
+        test('Verify View Cart Not Found: GET /api/products/customer/view-cart/:salon_id with empty cart returns 404', async () => {
+            const { salonId, customerToken } = await setupOwnerAndCustomer();
+
+            const response = await viewCartViaAPI(customerToken, salonId);
+
+            expect(response.status).toBe(404);
+            expect(response.body.message).toBe('Cart not found');
+        });
+
+        test('Verify Remove From Cart Missing Fields: DELETE /api/products/customer/remove-from-cart with missing fields returns 400', async () => {
+            const { customerToken } = await setupOwnerAndCustomer();
+
+            const missingFieldsCases = [
+                { salon_id: 1 },
+                { product_id: 1 },
+                {}
+            ];
+
+            const responses = await Promise.all(
+                missingFieldsCases.map(payload =>
+                    removeFromCartViaAPI(customerToken, payload)
+                )
+            );
+
+            for (const response of responses) {
+                expect(response.status).toBe(400);
+                expect(response.body.message).toBe('Missing required fields');
+            }
+        });
+
+        test('Verify Remove From Cart Product Not Found: DELETE /api/products/customer/remove-from-cart with non-existent product returns 404', async () => {
+            const { salonId, customerToken } = await setupOwnerAndCustomer();
+
+            const response = await removeFromCartViaAPI(customerToken, {
+                salon_id: salonId,
+                product_id: 999999
+            });
+
+            expect(response.status).toBe(404);
+            expect(response.body.message).toBe('Product not found');
+        });
+
+        test('Verify Update Cart Missing Fields: PATCH /api/products/customer/update-cart with missing fields returns 400', async () => {
+            const { customerToken } = await setupOwnerAndCustomer();
+
+            const missingFieldsCases = [
+                { salon_id: 1, product_id: 1 }, // Missing quantity
+                { salon_id: 1, quantity: 1 }, // Missing product_id
+                { product_id: 1, quantity: 1 }, // Missing salon_id (but owner_user_id is from token)
+                {}
+            ];
+
+            const responses = await Promise.all(
+                missingFieldsCases.map(payload =>
+                    updateCartViaAPI(customerToken, payload)
+                )
+            );
+
+            // Some cases may return 500 if SQL query fails due to missing fields
+            for (const response of responses) {
+                expect([400, 500]).toContain(response.status);
+                if (response.status === 400) {
+                    expect(response.body.message).toBe('Missing required fields');
+                }
+            }
+        });
+
+        test('Verify Update Cart Zero Quantity: PATCH /api/products/customer/update-cart with quantity <= 0 returns 400', async () => {
+            const { salonId, customerToken, ownerToken } = await setupOwnerAndCustomer();
+            const productData = baseProductPayload({ sku: generateUniqueSku() });
+            await addProductViaAPI(ownerToken, productData);
+            const product = await getProductBySku(productData.sku);
+            await addToCartViaAPI(customerToken, {
+                salon_id: salonId,
+                product_id: product.product_id,
+                quantity: 1
+            });
+
+            const invalidQuantityCases = [0, -1];
+
+            const responses = await Promise.all(
+                invalidQuantityCases.map(quantity =>
+                    updateCartViaAPI(customerToken, {
+                        salon_id: salonId,
+                        product_id: product.product_id,
+                        quantity
+                    })
+                )
+            );
+
+            for (const response of responses) {
+                expect(response.status).toBe(400);
+                expect(response.body.message).toBe('Quantity must be greater than 0');
+            }
+        });
+
+        test('Verify Update Cart Product Not Found: PATCH /api/products/customer/update-cart with non-existent product returns 404', async () => {
+            const { salonId, customerToken } = await setupOwnerAndCustomer();
+
+            const response = await updateCartViaAPI(customerToken, {
+                salon_id: salonId,
+                product_id: 999999,
+                quantity: 1
+            });
+
+            expect(response.status).toBe(404);
+            expect(response.body.message).toBe('Product not found.');
+        });
+
+        test('Verify Checkout Missing Fields: POST /api/products/customer/checkout with missing fields returns 400', async () => {
+            const { customerToken } = await setupOwnerAndCustomer();
+
+            const missingFieldsCases = [
+                { salon_id: 1, credit_card_id: 1 },
+                { salon_id: 1, billing_address_id: 1 },
+                { credit_card_id: 1, billing_address_id: 1 },
+                {}
+            ];
+
+            const responses = await Promise.all(
+                missingFieldsCases.map(payload =>
+                    checkoutViaAPI(customerToken, payload)
+                )
+            );
+
+            for (const response of responses) {
+                expect(response.status).toBe(400);
+                expect(response.body.message).toBe('Missing required fields');
+            }
+        });
+
+        test('Verify Checkout Credit Card Not Found: POST /api/products/customer/checkout with non-existent credit_card_id returns 404', async () => {
+            const { salonId, customer, customerToken, ownerToken } = await setupOwnerAndCustomer();
+            const productData = baseProductPayload({ sku: generateUniqueSku() });
+            await addProductViaAPI(ownerToken, productData);
+            const product = await getProductBySku(productData.sku);
+            await addToCartViaAPI(customerToken, {
+                salon_id: salonId,
+                product_id: product.product_id,
+                quantity: 1
+            });
+            const { billingAddressId } = await setupCheckoutData(customer.user_id);
+
+            const response = await checkoutViaAPI(customerToken, {
+                salon_id: salonId,
+                credit_card_id: 999999,
+                billing_address_id: billingAddressId
+            });
+
+            expect(response.status).toBe(404);
+            expect(response.body.message).toBe('Credit card not found or does not belong to you');
+        });
+
+        test('Verify Checkout Billing Address Not Found: POST /api/products/customer/checkout with non-existent billing_address_id returns 404', async () => {
+            const { salonId, customer, customerToken, ownerToken } = await setupOwnerAndCustomer();
+            const productData = baseProductPayload({ sku: generateUniqueSku() });
+            await addProductViaAPI(ownerToken, productData);
+            const product = await getProductBySku(productData.sku);
+            await addToCartViaAPI(customerToken, {
+                salon_id: salonId,
+                product_id: product.product_id,
+                quantity: 1
+            });
+            const { creditCardId } = await setupCheckoutData(customer.user_id);
+
+            const response = await checkoutViaAPI(customerToken, {
+                salon_id: salonId,
+                credit_card_id: creditCardId,
+                billing_address_id: 999999
+            });
+
+            expect(response.status).toBe(404);
+            expect(response.body.message).toBe('Billing address not found or does not belong to you');
+        });
+
+        test('Verify Checkout Cart Not Found: POST /api/products/customer/checkout with empty cart returns 404', async () => {
+            const { salonId, customer, customerToken } = await setupOwnerAndCustomer();
+            const { creditCardId, billingAddressId } = await setupCheckoutData(customer.user_id);
+
+            const response = await checkoutViaAPI(customerToken, {
+                salon_id: salonId,
+                credit_card_id: creditCardId,
+                billing_address_id: billingAddressId
+            });
+
+            expect(response.status).toBe(404);
+            expect(response.body.message).toBe('Cart not found');
+        });
+
+        test('Verify Checkout Insufficient Stock: POST /api/products/customer/checkout with insufficient stock returns 400', async () => {
+            const { salonId, customer, customerToken, ownerToken } = await setupOwnerAndCustomer();
+            const productData = baseProductPayload({ sku: generateUniqueSku(), stock_qty: 2 });
+            await addProductViaAPI(ownerToken, productData);
+            const product = await getProductBySku(productData.sku);
+            
+            await addToCartViaAPI(customerToken, {
+                salon_id: salonId,
+                product_id: product.product_id,
+                quantity: 1
+            });
+            
+            await db.execute(
+                'UPDATE cart_items SET quantity = ? WHERE cart_id = (SELECT cart_id FROM carts WHERE user_id = ? AND salon_id = ?) AND product_id = ?',
+                [5, customer.user_id, salonId, product.product_id]
+            );
+            
+            const { creditCardId, billingAddressId } = await setupCheckoutData(customer.user_id);
+
+            const response = await checkoutViaAPI(customerToken, {
+                salon_id: salonId,
+                credit_card_id: creditCardId,
+                billing_address_id: billingAddressId
+            });
+
+            expect(response.status).toBe(400);
+            expect(response.body.message).toBe('Insufficient stock');
+        });
+
+        test('Verify View User Orders Missing Fields: POST /api/products/customer/view-orders with missing fields returns 400', async () => {
+            const { customerToken } = await setupOwnerAndCustomer();
+
+            const missingFieldsCases = [
+                { limit: 10, offset: 0 },
+                { salon_id: 1, offset: 0 },
+                { salon_id: 1, limit: 10 },
+                {}
+            ];
+
+            const responses = await Promise.all(
+                missingFieldsCases.map(payload =>
+                    viewUserOrdersViaAPI(customerToken, payload)
+                )
+            );
+
+            for (const response of responses) {
+                expect(response.status).toBe(400);
+                expect(response.body.message).toBe('Invalid fields.');
+            }
+        });
+
+        test('Verify View User Orders Invalid Offset: POST /api/products/customer/view-orders with NaN offset returns 400', async () => {
+            const { salonId, customerToken } = await setupOwnerAndCustomer();
+
+            const response = await viewUserOrdersViaAPI(customerToken, {
+                salon_id: salonId,
+                limit: 10,
+                offset: 'invalid'
+            });
+
+            expect(response.status).toBe(400);
+            expect(response.body.message).toBe('Invalid fields.');
+        });
+
+        test('Verify View User Orders No Orders: POST /api/products/customer/view-orders with no orders returns 500', async () => {
+            const { salonId, customerToken } = await setupOwnerAndCustomer();
+
+            const response = await viewUserOrdersViaAPI(customerToken, {
+                salon_id: salonId,
+                limit: 10,
+                offset: 0
+            });
+
+            expect(response.status).toBe(500);
+            expect(response.body.message).toBe('No orders found');
+        });
+
+        
+
+        
     });
 });

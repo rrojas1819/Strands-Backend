@@ -3,7 +3,7 @@ const app = require('../../src/app');
 const connection = require('../../src/config/databaseConnection');
 const { DateTime } = require('luxon');
 const { toMySQLUtc } = require('../../src/utils/utilies');
-const { insertUserWithCredentials } = require('./authTestUtils');
+const { insertUserWithCredentials, generateTestToken } = require('./authTestUtils');
 
 const db = connection.promise();
 
@@ -34,8 +34,8 @@ const setupBookingTestEnvironment = async (options = {}) => {
 
     const [salonResult] = await db.execute(
         `INSERT INTO salons (owner_user_id, name, description, category, phone, email, 
-         address, city, state, postal_code, country, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         address, city, state, postal_code, country, status, timezone, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
             owner.user_id,
             options.salonName || 'Test Salon',
@@ -49,16 +49,12 @@ const setupBookingTestEnvironment = async (options = {}) => {
             options.postal_code || '12345',
             options.country || 'USA',
             options.status || 'APPROVED',
+            options.timezone || 'UTC',
             nowUtc,
             nowUtc
         ]
     );
     const salonId = salonResult.insertId;
-
-    await db.execute(
-        `UPDATE salons SET timezone = ? WHERE salon_id = ?`,
-        [options.timezone || 'UTC', salonId]
-    );
 
     await db.execute(
         `INSERT INTO employees (salon_id, user_id, title, active, created_at, updated_at)
@@ -105,9 +101,10 @@ const setupBookingTestEnvironment = async (options = {}) => {
         [employeeId, serviceId, nowUtc, nowUtc]
     );
 
-    const ownerToken = await loginUser(owner.email, password);
-    const employeeToken = await loginUser(employee.email, password);
-    const customerToken = await loginUser(customer.email, password);
+    // Generate tokens directly - bypasses HTTP login, DB lookup, and bcrypt
+    const ownerToken = generateTestToken(owner);
+    const employeeToken = generateTestToken(employee);
+    const customerToken = generateTestToken(customer);
 
     return {
         owner,
@@ -125,15 +122,14 @@ const setupBookingTestEnvironment = async (options = {}) => {
 };
 
 const loginUser = async (email, password) => {
-    const loginResponse = await request(app)
-        .post('/api/user/login')
-        .send({ email, password });
+    const [rows] = await db.execute('SELECT user_id, role, email FROM users WHERE email = ?', [email]);
     
-    if (loginResponse.status !== 200) {
-        throw new Error(`Login failed with status ${loginResponse.status}: ${loginResponse.body.message || 'Unknown error'}`);
+    if (rows.length === 0) {
+        throw new Error(`User not found for test login: ${email}`);
     }
     
-    return loginResponse.body.data.token;
+    const user = rows[0];
+    return generateTestToken(user);
 };
 
 const createBooking = async (salonId, customerUserId, scheduledStart, scheduledEnd, status = 'SCHEDULED', options = {}) => {
@@ -177,8 +173,8 @@ const setupSecondSalon = async (ownerUserId, options = {}) => {
     
     const [salonResult] = await db.execute(
         `INSERT INTO salons (owner_user_id, name, description, category, phone, email, 
-         address, city, state, postal_code, country, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         address, city, state, postal_code, country, status, timezone, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
             ownerUserId,
             options.name || 'Salon Y',
@@ -192,16 +188,12 @@ const setupSecondSalon = async (ownerUserId, options = {}) => {
             options.postal_code || '12345',
             options.country || 'USA',
             options.status || 'APPROVED',
+            options.timezone || 'UTC',
             nowUtc,
             nowUtc
         ]
     );
     const salonId = salonResult.insertId;
-    
-    await db.execute(
-        `UPDATE salons SET timezone = ? WHERE salon_id = ?`,
-        [options.timezone || 'UTC', salonId]
-    );
     
     const employee = await insertUserWithCredentials({
         password: options.password || DEFAULT_PASSWORD,
@@ -274,11 +266,25 @@ const cancelBookingViaAPI = async (token, bookingId) => {
         .send({ booking_id: bookingId });
 };
 
+const cancelBookingAsStylistViaAPI = async (token, bookingId) => {
+    return await request(app)
+        .post('/api/bookings/stylist/cancel')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ booking_id: bookingId });
+};
+
 const getMyAppointmentsViaAPI = async (token, queryParams = {}) => {
     return await request(app)
         .get('/api/bookings/myAppointments')
         .set('Authorization', `Bearer ${token}`)
         .query(queryParams);
+};
+
+const getStylistWeeklyScheduleViaAPI = async (token, startDate, endDate) => {
+    return await request(app)
+        .get('/api/user/stylist/weeklySchedule')
+        .set('Authorization', `Bearer ${token}`)
+        .query({ start_date: startDate, end_date: endDate });
 };
 
 const getBookingById = async (bookingId) => {
@@ -424,8 +430,8 @@ const createSalon = async (ownerUserId, options = {}) => {
     const nowUtc = toMySQLUtc(DateTime.utc());
     const [result] = await db.execute(
         `INSERT INTO salons (owner_user_id, name, description, category, phone, email, 
-         address, city, state, postal_code, country, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         address, city, state, postal_code, country, status, timezone, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
             ownerUserId,
             options.name || 'Test Salon',
@@ -439,6 +445,7 @@ const createSalon = async (ownerUserId, options = {}) => {
             options.postal_code || '12345',
             options.country || 'USA',
             options.status || 'APPROVED',
+            options.timezone || 'UTC',
             nowUtc,
             nowUtc
         ]
@@ -504,6 +511,37 @@ const getUnavailabilityBlockById = async (blockId) => {
     return rows[0] || null;
 };
 
+const getTimeslotsForDate = async (customerToken, salonId, employeeId, dateStr) => {
+    const response = await request(app)
+        .get(`/api/salons/${salonId}/stylists/${employeeId}/timeslots?start_date=${dateStr}&end_date=${dateStr}`)
+        .set('Authorization', `Bearer ${customerToken}`);
+    
+    if (response.status !== 200) {
+        throw new Error(`Failed to get timeslots: ${response.status}`);
+    }
+    
+    return response.body.data.daily_slots[dateStr] || [];
+};
+
+const verifyBlockedSlotsMissing = async (customerToken, salonId, employeeId, dateStr, blockedHour, blockedMinute = 0) => {
+    const slots = await getTimeslotsForDate(customerToken, salonId, employeeId, dateStr);
+    
+    if (Array.isArray(slots)) {
+        const blockedSlots = slots.filter(slot => {
+            const slotTime = DateTime.fromISO(slot.start_time);
+            return slotTime.hour === blockedHour && slotTime.minute === blockedMinute;
+        });
+        return blockedSlots.length === 0;
+    }
+    return true; 
+};
+
+const getNextMondayDateString = (dateTime = null) => {
+    const dt = dateTime || DateTime.utc();
+    const nextMonday = getNextMonday(dt);
+    return nextMonday.toISODate();
+};
+
 module.exports = {
     DEFAULT_PASSWORD,
     DEFAULT_TIMEZONE,
@@ -517,7 +555,9 @@ module.exports = {
     
     rescheduleBookingViaAPI,
     cancelBookingViaAPI,
+    cancelBookingAsStylistViaAPI,
     getMyAppointmentsViaAPI,
+    getStylistWeeklyScheduleViaAPI,
     deletePendingBookingViaAPI,
     listVisitCustomersViaAPI,
     getCustomerVisitHistoryViaAPI,
@@ -543,6 +583,10 @@ module.exports = {
     getFutureDateWithTimezone,
     getSameDayFutureTime,
     getNextMonday,
+    getNextMondayDateString,
+    
+    getTimeslotsForDate,
+    verifyBlockedSlotsMissing,
     
     verifyBookingStatus,
     verifyBookingTime

@@ -3,7 +3,7 @@ const app = require('../../src/app');
 const connection = require('../../src/config/databaseConnection');
 const { DateTime } = require('luxon');
 const { toMySQLUtc } = require('../../src/utils/utilies');
-const { insertUserWithCredentials } = require('./authTestUtils');
+const { insertUserWithCredentials, generateTestToken } = require('./authTestUtils');
 
 const db = connection.promise();
 
@@ -24,15 +24,13 @@ const baseProductPayload = (overrides = {}) => {
 };
 
 const loginUser = async (email, password) => {
-    const loginResponse = await request(app)
-        .post('/api/user/login')
-        .send({ email, password });
+    const [rows] = await db.execute('SELECT user_id, role, email FROM users WHERE email = ?', [email]);
     
-    if (loginResponse.status !== 200) {
-        throw new Error(`Login failed with status ${loginResponse.status}: ${loginResponse.body.message || 'Unknown error'}`);
+    if (rows.length === 0) {
+        throw new Error(`User not found for test login: ${email}`);
     }
     
-    return loginResponse.body.data.token;
+    return generateTestToken(rows[0]);
 };
 
 const createSalon = async (ownerUserId, options = {}) => {
@@ -70,7 +68,7 @@ const setupOwnerWithSalon = async (options = {}) => {
     });
 
     const salonId = await createSalon(owner.user_id, options.salonOptions || {});
-    const token = await loginUser(owner.email, password);
+    const token = generateTestToken(owner);
 
     return {
         owner,
@@ -96,8 +94,8 @@ const setupOwnerAndCustomer = async (options = {}) => {
     });
 
     const salonId = await createSalon(owner.user_id, options.salonOptions || {});
-    const ownerToken = await loginUser(owner.email, password);
-    const customerToken = await loginUser(customer.email, password);
+    const ownerToken = generateTestToken(owner);
+    const customerToken = generateTestToken(customer);
 
     return {
         owner,
@@ -126,8 +124,8 @@ const setupTwoOwners = async (options = {}) => {
 
     const salonA = await createSalon(ownerA.user_id, { name: 'Salon A', ...options.salonAOptions });
     const salonB = await createSalon(ownerB.user_id, { name: 'Salon B', ...options.salonBOptions });
-    const tokenA = await loginUser(ownerA.email, password);
-    const tokenB = await loginUser(ownerB.email, password);
+    const tokenA = generateTestToken(ownerA);
+    const tokenB = generateTestToken(ownerB);
 
     return {
         ownerA,
@@ -235,6 +233,53 @@ const checkoutViaAPI = async (token, checkoutData) => {
         .send(checkoutData);
 };
 
+const deleteProductViaAPI = async (token, productId) => {
+    return await request(app)
+        .delete(`/api/products/${productId}`)
+        .set('Authorization', `Bearer ${token}`);
+};
+
+const updateProductViaAPI = async (token, productId, productData) => {
+    return await request(app)
+        .patch(`/api/products/${productId}`)
+        .set('Authorization', `Bearer ${token}`)
+        .send(productData);
+};
+
+const viewCartViaAPI = async (token, salonId) => {
+    return await request(app)
+        .get(`/api/products/customer/view-cart/${salonId}`)
+        .set('Authorization', `Bearer ${token}`);
+};
+
+const removeFromCartViaAPI = async (token, cartData) => {
+    return await request(app)
+        .delete('/api/products/customer/remove-from-cart')
+        .set('Authorization', `Bearer ${token}`)
+        .send(cartData);
+};
+
+const updateCartViaAPI = async (token, cartData) => {
+    return await request(app)
+        .patch('/api/products/customer/update-cart')
+        .set('Authorization', `Bearer ${token}`)
+        .send(cartData);
+};
+
+const viewUserOrdersViaAPI = async (token, orderData) => {
+    return await request(app)
+        .post('/api/products/customer/view-orders')
+        .set('Authorization', `Bearer ${token}`)
+        .send(orderData);
+};
+
+const viewSalonOrdersViaAPI = async (token, orderData) => {
+    return await request(app)
+        .post('/api/products/owner/view-orders')
+        .set('Authorization', `Bearer ${token}`)
+        .send(orderData);
+};
+
 const createCreditCard = async (userId, options = {}) => {
     const nowUtc = toMySQLUtc(DateTime.utc());
     const cardNumber = options.card_number || '4111111111111111';
@@ -332,8 +377,15 @@ module.exports = {
     
     addProductViaAPI,
     getProductsViaAPI,
+    deleteProductViaAPI,
+    updateProductViaAPI,
     addToCartViaAPI,
+    viewCartViaAPI,
+    removeFromCartViaAPI,
+    updateCartViaAPI,
     checkoutViaAPI,
+    viewUserOrdersViaAPI,
+    viewSalonOrdersViaAPI,
     
     createCreditCard,
     createBillingAddress,

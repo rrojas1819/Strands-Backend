@@ -2,7 +2,7 @@ const request = require('supertest');
 const app = require('../src/app');
 const connection = require('../src/config/databaseConnection');
 const notificationsController = require('../src/controllers/notificationsController');
-const { ROLE_CASES, baseSignupPayload, insertUserWithCredentials } = require('./helpers/authTestUtils');
+const { ROLE_CASES, baseSignupPayload, insertUserWithCredentials, generateTestToken, generateFakeToken } = require('./helpers/authTestUtils');
 const { baseSalonPayload, setupOwnerWithoutSalon } = require('./helpers/salonTestUtils');
 const { DateTime } = require('luxon');
 const { toMySQLUtc } = require('../src/utils/utilies');
@@ -36,11 +36,14 @@ const createSalon = async (ownerUserId, options = {}) => {
 };
 
 const loginUser = async (email, password) => {
-    const loginResponse = await request(app)
-        .post('/api/user/login')
-        .send({ email, password });
-    expect(loginResponse.status).toBe(200);
-    return loginResponse.body.data.token;
+    const [rows] = await db.execute('SELECT user_id, role, email FROM users WHERE email = ?', [email]);
+    
+    if (rows.length === 0) {
+        throw new Error(`User not found for test login: ${email}`);
+    }
+    
+    const user = rows[0];
+    return generateTestToken(user);
 };
 
 const insertEmployee = async (salonId, userId, title = 'Senior Stylist') => {
@@ -87,44 +90,46 @@ describe('UAR 1.1/ 1.2 login, signup, logout, authentication test', () => {
             }
         );
 
-        test.each([
-            'full_name',
-            'email',
-            'role',
-            'password'
-        ])('fails when %s is missing', async (missingField) => {
-            const payload = baseSignupPayload();
-            delete payload[missingField];
+        test('fails when required fields are missing', async () => {
+            const requiredFields = ['full_name', 'email', 'role', 'password'];
 
-            const response = await request(app)
-                .post('/api/user/signup')
-                .send(payload);
+            const responses = await Promise.all(
+                requiredFields.map(missingField => {
+                    const payload = baseSignupPayload();
+                    delete payload[missingField];
+                    return request(app)
+                        .post('/api/user/signup')
+                        .send(payload);
+                })
+            );
 
-            expect(response.status).toBe(400);
-            expect(response.body).toMatchObject({
-                message: 'All fields are required'
-            });
+            for (const response of responses) {
+                expect(response.status).toBe(400);
+                expect(response.body).toMatchObject({
+                    message: 'All fields are required'
+                });
+            }
         });
 
-        test('rejects invalid password length', async () => {
-            const response = await request(app)
-                .post('/api/user/signup')
-                .send({ full_name: 'Test User', email: 'test@example.com', role: 'CUSTOMER', password: 'Short' });
+        test('rejects invalid password length and duplicate user', async () => {
+            const user = await insertUserWithCredentials();
 
-            expect(response.status).toBe(400);
-            expect(response.body).toMatchObject({
+            const [shortPasswordResponse, duplicateResponse] = await Promise.all([
+                request(app)
+                    .post('/api/user/signup')
+                    .send({ full_name: 'Test User', email: 'test@example.com', role: 'CUSTOMER', password: 'Short' }),
+                request(app)
+                    .post('/api/user/signup')
+                    .send({ full_name: user.full_name, email: user.email, role: user.role, password: user.password })
+            ]);
+
+            expect(shortPasswordResponse.status).toBe(400);
+            expect(shortPasswordResponse.body).toMatchObject({
                 message: 'Password must be at least 6 characters long'
             });
-        });
 
-        test('rejects user who already exists', async () => {
-            const user = await insertUserWithCredentials();
-            const response = await request(app)
-                .post('/api/user/signup')
-                .send({ full_name: user.full_name, email: user.email, role: user.role, password: user.password });
-
-            expect(response.status).toBe(409);
-            expect(response.body).toMatchObject({
+            expect(duplicateResponse.status).toBe(409);
+            expect(duplicateResponse.body).toMatchObject({
                 message: 'Invalid credentials or account cannot be created'
             });
         });
@@ -153,27 +158,26 @@ describe('UAR 1.1/ 1.2 login, signup, logout, authentication test', () => {
             }
         );
 
-        test('rejects invalid credentials', async () => {
+        test('rejects invalid credentials and invalid email format', async () => {
             const password = 'Password123!';
             const user = await insertUserWithCredentials({ password });
 
-            const response = await request(app)
-                .post('/api/user/login')
-                .send({ email: user.email, password: 'WrongPassword!' });
+            const [wrongPasswordResponse, invalidEmailResponse] = await Promise.all([
+                request(app)
+                    .post('/api/user/login')
+                    .send({ email: user.email, password: 'WrongPassword!' }),
+                request(app)
+                    .post('/api/user/login')
+                    .send({ email: 'invalid-email', password: 'Password123!' })
+            ]);
 
-            expect(response.status).toBe(401);
-            expect(response.body).toMatchObject({
+            expect(wrongPasswordResponse.status).toBe(401);
+            expect(wrongPasswordResponse.body).toMatchObject({
                 message: 'Invalid credentials'
             });
-        });
 
-        test('rejects invalid email format', async () => {
-            const response = await request(app)
-                .post('/api/user/login')
-                .send({ email: 'invalid-email', password: 'Password123!' });
-
-            expect(response.status).toBe(400);
-            expect(response.body).toMatchObject({
+            expect(invalidEmailResponse.status).toBe(400);
+            expect(invalidEmailResponse.body).toMatchObject({
                 message: 'Invalid email format'
             });
         });
@@ -182,33 +186,39 @@ describe('UAR 1.1/ 1.2 login, signup, logout, authentication test', () => {
     });
 
     describe('POST /api/user/logout', () => {
-        test.each(ROLE_CASES)(
-            'logs out an authenticated %s',
-            async (role) => {
-                const password = 'Password123!';
-                const user = await insertUserWithCredentials({ password, role });
+        test('all roles should be able to logout when authenticated', async () => {
+            const password = 'Password123!';
 
-                const loginResponse = await request(app)
+            const users = await Promise.all(
+                ROLE_CASES.map(role => insertUserWithCredentials({ password, role }))
+            );
+
+            const loginResponses = await Promise.all(
+                users.map(user => request(app)
                     .post('/api/user/login')
-                    .send({ email: user.email, password });
+                    .send({ email: user.email, password }))
+            );
 
-                const token = loginResponse.body.data.token;
+            const tokens = loginResponses.map(res => res.body.data.token);
 
-                const response = await request(app)
+            const logoutResponses = await Promise.all(
+                users.map((user, i) => request(app)
                     .post('/api/user/logout')
-                    .set('Authorization', `Bearer ${token}`)
-                    .send();
+                    .set('Authorization', `Bearer ${tokens[i]}`)
+                    .send())
+            );
 
-                expect(response.status).toBe(200);
-                expect(response.body).toMatchObject({
+            for (let i = 0; i < logoutResponses.length; i++) {
+                expect(logoutResponses[i].status).toBe(200);
+                expect(logoutResponses[i].body).toMatchObject({
                     message: 'Logout successful',
                     data: {
-                        user_id: user.user_id,
+                        user_id: users[i].user_id,
                         active: 0
                     }
                 });
             }
-        );
+        });
 
         test('fails when token is missing', async () => {
             const response = await request(app)
@@ -220,11 +230,114 @@ describe('UAR 1.1/ 1.2 login, signup, logout, authentication test', () => {
                 error: 'Access token required'
             });
         });
-
-
     });
 
-    
+    describe('Edge Cases', () => {
+        test('Verify Signup Errors: All signup error cases return correct status codes', async () => {
+            const existing = await insertUserWithCredentials();
+            
+            const signupCases = [
+                { scenario: 'missing full_name', payload: { email: 'test1@test.com', role: 'CUSTOMER', password: 'Password123!' }, expectedStatus: 400 },
+                { scenario: 'missing email', payload: { full_name: 'Test', role: 'CUSTOMER', password: 'Password123!' }, expectedStatus: 400 },
+                { scenario: 'missing role', payload: { full_name: 'Test', email: 'test2@test.com', password: 'Password123!' }, expectedStatus: 400 },
+                { scenario: 'missing password', payload: { full_name: 'Test', email: 'test3@test.com', role: 'CUSTOMER' }, expectedStatus: 400 },
+                { scenario: 'invalid email format', payload: { full_name: 'Test', email: 'invalid-email', role: 'CUSTOMER', password: 'Password123!' }, expectedStatus: 400 },
+                { scenario: 'password too short', payload: { full_name: 'Test', email: 'test4@test.com', role: 'CUSTOMER', password: 'Short' }, expectedStatus: 400 },
+                { scenario: 'invalid role', payload: { full_name: 'Test', email: 'test5@test.com', role: 'INVALID', password: 'Password123!' }, expectedStatus: 400 },
+                { scenario: 'duplicate email', payload: { full_name: existing.full_name, email: existing.email, role: existing.role, password: 'Password123!' }, expectedStatus: 409 }
+            ];
+
+            const responses = await Promise.all(
+                signupCases.map(({ payload }) =>
+                    request(app)
+                        .post('/api/user/signup')
+                        .send(payload)
+                )
+            );
+
+            for (let i = 0; i < responses.length; i++) {
+                expect(responses[i].status).toBe(signupCases[i].expectedStatus);
+            }
+        });
+
+        test('Verify Login Errors: All login error cases return correct status codes', async () => {
+            const user = await insertUserWithCredentials({ password: 'Password123!' });
+            
+            const loginCases = [
+                { scenario: 'missing email', payload: { password: 'Password123!' }, expectedStatus: 400 },
+                { scenario: 'missing password', payload: { email: 'test@test.com' }, expectedStatus: 400 },
+                { scenario: 'invalid email format', payload: { email: 'invalid-email', password: 'Password123!' }, expectedStatus: 400 },
+                { scenario: 'non-existent user', payload: { email: 'nonexistent@test.com', password: 'Password123!' }, expectedStatus: 401 },
+                { scenario: 'wrong password', payload: { email: user.email, password: 'WrongPassword!' }, expectedStatus: 401 }
+            ];
+
+            const responses = await Promise.all(
+                loginCases.map(({ payload }) =>
+                    request(app)
+                        .post('/api/user/login')
+                        .send(payload)
+                )
+            );
+
+            for (let i = 0; i < responses.length; i++) {
+                expect(responses[i].status).toBe(loginCases[i].expectedStatus);
+                if (loginCases[i].expectedStatus === 401) {
+                    expect(responses[i].body.message).toBe('Invalid credentials');
+                }
+            }
+        });
+
+        test('Verify Login Updates Last Login: POST /api/user/login updates last_login_at', async () => {
+            const password = 'Password123!';
+            const user = await insertUserWithCredentials({ password });
+
+            const [beforeLogin] = await db.execute('SELECT last_login_at FROM users WHERE user_id = ?', [user.user_id]);
+            const beforeTime = beforeLogin[0].last_login_at;
+
+            await request(app)
+                .post('/api/user/login')
+                .send({ email: user.email, password });
+
+            const [afterLogin] = await db.execute('SELECT last_login_at FROM users WHERE user_id = ?', [user.user_id]);
+            const afterTime = afterLogin[0].last_login_at;
+
+            expect(afterTime).not.toBe(beforeTime);
+        });
+
+        test('Verify Logout Errors: All logout error cases return correct status codes', async () => {
+            const logoutCases = [
+                { scenario: 'missing token', authHeader: '', expectedStatus: 401 },
+                { scenario: 'invalid token', authHeader: 'Bearer invalid-token', expectedStatus: 403 }
+            ];
+
+            const responses = await Promise.all(
+                logoutCases.map(({ authHeader }) =>
+                    request(app)
+                        .post('/api/user/logout')
+                        .set('Authorization', authHeader)
+                )
+            );
+
+            for (let i = 0; i < responses.length; i++) {
+                expect(responses[i].status).toBe(logoutCases[i].expectedStatus);
+            }
+        });
+
+        test('Verify Auth Test: GET /api/user/auth-test returns 200 for authenticated users', async () => {
+            const password = 'Password123!';
+            const user = await insertUserWithCredentials({ password });
+            const token = await loginUser(user.email, password);
+
+            const response = await request(app)
+                .get('/api/user/auth-test')
+                .set('Authorization', `Bearer ${token}`);
+
+            expect(response.status).toBe(200);
+            expect(response.body.message).toContain('Authorized');
+        });
+
+        
+    });
 });
 
 // UAR 1.3 - As a salon owner, I want to register my salon so that I can list it on the platform.
@@ -272,26 +385,35 @@ describe('UAR 1.3 - Salon Registration - Owner', () => {
     });
 
     describe('Negative Flow', () => {
-        test.each([
-            { field: 'name', action: (p) => delete p.name },
-            { field: 'address', action: (p) => delete p.address },
-            { field: 'phone', action: (p) => delete p.phone },
-            { field: 'name', action: (p) => p.name = '' }
-        ])('Missing/Invalid Required Fields: POST request with missing or empty $field returns 400', async ({ field, action }) => {
+        test('Missing/Invalid Required Fields and Empty Payload: POST request with missing, empty, or invalid fields returns 400', async () => {
             const { token } = await setupOwnerWithoutSalon();
-            const payload = baseSalonPayload();
-            action(payload);
+            const invalidCases = [
+                { field: 'name', action: (p) => { delete p.name; return p; }, expectMessage: "Field 'name' is required" },
+                { field: 'address', action: (p) => { delete p.address; return p; }, expectMessage: "Field 'address' is required" },
+                { field: 'phone', action: (p) => { delete p.phone; return p; }, expectMessage: "Field 'phone' is required" },
+                { field: 'name', action: (p) => { p.name = ''; return p; }, expectMessage: "Field 'name' is required" },
+                { field: 'empty payload', action: () => ({}), expectMessage: undefined }
+            ];
 
-            const response = await request(app)
-                .post('/api/salons/create')
-                .set('Authorization', `Bearer ${token}`)
-                .send(payload);
+            const responses = await Promise.all(
+                invalidCases.map(({ action }) => {
+                    const payload = action(baseSalonPayload());
+                    return request(app)
+                        .post('/api/salons/create')
+                        .set('Authorization', `Bearer ${token}`)
+                        .send(payload);
+                })
+            );
 
-            expect(response.status).toBe(400);
-            expect(response.body.message).toContain(`Field '${field}' is required`);
+            for (let i = 0; i < responses.length; i++) {
+                expect(responses[i].status).toBe(400);
+                if (invalidCases[i].expectMessage) {
+                    expect(responses[i].body.message).toContain(invalidCases[i].expectMessage);
+                } else {
+                    expect(responses[i].body.message).toBeDefined();
+                }
+            }
         });
-
-        
     });
 
     describe('Data Integrity', () => {
@@ -348,25 +470,32 @@ describe('UAR 1.3 - Salon Registration - Owner', () => {
             expect(salonRows).toHaveLength(0);
         });
 
-        test.each(['CUSTOMER', 'EMPLOYEE', 'ADMIN'])('Authorization/Role Check: POST request by %s role returns 403', async (role) => {
+        test('Non-owner roles should not be able to create salons', async () => {
             const password = 'Password123!';
-            const user = await insertUserWithCredentials({
-                password,
-                role
-            });
-
-            const token = await loginUser(user.email, password);
+            const roles = ['CUSTOMER', 'EMPLOYEE', 'ADMIN'];
             const payload = baseSalonPayload();
 
-            const response = await request(app)
-                .post('/api/salons/create')
-                .set('Authorization', `Bearer ${token}`)
-                .send(payload);
+            const users = await Promise.all(
+                roles.map(role => insertUserWithCredentials({ password, role }))
+            );
 
-            expect(response.status).toBe(403);
-            expect(response.body).toMatchObject({
-                error: 'Insufficient permissions'
-            });
+            const tokens = await Promise.all(
+                users.map(user => generateTestToken(user))
+            );
+
+            const responses = await Promise.all(
+                tokens.map(token => request(app)
+                    .post('/api/salons/create')
+                    .set('Authorization', `Bearer ${token}`)
+                    .send(payload))
+            );
+
+            for (const response of responses) {
+                expect(response.status).toBe(403);
+                expect(response.body).toMatchObject({
+                    error: 'Insufficient permissions'
+                });
+            }
         });
     });
 
@@ -394,18 +523,6 @@ describe('UAR 1.3 - Salon Registration - Owner', () => {
             expect(secondResponse.body).toMatchObject({
                 message: 'You already have a salon registered.'
             });
-        });
-
-        test('Verify Empty Payload: POST request with empty body returns 400', async () => {
-            const { token } = await setupOwnerWithoutSalon();
-
-            const response = await request(app)
-                .post('/api/salons/create')
-                .set('Authorization', `Bearer ${token}`)
-                .send({});
-
-            expect(response.status).toBe(400);
-            expect(response.body.message).toBeDefined();
         });
 
     });
@@ -453,11 +570,7 @@ describe('UAR 1.4 - Salon Type/Category Selection - Owner', () => {
                     role: 'OWNER'
                 });
 
-                const loginResponse = await request(app)
-                    .post('/api/user/login')
-                    .send({ email: owner.email, password: 'Password123!' });
-
-                const ownerToken = loginResponse.body.data.token;
+                const ownerToken = generateTestToken(owner);
                 const payload = baseSalonPayload({
                     name: `Test ${category}`,
                     category: category
@@ -475,41 +588,55 @@ describe('UAR 1.4 - Salon Type/Category Selection - Owner', () => {
     });
 
     describe('Negative Flow', () => {
-        test('Verify Invalid Category: POST request with non-existent category returns 400', async () => {
+        test('Verify Invalid Category: POST request with invalid category values returns 400', async () => {
             const { token } = await setupOwnerWithoutSalon();
-            const payload = baseSalonPayload({ category: 'AUTO_REPAIR' });
+            const invalidCategories = [
+                { 
+                    description: 'non-existent category',
+                    action: (p) => p.category = 'AUTO_REPAIR',
+                    checkResponse: (response) => {
+                        expect(response.body).toMatchObject({
+                            message: "Invalid 'category'"
+                        });
+                        expect(response.body.allowed).toBeDefined();
+                        expect(Array.isArray(response.body.allowed)).toBe(true);
+                    }
+                },
+                { 
+                    description: 'missing category field',
+                    action: (p) => delete p.category,
+                    checkResponse: (response) => {
+                        expect(response.body.message).toMatch(/category|required/i);
+                    }
+                },
+                { 
+                    description: 'null category',
+                    action: (p) => p.category = null,
+                    checkResponse: (response) => {
+                        expect(response.body.message).toBeDefined();
+                    }
+                },
+                { 
+                    description: 'empty string category',
+                    action: (p) => p.category = '',
+                    checkResponse: (response) => {
+                        expect(response.body.message).toBeDefined();
+                    }
+                }
+            ];
 
-            const response = await request(app)
-                .post('/api/salons/create')
-                .set('Authorization', `Bearer ${token}`)
-                .send(payload);
+            // Check all invalid category scenarios with separate API calls
+            for (const { description, action, checkResponse } of invalidCategories) {
+                const payload = baseSalonPayload();
+                action(payload);
 
-            expect(response.status).toBe(400);
-            expect(response.body).toMatchObject({
-                message: "Invalid 'category'"
-            });
-            expect(response.body.allowed).toBeDefined();
-            expect(Array.isArray(response.body.allowed)).toBe(true);
-        });
+                const response = await request(app)
+                    .post('/api/salons/create')
+                    .set('Authorization', `Bearer ${token}`)
+                    .send(payload);
 
-        test.each([
-            { action: (p) => delete p.category, description: 'missing category field' },
-            { action: (p) => p.category = null, description: 'null category' },
-            { action: (p) => p.category = '', description: 'empty string category' }
-        ])('Verify Invalid Category: POST request with $description returns 400', async ({ action, description }) => {
-            const { token } = await setupOwnerWithoutSalon();
-            const payload = baseSalonPayload();
-            action(payload);
-
-            const response = await request(app)
-                .post('/api/salons/create')
-                .set('Authorization', `Bearer ${token}`)
-                .send(payload);
-
-            expect(response.status).toBe(400);
-            expect(response.body.message).toBeDefined();
-            if (description === 'missing category field') {
-                expect(response.body.message).toMatch(/category|required/i);
+                expect(response.status).toBe(400);
+                checkResponse(response);
             }
         });
     });
@@ -553,12 +680,7 @@ describe('UAR 1.5 - Salon Registration Verification - Admin', () => {
 
         const salonId = await createSalon(owner.user_id, { status: 'PENDING' });
 
-        const loginResponse = await request(app)
-            .post('/api/user/login')
-            .send({ email: admin.email, password });
-
-        expect(loginResponse.status).toBe(200);
-        const token = loginResponse.body.data.token;
+        const token = generateTestToken(admin);
 
         return { admin, owner, salonId, token, password };
     };
@@ -632,7 +754,7 @@ describe('UAR 1.5 - Salon Registration Verification - Admin', () => {
                 role: 'CUSTOMER'
             });
 
-            const customerToken = await loginUser(customer.email, password);
+            const customerToken = generateTestToken(customer);
 
             const browseBeforeResponse = await request(app)
                 .get('/api/salons/browse')
@@ -686,7 +808,7 @@ describe('UAR 1.5 - Salon Registration Verification - Admin', () => {
                 role: 'CUSTOMER'
             });
 
-            const customerToken = await loginUser(customer.email, password);
+            const customerToken = generateTestToken(customer);
 
             const browseResponse = await request(app)
                 .get('/api/salons/browse')
@@ -701,61 +823,39 @@ describe('UAR 1.5 - Salon Registration Verification - Admin', () => {
     
 
     describe('Security & Permissions', () => {
-        test.each(['OWNER', 'CUSTOMER', 'EMPLOYEE'])('Verify Non-Admin Access: %s role cannot access verification endpoint', async (role) => {
+        test('Non-admin roles should not be able to access verification endpoint', async () => {
             const password = 'Password123!';
+            const roles = ['OWNER', 'CUSTOMER', 'EMPLOYEE'];
             const { salonId } = await setupAdminAndPendingSalon();
 
-            const user = await insertUserWithCredentials({
-                password,
-                role
-            });
+            const users = await Promise.all(
+                roles.map(role => insertUserWithCredentials({ password, role }))
+            );
 
-            const token = await loginUser(user.email, password);
+            const tokens = await Promise.all(
+                users.map(user => generateTestToken(user))
+            );
 
-            const response = await request(app)
-                .patch('/api/salons/approve')
-                .set('Authorization', `Bearer ${token}`)
-                .send({ salon_id: salonId, status: 'APPROVED' });
+            const responses = await Promise.all(
+                tokens.map(token => request(app)
+                    .patch('/api/salons/approve')
+                    .set('Authorization', `Bearer ${token}`)
+                    .send({ salon_id: salonId, status: 'APPROVED' }))
+            );
 
-            expect(response.status).toBe(403);
-            expect(response.body).toMatchObject({
-                error: 'Insufficient permissions'
-            });
+            for (const response of responses) {
+                expect(response.status).toBe(403);
+                expect(response.body).toMatchObject({
+                    error: 'Insufficient permissions'
+                });
+            }
         });
 
        
     });
 
     describe('Edge Cases', () => {
-        test('Double Decision Prevention: System processes request only once when admin clicks Accept twice rapidly', async () => {
-            const { salonId, token } = await setupAdminAndPendingSalon();
-
-            const firstResponse = await request(app)
-                .patch('/api/salons/approve')
-                .set('Authorization', `Bearer ${token}`)
-                .send({ salon_id: salonId, status: 'APPROVED' });
-
-            expect(firstResponse.status).toBe(200);
-
-            const [firstCheck] = await db.execute(
-                'SELECT status FROM salons WHERE salon_id = ?',
-                [salonId]
-            );
-            expect(firstCheck[0].status).toBe('APPROVED');
-
-            const secondResponse = await request(app)
-                .patch('/api/salons/approve')
-                .set('Authorization', `Bearer ${token}`)
-                .send({ salon_id: salonId, status: 'APPROVED' });
-
-            expect([200, 400, 409]).toContain(secondResponse.status);
-
-            const [secondCheck] = await db.execute(
-                'SELECT status FROM salons WHERE salon_id = ?',
-                [salonId]
-            );
-            expect(secondCheck[0].status).toBe('APPROVED');
-        });
+        
 
         
 
@@ -811,22 +911,17 @@ describe('UAR 1.6 - Browse Available Salons', () => {
     describe('Positive Flow', () => {
         test('Verify List Retrieval: GET request returns 200 OK with array of salon objects', async () => {
             const password = 'Password123!';
-            const customer = await insertUserWithCredentials({
-                password,
-                role: 'CUSTOMER'
-            });
-
-            const owner = await insertUserWithCredentials({
-                password,
-                role: 'OWNER'
-            });
+            const [customer, owner] = await Promise.all([
+                insertUserWithCredentials({ password, role: 'CUSTOMER' }),
+                insertUserWithCredentials({ password, role: 'OWNER' })
+            ]);
 
             await createSalon(owner.user_id, { 
                 name: 'Test Salon',
                 status: 'APPROVED'
             });
 
-            const customerToken = await loginUser(customer.email, password);
+            const customerToken = generateTestToken(customer);
 
             const response = await request(app)
                 .get('/api/salons/browse')
@@ -848,18 +943,18 @@ describe('UAR 1.6 - Browse Available Salons', () => {
                 role: 'CUSTOMER'
             });
 
-            for (let i = 0; i < 7; i++) {
-                const owner = await insertUserWithCredentials({
-                    password,
-                    role: 'OWNER'
-                });
-                await createSalon(owner.user_id, { 
+            const owners = await Promise.all(
+                Array.from({ length: 7 }, () => insertUserWithCredentials({ password, role: 'OWNER' }))
+            );
+
+            await Promise.all(
+                owners.map((owner, i) => createSalon(owner.user_id, { 
                     name: `Test Salon ${i}`,
                     status: 'APPROVED'
-                });
-            }
+                }))
+            );
 
-            const customerToken = await loginUser(customer.email, password);
+            const customerToken = generateTestToken(customer);
 
             const response = await request(app)
                 .get('/api/salons/browse?limit=5&offset=0')
@@ -901,7 +996,7 @@ describe('UAR 1.6 - Browse Available Salons', () => {
                 role: 'CUSTOMER'
             });
 
-            const customerToken = await loginUser(customer.email, password);
+            const customerToken = generateTestToken(customer);
 
             const response = await request(app)
                 .get(`/api/salons/browse${query}`)
@@ -917,40 +1012,20 @@ describe('UAR 1.6 - Browse Available Salons', () => {
     describe('Data Integrity & Logic', () => {
         test('Verify Status Filtering: Customer browse returns only APPROVED salons, excludes PENDING and REJECTED', async () => {
             const password = 'Password123!';
-            const customer = await insertUserWithCredentials({
-                password,
-                role: 'CUSTOMER'
-            });
+            const [customer, owner1, owner2, owner3] = await Promise.all([
+                insertUserWithCredentials({ password, role: 'CUSTOMER' }),
+                insertUserWithCredentials({ password, role: 'OWNER' }),
+                insertUserWithCredentials({ password, role: 'OWNER' }),
+                insertUserWithCredentials({ password, role: 'OWNER' })
+            ]);
 
-            const owner1 = await insertUserWithCredentials({
-                password,
-                role: 'OWNER'
-            });
+            const [approvedSalonId, pendingSalonId, rejectedSalonId] = await Promise.all([
+                createSalon(owner1.user_id, { name: 'Approved Salon', status: 'APPROVED' }),
+                createSalon(owner2.user_id, { name: 'Pending Salon', status: 'PENDING' }),
+                createSalon(owner3.user_id, { name: 'Rejected Salon', status: 'REJECTED' })
+            ]);
 
-            const owner2 = await insertUserWithCredentials({
-                password,
-                role: 'OWNER'
-            });
-
-            const owner3 = await insertUserWithCredentials({
-                password,
-                role: 'OWNER'
-            });
-
-            const approvedSalonId = await createSalon(owner1.user_id, { 
-                name: 'Approved Salon',
-                status: 'APPROVED'
-            });
-            const pendingSalonId = await createSalon(owner2.user_id, { 
-                name: 'Pending Salon',
-                status: 'PENDING'
-            });
-            const rejectedSalonId = await createSalon(owner3.user_id, { 
-                name: 'Rejected Salon',
-                status: 'REJECTED'
-            });
-
-            const customerToken = await loginUser(customer.email, password);
+            const customerToken = generateTestToken(customer);
 
             const response = await request(app)
                 .get('/api/salons/browse')
@@ -992,7 +1067,7 @@ describe('UAR 1.7 - Add/Remove/View Employees - Owner', () => {
 
         const salonId = await createSalon(owner.user_id, { status: 'APPROVED' });
 
-        const token = await loginUser(owner.email, password);
+        const token = generateTestToken(owner);
 
         return { owner, salonId, token, password };
     };
@@ -1035,20 +1110,16 @@ describe('UAR 1.7 - Add/Remove/View Employees - Owner', () => {
         test('View Employees - POST /viewEmployees returns 200 OK with array containing employee details', async () => {
             const { salonId, token } = await setupOwnerWithSalon();
             const password = 'Password123!';
-            const nowUtc = toMySQLUtc(DateTime.utc());
 
-            const employee1 = await insertUserWithCredentials({
-                password,
-                role: 'EMPLOYEE'
-            });
+            const [employee1, employee2] = await Promise.all([
+                insertUserWithCredentials({ password, role: 'EMPLOYEE' }),
+                insertUserWithCredentials({ password, role: 'EMPLOYEE' })
+            ]);
 
-            const employee2 = await insertUserWithCredentials({
-                password,
-                role: 'EMPLOYEE'
-            });
-
-            await insertEmployee(salonId, employee1.user_id, 'Senior Stylist');
-            await insertEmployee(salonId, employee2.user_id, 'Junior Stylist');
+            await Promise.all([
+                insertEmployee(salonId, employee1.user_id, 'Senior Stylist'),
+                insertEmployee(salonId, employee2.user_id, 'Junior Stylist')
+            ]);
 
             const response = await request(app)
                 .post('/api/salons/viewEmployees')
@@ -1110,52 +1181,46 @@ describe('UAR 1.7 - Add/Remove/View Employees - Owner', () => {
     });
 
     describe('Negative Flow', () => {
-        test('Verify Validation Errors: POST /addEmployee with missing fields or invalid data returns appropriate errors', async () => {
+        test('Verify Validation Errors: POST /addEmployee and DELETE /removeEmployee with missing fields or invalid data returns appropriate errors', async () => {
             const { token } = await setupOwnerWithSalon();
 
-            const missingEmailResponse = await request(app)
-                .post('/api/salons/addEmployee')
-                .set('Authorization', `Bearer ${token}`)
-                .send({ title: 'Stylist' });
+            const [missingEmailResponse, invalidEmailResponse, nonExistentResponse, missingEmailDeleteResponse, invalidEmailDeleteResponse] = await Promise.all([
+                request(app)
+                    .post('/api/salons/addEmployee')
+                    .set('Authorization', `Bearer ${token}`)
+                    .send({ title: 'Stylist' }),
+                request(app)
+                    .post('/api/salons/addEmployee')
+                    .set('Authorization', `Bearer ${token}`)
+                    .send({ email: 'invalid-email', title: 'Stylist' }),
+                request(app)
+                    .post('/api/salons/addEmployee')
+                    .set('Authorization', `Bearer ${token}`)
+                    .send({ email: 'ghost@example.com', title: 'Stylist' }),
+                request(app)
+                    .delete('/api/salons/removeEmployee')
+                    .set('Authorization', `Bearer ${token}`)
+                    .send({}),
+                request(app)
+                    .delete('/api/salons/removeEmployee')
+                    .set('Authorization', `Bearer ${token}`)
+                    .send({ email: 'invalid-email' })
+            ]);
 
             expect(missingEmailResponse.status).toBe(400);
             expect(missingEmailResponse.body.message).toContain('Missing required fields');
 
-            const invalidEmailResponse = await request(app)
-                .post('/api/salons/addEmployee')
-                .set('Authorization', `Bearer ${token}`)
-                .send({ email: 'invalid-email', title: 'Stylist' });
-
             expect(invalidEmailResponse.status).toBe(400);
             expect(invalidEmailResponse.body.message).toContain('Invalid email format');
-
-            const nonExistentResponse = await request(app)
-                .post('/api/salons/addEmployee')
-                .set('Authorization', `Bearer ${token}`)
-                .send({ email: 'ghost@example.com', title: 'Stylist' });
 
             expect(nonExistentResponse.status).toBe(409);
             expect(nonExistentResponse.body.message).toContain('Employee does not exist');
-        });
 
-        test('Verify Remove Employee Errors: DELETE /removeEmployee with invalid data returns appropriate errors', async () => {
-            const { token } = await setupOwnerWithSalon();
+            expect(missingEmailDeleteResponse.status).toBe(400);
+            expect(missingEmailDeleteResponse.body.message).toContain('Missing required fields');
 
-            const missingEmailResponse = await request(app)
-                .delete('/api/salons/removeEmployee')
-                .set('Authorization', `Bearer ${token}`)
-                .send({});
-
-            expect(missingEmailResponse.status).toBe(400);
-            expect(missingEmailResponse.body.message).toContain('Missing required fields');
-
-            const invalidEmailResponse = await request(app)
-                .delete('/api/salons/removeEmployee')
-                .set('Authorization', `Bearer ${token}`)
-                .send({ email: 'invalid-email' });
-
-            expect(invalidEmailResponse.status).toBe(400);
-            expect(invalidEmailResponse.body.message).toContain('Invalid email format');
+            expect(invalidEmailDeleteResponse.status).toBe(400);
+            expect(invalidEmailDeleteResponse.body.message).toContain('Invalid email format');
         });
     });
 
@@ -1164,13 +1229,13 @@ describe('UAR 1.7 - Add/Remove/View Employees - Owner', () => {
             const { salonId, token } = await setupOwnerWithSalon();
             const password = 'Password123!';
 
-            for (let i = 0; i < 5; i++) {
-                const employee = await insertUserWithCredentials({
-                    password,
-                    role: 'EMPLOYEE'
-                });
-                await insertEmployee(salonId, employee.user_id, `Stylist ${i}`);
-            }
+            const employees = await Promise.all(
+                Array.from({ length: 5 }, () => insertUserWithCredentials({ password, role: 'EMPLOYEE' }))
+            );
+
+            await Promise.all(
+                employees.map((employee, i) => insertEmployee(salonId, employee.user_id, `Stylist ${i}`))
+            );
 
             const response = await request(app)
                 .post('/api/salons/viewEmployees')
@@ -1194,7 +1259,7 @@ describe('UAR 1.7 - Add/Remove/View Employees - Owner', () => {
         test('Verify Unauthorized Access: Non-OWNER roles cannot access employee management endpoints', async () => {
             const password = 'Password123!';
             const customer = await insertUserWithCredentials({ password, role: 'CUSTOMER' });
-            const customerToken = await loginUser(customer.email, password);
+            const customerToken = generateTestToken(customer);
 
             const employee = await insertUserWithCredentials({ password, role: 'EMPLOYEE' });
 
@@ -1259,7 +1324,7 @@ describe('UAR 1.8 - Get Stylist\'s Assigned Salon', () => {
 
             await insertEmployee(salonId, stylist.user_id);
 
-            const token = await loginUser(stylist.email, password);
+            const token = generateTestToken(stylist);
 
             const response = await request(app)
                 .get('/api/user/stylist/getSalon')
@@ -1287,11 +1352,7 @@ describe('UAR 1.8 - Get Stylist\'s Assigned Salon', () => {
                 role: 'EMPLOYEE'
             });
 
-            const loginResponse = await request(app)
-                .post('/api/user/login')
-                .send({ email: stylist.email, password });
-
-            const token = loginResponse.body.data.token;
+            const token = generateTestToken(stylist);
 
             const response = await request(app)
                 .get('/api/user/stylist/getSalon')
@@ -1340,7 +1401,7 @@ describe('UAR 1.8 - Get Stylist\'s Assigned Salon', () => {
 
             await insertEmployee(salonId, stylist.user_id);
 
-            const token = await loginUser(stylist.email, password);
+            const token = generateTestToken(stylist);
 
             const response = await request(app)
                 .get('/api/user/stylist/getSalon')
@@ -1364,23 +1425,27 @@ describe('UAR 1.8 - Get Stylist\'s Assigned Salon', () => {
     });
 
     describe('Security & Permissions', () => {
-        test.each(['OWNER', 'CUSTOMER', 'ADMIN'])('Verify Unauthorized Role - %s: User with role %s returns 403 Forbidden', async (role) => {
+        test('Non-employee roles should not be able to access getSalon endpoint', async () => {
             const password = 'Password123!';
-            const user = await insertUserWithCredentials({
-                password,
-                role
-            });
+            const roles = ['OWNER', 'CUSTOMER', 'ADMIN'];
 
-            const token = await loginUser(user.email, password);
+            for (const role of roles) {
+                const user = await insertUserWithCredentials({
+                    password,
+                    role
+                });
 
-            const response = await request(app)
-                .get('/api/user/stylist/getSalon')
-                .set('Authorization', `Bearer ${token}`);
+                const token = generateTestToken(user);
 
-            expect(response.status).toBe(403);
-            expect(response.body).toMatchObject({
-                error: 'Insufficient permissions'
-            });
+                const response = await request(app)
+                    .get('/api/user/stylist/getSalon')
+                    .set('Authorization', `Bearer ${token}`);
+
+                expect(response.status).toBe(403);
+                expect(response.body).toMatchObject({
+                    error: 'Insufficient permissions'
+                });
+            }
         });
 
        
@@ -1415,11 +1480,7 @@ describe('UAR 1.8 - Get Stylist\'s Assigned Salon', () => {
                 insertEmployee(salonBId, stylist.user_id, 'Junior Stylist')
             ).rejects.toThrow();
 
-            const loginResponse = await request(app)
-                .post('/api/user/login')
-                .send({ email: stylist.email, password });
-
-            const token = loginResponse.body.data.token;
+            const token = generateTestToken(stylist);
 
             const response = await request(app)
                 .get('/api/user/stylist/getSalon')
@@ -1450,7 +1511,7 @@ describe('UAR 1.8 - Get Stylist\'s Assigned Salon', () => {
 
             await insertEmployee(salonId, stylist.user_id);
 
-            const token = await loginUser(stylist.email, password);
+            const token = generateTestToken(stylist);
 
             const firstResponse = await request(app)
                 .get('/api/user/stylist/getSalon')

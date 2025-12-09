@@ -91,7 +91,7 @@ exports.createReview = async (req, res) => {
         } catch (e) {
             //preventing duplicate reviews to a salon
             if (e && e.code === 'ER_DUP_ENTRY') {
-                console.error('createReview error - duplicate entry:', e);
+                //console.error('createReview error - duplicate entry:', e);
                 return res.status(409).json({ message: 'You have already reviewed this salon' });
             }
             console.error('createReview transaction error:', e);

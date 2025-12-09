@@ -2,7 +2,7 @@ const request = require('supertest');
 const app = require('../src/app');
 const connection = require('../src/config/databaseConnection');
 const notificationsController = require('../src/controllers/notificationsController');
-const { ROLE_CASES, insertUserWithCredentials } = require('./helpers/authTestUtils');
+const { ROLE_CASES, insertUserWithCredentials, generateTestToken } = require('./helpers/authTestUtils');
 const { DateTime } = require('luxon');
 const { toMySQLUtc } = require('../src/utils/utilies');
 const notificationSecurity = require('../src/utils/notificationsSecurity');
@@ -238,9 +238,10 @@ describe('NC 1.1: Notifications & Reminders', () => {
 
     describe('Negative Flow', () => {
         test.each([
-            { id: '999999', expectedStatus: 404, message: 'not found', description: 'non-existent notification' },
-            { id: 'abc-invalid-uuid', expectedStatus: 400, message: 'Invalid', description: 'malformed ID' }
-        ])('Verify DELETE /delete/$id returns $expectedStatus for $description', async ({ id, expectedStatus, message }) => {
+            { endpoint: 'delete', id: '999999', expectedStatus: 404, message: 'not found', description: 'non-existent notification' },
+            { endpoint: 'delete', id: 'abc-invalid-uuid', expectedStatus: 400, message: 'Invalid', description: 'malformed ID' },
+            { endpoint: 'mark-read', id: 'invalid', expectedStatus: 400, message: 'Invalid', description: 'invalid notification_id' }
+        ])('Verify $endpoint with $description returns $expectedStatus', async ({ endpoint, id, expectedStatus, message }) => {
             const password = 'Password123!';
             const user = await insertUserWithCredentials({ password, role: 'CUSTOMER' });
 
@@ -250,43 +251,31 @@ describe('NC 1.1: Notifications & Reminders', () => {
 
             const token = loginResponse.body.data.token;
 
-            const response = await request(app)
-                .delete(`/api/notifications/delete/${id}`)
-                .set('Authorization', `Bearer ${token}`);
+            const response = endpoint === 'delete'
+                ? await request(app)
+                    .delete(`/api/notifications/delete/${id}`)
+                    .set('Authorization', `Bearer ${token}`)
+                : await request(app)
+                    .post('/api/notifications/mark-read')
+                    .set('Authorization', `Bearer ${token}`)
+                    .send({ notification_id: id });
 
             expect(response.status).toBe(expectedStatus);
             expect(response.body.message).toContain(message);
         });
-
-        test('Verify Invalid notification_id in mark-read (HTTP 400): POST /mark-read with invalid ID returns 400', async () => {
-            const password = 'Password123!';
-            const user = await insertUserWithCredentials({ password, role: 'CUSTOMER' });
-
-            const loginResponse = await request(app)
-                .post('/api/user/login')
-                .send({ email: user.email, password });
-
-            const token = loginResponse.body.data.token;
-
-            const response = await request(app)
-                .post('/api/notifications/mark-read')
-                .set('Authorization', `Bearer ${token}`)
-                .send({ notification_id: 'invalid' });
-
-            expect(response.status).toBe(400);
-            expect(response.body.message).toContain('Invalid');
-        });
     });
 
     describe('Data Integrity & UI Logic', () => {
-        test('Verify Read Status Persistence: Mark notification as read, then GET /inbox shows isRead: true', async () => {
+        test('Verify Read Status Persistence and Unread Count: Mark notification as read shows READ status, and mark-all-read sets unread count to 0', async () => {
             const password = 'Password123!';
             const user = await insertUserWithCredentials({ password, role: 'CUSTOMER' });
 
-            const notificationId = await createNotification(user.user_id, {
-                type_code: 'BOOKING_CREATED',
-                status: 'UNREAD'
-            });
+            const [notificationId] = await Promise.all([
+                createNotification(user.user_id, { type_code: 'BOOKING_CREATED', status: 'UNREAD' }),
+                createNotification(user.user_id, { status: 'UNREAD' }),
+                createNotification(user.user_id, { status: 'UNREAD' }),
+                createNotification(user.user_id, { status: 'UNREAD' })
+            ]);
 
             const loginResponse = await request(app)
                 .post('/api/user/login')
@@ -311,28 +300,7 @@ describe('NC 1.1: Notifications & Reminders', () => {
             );
             expect(notification).toBeDefined();
             expect(notification.status).toBe('READ');
-        });
-
-        test('Verify "Unread Count": POST /mark-all-read sets unread count to 0', async () => {
-            const password = 'Password123!';
-            const user = await insertUserWithCredentials({ password, role: 'CUSTOMER' });
-
-            await createNotification(user.user_id, { status: 'UNREAD' });
-            await createNotification(user.user_id, { status: 'UNREAD' });
-            await createNotification(user.user_id, { status: 'UNREAD' });
-
-            const loginResponse = await request(app)
-                .post('/api/user/login')
-                .send({ email: user.email, password });
-
-            const token = loginResponse.body.data.token;
-
-            const initialInboxResponse = await request(app)
-                .get('/api/notifications/inbox')
-                .set('Authorization', `Bearer ${token}`);
-
-            const initialUnreadCount = initialInboxResponse.body.data.unread_count;
-            expect(initialUnreadCount).toBeGreaterThan(0);
+            expect(inboxResponse.body.data.unread_count).toBeGreaterThan(0);
 
             const markAllReadResponse = await request(app)
                 .post('/api/notifications/mark-all-read')
@@ -436,7 +404,6 @@ const previewPromoCodeViaAPI = async (token, payload) => {
 };
 
 const {
-    loginUser,
     setupPaymentEnvironment,
     processPaymentViaAPI
 } = require('./helpers/paymentTestUtils');
@@ -461,7 +428,7 @@ describe('NC 1.21 - Receive & Use Promotional Offers', () => {
             const futureDate = DateTime.utc().plus({ days: 1 });
             await createBooking(salonId, customer.user_id, futureDate, futureDate.plus({ hours: 1 }), 'COMPLETED');
 
-            const ownerToken = await loginUser(owner.email, password);
+            const ownerToken = generateTestToken(owner);
 
             const response = await request(app)
                 .post(`/api/promotions/salons/${salonId}/sendPromoToCustomer`)
@@ -493,7 +460,7 @@ describe('NC 1.21 - Receive & Use Promotional Offers', () => {
             await createUserPromotion(customer.user_id, salonId, 'SAVE20', 20, { status: 'ISSUED' });
             await createUserPromotion(customer.user_id, salonId, 'SAVE30', 30, { status: 'REDEEMED' });
 
-            const customerToken = await loginUser(customer.email, password);
+            const customerToken = generateTestToken(customer);
 
             const response = await getUserPromotionsViaAPI(customerToken);
 
@@ -551,7 +518,7 @@ describe('NC 1.21 - Receive & Use Promotional Offers', () => {
             const expiredDate = DateTime.utc().minus({ days: 1 });
             await createUserPromotion(customer.user_id, salonId, 'EXPIRED25', 25, { expires_at: expiredDate });
 
-            const customerToken = await loginUser(customer.email, password);
+            const customerToken = generateTestToken(customer);
 
             const response = await previewPromoCodeViaAPI(customerToken, {
                 promo_code: 'EXPIRED25',
@@ -575,7 +542,7 @@ describe('NC 1.21 - Receive & Use Promotional Offers', () => {
 
             await createUserPromotion(customer.user_id, salonId, 'USED30', 30, { status: 'REDEEMED' });
 
-            const customerToken = await loginUser(customer.email, password);
+            const customerToken = generateTestToken(customer);
 
             const response = await previewPromoCodeViaAPI(customerToken, {
                 promo_code: 'USED30',
@@ -598,7 +565,7 @@ describe('NC 1.21 - Receive & Use Promotional Offers', () => {
             await createUserPromotion(customer.user_id, salonId, 'REDEEMED20', 20, { status: 'REDEEMED' });
             await createUserPromotion(customer.user_id, salonId, 'EXPIRED30', 30, { status: 'EXPIRED' });
 
-            const customerToken = await loginUser(customer.email, password);
+            const customerToken = generateTestToken(customer);
 
             const response = await getUserPromotionsViaAPI(customerToken);
 
@@ -619,7 +586,7 @@ describe('NC 1.21 - Receive & Use Promotional Offers', () => {
             const salonId = await createSalon(owner.user_id);
             await createUserPromotion(customerA.user_id, salonId, 'CUSTOMERA50', 50);
 
-            const customerBToken = await loginUser(customerB.email, password);
+            const customerBToken = generateTestToken(customerB);
 
             const response = await getUserPromotionsViaAPI(customerBToken);
 
@@ -627,6 +594,262 @@ describe('NC 1.21 - Receive & Use Promotional Offers', () => {
             const customerAPromo = response.body.data.find(p => p.promo_code === 'CUSTOMERA50');
             expect(customerAPromo).toBeUndefined();
         });
+    });
+});
+
+// NC 1.1 - Notification Filtering & Pagination Branching Tests
+describe('NC 1.1 - Notification Filtering & Pagination Branching', () => {
+    beforeEach(() => {
+        jest.spyOn(notificationsController, 'createNotification').mockResolvedValue({
+            success: true,
+            notification_id: 1
+        });
+    });
+
+    test.each([
+        {
+            filter: 'bookings',
+            expectedTypes: ['BOOKING_CREATED', 'BOOKING_RESCHEDULED', 'BOOKING_CANCELED', 'PHOTO_UPLOADED', 'MANUAL_REMINDER'],
+            notifications: [
+                { type_code: 'BOOKING_CREATED', message: 'Booking created' },
+                { type_code: 'BOOKING_RESCHEDULED', message: 'Booking rescheduled' },
+                { type_code: 'PRODUCT_ADDED', message: 'Product added' },
+                { type_code: 'REVIEW_CREATED', message: 'Review created' }
+            ]
+        },
+        {
+            filter: 'products',
+            expectedTypes: ['PRODUCT_ADDED', 'PRODUCT_DELETED', 'PRODUCT_RESTOCKED', 'PRODUCT_PURCHASED'],
+            notifications: [
+                { type_code: 'PRODUCT_ADDED', message: 'Product added' },
+                { type_code: 'PRODUCT_DELETED', message: 'Product deleted' },
+                { type_code: 'PRODUCT_RESTOCKED', message: 'Product restocked' },
+                { type_code: 'BOOKING_CREATED', message: 'Booking created' }
+            ]
+        },
+        {
+            filter: 'reviews',
+            expectedTypes: ['REVIEW_CREATED', 'REVIEW_UPDATED', 'REVIEW_DELETED', 'REVIEW_REPLY_CREATED', 'REVIEW_REPLY_UPDATED', 'REVIEW_REPLY_DELETED'],
+            notifications: [
+                { type_code: 'REVIEW_CREATED', message: 'Review created' },
+                { type_code: 'REVIEW_UPDATED', message: 'Review updated' },
+                { type_code: 'REVIEW_REPLY_CREATED', message: 'Reply created' },
+                { type_code: 'BOOKING_CREATED', message: 'Booking created' }
+            ]
+        },
+        {
+            filter: 'rewards',
+            expectedTypes: ['PROMO_REDEEMED', 'LOYALTY_REWARD_REDEEMED', 'UNUSED_OFFERS_REMINDER'],
+            notifications: [
+                { type_code: 'PROMO_REDEEMED', message: 'Promo redeemed' },
+                { type_code: 'LOYALTY_REWARD_REDEEMED', message: 'Reward redeemed' },
+                { type_code: 'UNUSED_OFFERS_REMINDER', message: 'Unused offers' },
+                { type_code: 'BOOKING_CREATED', message: 'Booking created' }
+            ]
+        },
+        {
+            filter: 'all',
+            expectedTypes: null,
+            notifications: [
+                { type_code: 'BOOKING_CREATED', message: 'Booking created' },
+                { type_code: 'PRODUCT_ADDED', message: 'Product added' },
+                { type_code: 'REVIEW_CREATED', message: 'Review created' },
+                { type_code: 'PROMO_REDEEMED', message: 'Promo redeemed' }
+            ],
+            minCount: 4
+        },
+        {
+            filter: 'invalid',
+            expectedTypes: null,
+            notifications: [{ type_code: 'BOOKING_CREATED', message: 'Booking created' }],
+            defaultsToAll: true
+        }
+    ])('Verify Filter $filter: GET /api/notifications/inbox?filter=$filter returns filtered notifications', async ({ filter, expectedTypes, notifications, minCount, defaultsToAll }) => {
+        const password = 'Password123!';
+        const user = await insertUserWithCredentials({ password, role: filter === 'products' || filter === 'reviews' ? 'OWNER' : 'CUSTOMER' });
+
+        await Promise.all(notifications.map(n => createNotification(user.user_id, n)));
+
+        const loginResponse = await request(app)
+            .post('/api/user/login')
+            .send({ email: user.email, password });
+
+        const token = loginResponse.body.data.token;
+
+        const response = await request(app)
+            .get(`/api/notifications/inbox?filter=${filter}`)
+            .set('Authorization', `Bearer ${token}`);
+
+        expect(response.status).toBe(200);
+        const resultNotifications = response.body.data.notifications;
+        
+        if (defaultsToAll) {
+            expect(response.body.data.filter.active).toBe('all');
+        } else if (expectedTypes) {
+            expect(resultNotifications.length).toBeGreaterThan(0);
+            resultNotifications.forEach(notif => {
+                expect(expectedTypes).toContain(notif.type_code);
+            });
+        } else if (minCount) {
+            expect(resultNotifications.length).toBeGreaterThanOrEqual(minCount);
+        }
+    });
+
+    test('Verify Pagination: GET /api/notifications/inbox with pagination returns correct pages, limits, and has_more flag', async () => {
+        const password = 'Password123!';
+        const user = await insertUserWithCredentials({ password, role: 'CUSTOMER' });
+
+        await Promise.all([
+            ...Array.from({ length: 20 }, (_, i) => createNotification(user.user_id, {
+                type_code: 'BOOKING_CREATED',
+                message: `Notification ${i + 1}`,
+                created_at: toMySQLUtc(DateTime.utc().minus({ minutes: 20 - i }))
+            }))
+        ]);
+
+        const loginResponse = await request(app)
+            .post('/api/user/login')
+            .send({ email: user.email, password });
+
+        const token = loginResponse.body.data.token;
+
+        const [page1Response, page2Response, limitMaxResponse, limitMinResponse, hasMoreResponse] = await Promise.all([
+            request(app).get('/api/notifications/inbox?page=1&limit=5').set('Authorization', `Bearer ${token}`),
+            request(app).get('/api/notifications/inbox?page=2&limit=5').set('Authorization', `Bearer ${token}`),
+            request(app).get('/api/notifications/inbox?limit=100').set('Authorization', `Bearer ${token}`),
+            request(app).get('/api/notifications/inbox?limit=0').set('Authorization', `Bearer ${token}`),
+            request(app).get('/api/notifications/inbox?page=1&limit=10').set('Authorization', `Bearer ${token}`)
+        ]);
+
+        expect(page1Response.status).toBe(200);
+        expect(page1Response.body.data.pagination.page).toBe(1);
+        expect(page1Response.body.data.pagination.limit).toBe(5);
+        expect(page1Response.body.data.notifications.length).toBeLessThanOrEqual(5);
+
+        expect(page2Response.status).toBe(200);
+        expect(page2Response.body.data.pagination.page).toBe(2);
+        const page1Ids = page1Response.body.data.notifications.map(n => n.notification_id);
+        const page2Ids = page2Response.body.data.notifications.map(n => n.notification_id);
+        page2Ids.forEach(id => expect(page1Ids).not.toContain(id));
+
+        expect(limitMaxResponse.body.data.pagination.limit).toBeLessThanOrEqual(20);
+        expect(limitMinResponse.body.data.pagination.limit).toBeGreaterThanOrEqual(1);
+        
+        if (hasMoreResponse.body.data.pagination.total > 10) {
+            expect(hasMoreResponse.body.data.pagination.has_more).toBe(true);
+        }
+    });
+
+    test('Verify Mark as Read: handles read/unread notifications and updates unread count', async () => {
+        const password = 'Password123!';
+        const user = await insertUserWithCredentials({ password, role: 'CUSTOMER' });
+
+        const [readNotificationId, unreadNotificationId] = await Promise.all([
+            createNotification(user.user_id, { type_code: 'BOOKING_CREATED', status: 'READ' }),
+            createNotification(user.user_id, { type_code: 'BOOKING_CREATED', status: 'UNREAD' }),
+            createNotification(user.user_id, { type_code: 'BOOKING_CREATED', status: 'UNREAD' }),
+            createNotification(user.user_id, { type_code: 'BOOKING_CREATED', status: 'UNREAD' })
+        ]);
+
+        const loginResponse = await request(app)
+            .post('/api/user/login')
+            .send({ email: user.email, password });
+
+        const token = loginResponse.body.data.token;
+
+        const [readResponse, beforeResponse] = await Promise.all([
+            request(app)
+                .post('/api/notifications/mark-read')
+                .set('Authorization', `Bearer ${token}`)
+                .send({ notification_id: readNotificationId }),
+            request(app)
+                .get('/api/notifications/inbox')
+                .set('Authorization', `Bearer ${token}`)
+        ]);
+
+        expect(readResponse.status).toBe(404);
+        expect(readResponse.body.message).toContain('already read');
+        
+        const initialUnreadCount = beforeResponse.body.data.unread_count;
+        expect(initialUnreadCount).toBeGreaterThanOrEqual(3);
+
+        const unreadResponse = await request(app)
+            .post('/api/notifications/mark-read')
+            .set('Authorization', `Bearer ${token}`)
+            .send({ notification_id: unreadNotificationId });
+
+        expect(unreadResponse.status).toBe(200);
+        expect(unreadResponse.body.message).toContain('marked as read');
+
+        const afterResponse = await request(app)
+            .get('/api/notifications/inbox')
+            .set('Authorization', `Bearer ${token}`);
+
+        expect(afterResponse.body.data.unread_count).toBe(initialUnreadCount - 1);
+    });
+
+    test('Verify Delete All Notifications: DELETE /api/notifications/delete-all removes all notifications', async () => {
+        const password = 'Password123!';
+        const user = await insertUserWithCredentials({ password, role: 'CUSTOMER' });
+
+        await Promise.all(Array.from({ length: 5 }, (_, i) =>
+            createNotification(user.user_id, {
+                type_code: 'BOOKING_CREATED',
+                message: `Notification ${i + 1}`
+            })
+        ));
+
+        const loginResponse = await request(app)
+            .post('/api/user/login')
+            .send({ email: user.email, password });
+
+        const token = loginResponse.body.data.token;
+
+        const beforeResponse = await request(app)
+            .get('/api/notifications/inbox')
+            .set('Authorization', `Bearer ${token}`);
+
+        expect(beforeResponse.body.data.notifications.length).toBeGreaterThan(0);
+
+        const deleteResponse = await request(app)
+            .delete('/api/notifications/delete-all')
+            .set('Authorization', `Bearer ${token}`);
+
+        expect(deleteResponse.status).toBe(200);
+
+        const afterResponse = await request(app)
+            .get('/api/notifications/inbox')
+            .set('Authorization', `Bearer ${token}`);
+
+        expect(afterResponse.body.data.notifications.length).toBe(0);
+        expect(afterResponse.body.data.unread_count).toBe(0);
+    });
+
+    test.each([
+        { scenario: 'owner with salon and promotions', hasSalon: true, hasPromotions: true, expectedStatus: 200 },
+        { scenario: 'non-owner', hasSalon: false, hasPromotions: false, expectedStatus: 403, role: 'CUSTOMER' },
+        { scenario: 'owner without salon', hasSalon: false, hasPromotions: false, expectedStatus: 404, role: 'OWNER' }
+    ])('Verify Owner Unused Offers: $scenario returns $expectedStatus', async ({ hasSalon, hasPromotions, expectedStatus, role = 'OWNER' }) => {
+        const password = 'Password123!';
+        const user = await insertUserWithCredentials({ password, role });
+        const userToken = generateTestToken(user);
+
+        if (hasSalon) {
+            const salonId = await createSalon(user.user_id);
+            if (hasPromotions) {
+                const customer = await insertUserWithCredentials({ password, role: 'CUSTOMER' });
+                await createUserPromotion(customer.user_id, salonId, 'UNUSED50', 50, {
+                    status: 'ISSUED',
+                    expires_at: DateTime.utc().plus({ days: 7 })
+                });
+            }
+        }
+
+        const response = await request(app)
+            .post('/api/notifications/owner/send-unused-offers')
+            .set('Authorization', `Bearer ${userToken}`);
+
+        expect(response.status).toBe(expectedStatus);
     });
 });
 

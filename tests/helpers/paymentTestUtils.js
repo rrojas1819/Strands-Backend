@@ -3,18 +3,20 @@ const app = require('../../src/app');
 const connection = require('../../src/config/databaseConnection');
 const { DateTime } = require('luxon');
 const { toMySQLUtc } = require('../../src/utils/utilies');
-const { insertUserWithCredentials } = require('./authTestUtils');
+const { insertUserWithCredentials, generateTestToken } = require('./authTestUtils');
 
 const db = connection.promise();
 
 const DEFAULT_PASSWORD = 'Password123!';
 
 const loginUser = async (email, password) => {
-    const loginResponse = await request(app)
-        .post('/api/user/login')
-        .send({ email, password });
-    expect(loginResponse.status).toBe(200);
-    return loginResponse.body.data.token;
+    const [rows] = await db.execute('SELECT user_id, role, email FROM users WHERE email = ?', [email]);
+    
+    if (rows.length === 0) {
+        throw new Error(`User not found for test login: ${email}`);
+    }
+    
+    return generateTestToken(rows[0]);
 };
 
 const createBillingAddressViaAPI = async (token, options = {}) => {
@@ -124,7 +126,7 @@ const createBookingService = async (bookingId, serviceId, employeeId = null, pri
 const setupCustomerWithPaymentMethod = async (options = {}) => {
     const password = options.password || DEFAULT_PASSWORD;
     const customer = await insertUserWithCredentials({ password, role: 'CUSTOMER' });
-    const customerToken = await loginUser(customer.email, password);
+    const customerToken = generateTestToken(customer);
     
     await createBillingAddressViaAPI(customerToken, options.billingAddressOptions);
     const billingAddressResponse = await getBillingAddressViaAPI(customerToken);
@@ -162,7 +164,7 @@ const setupPaymentEnvironment = async (options = {}) => {
     );
     await createBookingService(bookingId, serviceId, null, options.servicePrice || 50.00);
     
-    const customerToken = await loginUser(customer.email, password);
+    const customerToken = generateTestToken(customer);
     
     await createBillingAddressViaAPI(customerToken);
     const billingAddressResponse = await getBillingAddressViaAPI(customerToken);

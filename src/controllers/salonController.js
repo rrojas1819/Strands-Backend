@@ -150,7 +150,9 @@ exports.createSalon = async (req, res) => {
         });
       }
     } catch (notifError) {
-      console.error('Failed to send salon registration notification to admins:', notifError);
+      if (process.env.NODE_ENV !== 'test') {
+        console.log('Failed to send salon registration notification to admins:', notifError);
+      }
     }
 
     //now we wait for an admin to verify it
@@ -158,7 +160,9 @@ exports.createSalon = async (req, res) => {
       message: 'Salon registered (pending verification)', data: rows[0]
     });
   } catch (err) {
-    console.error('createSalon error:', err);
+    if (process.env.NODE_ENV !== 'test') {
+      console.log('createSalon error:', err);
+    }
     return res.status(500).json({ message: 'Internal server error' });
   }
 };
