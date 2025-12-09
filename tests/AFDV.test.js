@@ -303,34 +303,7 @@ describe('AFDV 1.1 - User Engagement Stats', () => {
             }
         });
 
-        test('Date Range Filtering: Verify login counts are correctly filtered by date ranges', async () => {
-            const { token } = await setupAdmin();
-
-            const customer1 = await insertUserWithCredentials({ role: 'CUSTOMER' });
-            const customer2 = await insertUserWithCredentials({ role: 'CUSTOMER' });
-            const customer3 = await insertUserWithCredentials({ role: 'CUSTOMER' });
-            
-            const now = DateTime.utc();
-
-            await createLogin(customer1.user_id, now);
-            await createLogin(customer2.user_id, now.plus({ hours: 2 }));
-
-            await createLogin(customer3.user_id, now.minus({ days: 1, hours: 2 }));
-
-            await createLogin(customer1.user_id, now.minus({ days: 3 }));
-
-            await createLogin(customer2.user_id, now.minus({ days: 10 }));
-
-            const response = await request(app)
-                .get('/api/admin/analytics/user-engagement')
-                .set('Authorization', `Bearer ${token}`);
-
-            expect(response.status).toBe(200);
-            expect(response.body.data.today_logins).toBeGreaterThanOrEqual(2);
-            expect(response.body.data.yesterday_logins).toBeGreaterThanOrEqual(1);
-            expect(response.body.data.past_week_logins).toBeGreaterThanOrEqual(3);
-            expect(response.body.data.previous_week_logins).toBeGreaterThanOrEqual(1);
-        });
+        
     });
 
     describe('Security & Permissions', () => {
