@@ -2,6 +2,8 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const dotenv = require('dotenv');
+const swaggerUi = require('swagger-ui-express');
+const swaggerSpec = require('./config/swagger');
 
 // Load environment variables as early as possible
 const envPath = process.env.NODE_ENV === 'test'
@@ -40,6 +42,9 @@ const app = express();
 
 app.use(cors());
 app.use(express.json());
+
+// Swagger API documentation
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
 const shouldRunBackgroundJobs = process.env.NODE_ENV !== 'test';
 
