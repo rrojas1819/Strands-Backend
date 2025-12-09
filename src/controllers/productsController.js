@@ -654,10 +654,27 @@ exports.viewUserOrders = async (req, res) => {
     const { salon_id, limit, offset } = req.body;
     const owner_user_id = req.user?.user_id;
 
-    let salon_filter = salon_id ? `AND o.salon_id = ${salon_id}` : '';
-
-    if (!limit || isNaN(offset) ) {
+    // Validate required fields
+    if (limit === undefined || limit === null || offset === undefined || offset === null) {
       return res.status(400).json({ message: 'Invalid fields.' });
+    }
+
+    // Convert to numbers and validate
+    const limitNum = Number(limit);
+    const offsetNum = Number(offset);
+    
+    if (!Number.isFinite(limitNum) || !Number.isFinite(offsetNum) || limitNum <= 0 || offsetNum < 0) {
+      return res.status(400).json({ message: 'Invalid fields.' });
+    }
+
+    const countParams = [owner_user_id];
+    let salon_filter = '';
+    if (salon_id !== undefined && salon_id !== null) {
+      const salonIdNum = Number(salon_id);
+      if (Number.isFinite(salonIdNum) && salonIdNum > 0) {
+        salon_filter = 'AND o.salon_id = ?';
+        countParams.push(salonIdNum);
+      }
     }
     
     const countQuery = 
@@ -666,7 +683,7 @@ exports.viewUserOrders = async (req, res) => {
     WHERE user_id = ? ${salon_filter}
     `;
 
-    const [countResult] = await db.execute(countQuery, [owner_user_id]);
+    const [countResult] = await db.execute(countQuery, countParams);
 
     const total = countResult[0]?.total || 0;
 
@@ -676,8 +693,13 @@ exports.viewUserOrders = async (req, res) => {
       });
     }
 
-    const limitInt = Math.max(0, Number.isFinite(Number(limit)) ? Number(limit) : 10);
-    const offsetInt = Math.max(0, Number.isFinite(Number(offset)) ? Number(offset) : 0);
+    const limitInt = Math.max(0, limitNum);
+    const offsetInt = Math.max(0, offsetNum);
+
+    const viewUserOrdersQueryParams = [owner_user_id];
+    if (salon_filter) {
+      viewUserOrdersQueryParams.push(Number(salon_id));
+    }
 
     const viewUserOrdersQuery = `
     SELECT s.name as salon_name, o.order_code, o.subtotal as subtotal_order_price, o.tax as order_tax, o.tax + o.subtotal as total_order_price, oi.purchase_price, oi.quantity, p.name, p.description, p.sku, p.price as listed_price, p.category, o.created_at as ordered_date
@@ -686,9 +708,10 @@ exports.viewUserOrders = async (req, res) => {
     JOIN products p ON oi.product_id = p.product_id
     JOIN salons s ON o.salon_id = s.salon_id
     WHERE o.user_id = ? ${salon_filter}
-    LIMIT ${limitInt} OFFSET ${offsetInt}`;
+    LIMIT ? OFFSET ?`;
 
-    const [ordersResults] = await db.execute(viewUserOrdersQuery, [owner_user_id]);
+    viewUserOrdersQueryParams.push(limitInt, offsetInt);
+    const [ordersResults] = await db.execute(viewUserOrdersQuery, viewUserOrdersQueryParams);
 
     if (ordersResults.length === 0) {
       return res.status(404).json({ message: 'No orders found' });
@@ -696,10 +719,10 @@ exports.viewUserOrders = async (req, res) => {
 
     console.log(ordersResults);
     
-    const totalPages = Math.ceil(total / limit);
-    const currentPage = Math.floor(offset / limit) + 1;
-    const hasNextPage = offset + ordersResults.length < total;
-    const hasPrevPage = offset > 0;
+    const totalPages = limitInt > 0 ? Math.ceil(total / limitInt) : 0;
+    const currentPage = limitInt > 0 ? Math.floor(offsetInt / limitInt) + 1 : 1;
+    const hasNextPage = offsetInt + ordersResults.length < total;
+    const hasPrevPage = offsetInt > 0;
 
     return res.status(200).json({
       orders: ordersResults,
@@ -707,16 +730,17 @@ exports.viewUserOrders = async (req, res) => {
         current_page: currentPage,
         total_pages: totalPages,
         total_orders: total,
-        limit: limit,
-        offset: offset,
+        limit: limitInt,
+        offset: offsetInt,
         has_next_page: hasNextPage,
         has_prev_page: hasPrevPage
       }
     });
 
   } catch (err) {
-    if (process.env.NODE_ENV !== 'test') {
-    console.error('viewPastOrders error:', err);
+    console.error('viewUserOrders error:', err);
+    if (err.message && (err.message.includes('Invalid') || err.message.includes('Missing'))) {
+      return res.status(400).json({ message: 'Invalid fields.' });
     }
     return res.status(500).json({ message: 'Internal server error' });
   }
