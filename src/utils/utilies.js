@@ -476,7 +476,7 @@ function startExpirePromoCodes(connection) {
                 [nowUtc]
             );
 
-            if (result.affectedRows > 0) {
+            if (result.affectedRows > 0 && process.env.NODE_ENV !== 'test') {
                 console.log(`Expired ${result.affectedRows} promo code(s) at ${now.toISO()}`);
             }
         } catch (error) {
@@ -571,7 +571,7 @@ function startTempCreditCardCleanup(connection) {
                     cardsToDelete
                 );
 
-                if (deleteResult.affectedRows > 0) {
+                if (deleteResult.affectedRows > 0 && process.env.NODE_ENV !== 'test') {
                     console.log(`Deleted ${deleteResult.affectedRows} temporary credit card(s) at ${now.toISO()}`);
                 }
             }

@@ -212,13 +212,15 @@ exports.salonRevenueAnalytics = async (req, res) => {
     try {
         const perSalonRevenueAnalyticsQuery = 
         `SELECT 
+        s.salon_id,
         s.name AS salon_name,
-        SUM(CASE WHEN p.status = 'SUCCEEDED' THEN p.amount ELSE 0 END) AS salon_revenue,
+        SUM(CASE WHEN p.status = 'SUCCEEDED' AND (p.order_id IS NOT NULL OR b.status = 'COMPLETED') THEN p.amount ELSE 0 END) AS salon_revenue,
         SUM(CASE WHEN p.status = 'REFUNDED' THEN p.amount ELSE 0 END) AS refunded_amount
         FROM payments p
         LEFT JOIN orders o ON p.order_id = o.order_id
         LEFT JOIN bookings b ON p.booking_id = b.booking_id
         LEFT JOIN salons s ON s.salon_id = COALESCE(o.salon_id, b.salon_id)
+        WHERE s.salon_id IS NOT NULL
         GROUP BY s.salon_id, s.name;`;
         const [perSalonRevenueAnalytics] = await db.execute(perSalonRevenueAnalyticsQuery);
 
