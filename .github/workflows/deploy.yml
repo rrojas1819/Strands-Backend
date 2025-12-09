@@ -8,7 +8,6 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
 
-    # 1. Start a fresh, empty MySQL database for testing
     services:
       mysql:
         image: mysql:8.0
@@ -30,22 +29,18 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      # 2. Load your schema into the empty Service Container
       - name: Initialize Database Schema
         run: |
-          # Wait for MySQL to be ready (just in case)
           until mysqladmin ping -h 127.0.0.1 -P 3306 --user=root --password=root --silent; do
             echo "Waiting for MySQL..."
             sleep 1
           done
 
-          # Run the schema file to create tables
           mysql -h 127.0.0.1 -P 3306 -u root -proot localTest < schema.sql
         env:
           # The mysql client is pre-installed on ubuntu-latest runners
-          MYSQL_PWD: root 
+          MYSQL_PWD: root
 
-      # 3. Run Tests against the Service Container
       - name: Run unit tests
         env:
           # Database Config (Points to Service Container)
@@ -57,7 +52,6 @@ jobs:
           NODE_ENV: test
           TEST_VERBOSE: '1' # Show full logs if tests fail
 
-          # Application Secrets from GitHub Actions
           APP_PORT: ${{ secrets.PORT }}
           UTC_DEBUG: ${{ secrets.UTC_DEBUG }}
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
@@ -71,8 +65,8 @@ jobs:
           AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
           AWS_S3_DEFAULT_PREFIX: ${{ secrets.AWS_S3_DEFAULT_PREFIX }}
           UPLOAD_MAX_BYTES: ${{ secrets.UPLOAD_MAX_BYTES }}
-        
-        run: npm test --coverage 
+
+        run: npm test --coverage
 
       - name: Build project
         run: npm run build --if-present
@@ -86,7 +80,7 @@ jobs:
           source: "./"
           target: "/home/ubuntu/Strands-Backend"
           rm: true
-          
+
       - name: Restart PM2 on EC2
         uses: appleboy/ssh-action@v0.1.7
         with:
@@ -95,11 +89,9 @@ jobs:
           key: ${{ secrets.EC2_KEY }}
           script: |
             cd /home/ubuntu/Strands-Backend
-            
-            # 1. Install dependencies
+
             npm install --production
-            
-            # 2. Generate the Config File
+
             PM2_CONFIG=$(cat <<EOF
             {
               "apps": [
@@ -107,7 +99,7 @@ jobs:
                   "name": "strands-backend",
                   "script": "./src/server.js",
                   "env": {
-                    "NODE_ENV": "production", 
+                    "NODE_ENV": "production",
                     "APP_PORT": "${{ secrets.PORT }}",
                     "UTC_DEBUG": "${{ secrets.UTC_DEBUG }}",
                     "DB_HOST": "${{ secrets.DB_HOST }}",
@@ -127,6 +119,22 @@ jobs:
                     "AWS_S3_DEFAULT_PREFIX": "${{ secrets.AWS_S3_DEFAULT_PREFIX }}",
                     "UPLOAD_MAX_BYTES": "${{ secrets.UPLOAD_MAX_BYTES }}"
                   }
+                },
+                {
+                  "name": "strands-worker",
+                  "script": "./scripts/worker.js",
+                  "exec_mode": "fork",
+                  "instances": 1,
+                  "cron_restart": "* * * * *",
+                  "autorestart": false,
+                  "env": {
+                    "NODE_ENV": "production",
+                    "DB_HOST": "${{ secrets.DB_HOST }}",
+                    "DB_USER": "${{ secrets.DB_USER }}",
+                    "DB_PASSWORD": "${{ secrets.DB_PASSWORD }}",
+                    "DB_NAME": "${{ secrets.DB_NAME }}",
+                    "DB_PORT": "${{ secrets.DB_PORT }}"
+                  }
                 }
               ]
             }
@@ -134,12 +142,11 @@ jobs:
             )
 
             echo "$PM2_CONFIG" > pm2_temp_config.json
-            
-            # 3. CRITICAL FIX: Kill the old process first to free up RAM/DB Connections
+
             pm2 delete strands-backend || true
-            
-            # 4. Start fresh
+            pm2 delete strands-worker || true
+
             pm2 start pm2_temp_config.json
             pm2 save
-            
+
             rm pm2_temp_config.json
