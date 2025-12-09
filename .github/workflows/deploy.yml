@@ -36,7 +36,7 @@ jobs:
           AWS_S3_DEFAULT_PREFIX: ${{ secrets.AWS_S3_DEFAULT_PREFIX }}
           UPLOAD_MAX_BYTES: ${{ secrets.UPLOAD_MAX_BYTES }}
             
-        run: npm test --runInBand
+        run: cross-env NODE_ENV=test jest --coverage 
 
       - name: Build project
         run: npm run build --if-present
