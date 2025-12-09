@@ -8,6 +8,21 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
 
+    # 1. Add MySQL Service Container for isolated testing
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: localTest
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=3
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v3
@@ -17,13 +32,18 @@ jobs:
 
       - name: Run unit tests
         env:
+          # 2. Configure Tests to use the Service Container (Localhost inside Action)
+          DB_HOST: 127.0.0.1
+          DB_USER: root
+          DB_PASSWORD: root
+          DB_NAME: localTest
+          DB_PORT: 3306
+          NODE_ENV: test
+          TEST_VERBOSE: '1' # Shows error logs if tests fail
+
+          # Secrets required for app logic
           APP_PORT: ${{ secrets.PORT }}
           UTC_DEBUG: ${{ secrets.UTC_DEBUG }}
-          DB_HOST: ${{ secrets.DB_HOST }}
-          DB_USER: ${{ secrets.DB_USER }}
-          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
-          DB_NAME: ${{ secrets.DB_NAME_TEST }}
-          DB_PORT: ${{ secrets.DB_PORT }}
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
           BCRYPT_SALT: ${{ secrets.BCRYPT_SALT }}
           NOTIFICATION_ENCRYPTION_KEY: ${{ secrets.NOTIFICATION_ENCRYPTION_KEY }}
@@ -35,7 +55,7 @@ jobs:
           AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
           AWS_S3_DEFAULT_PREFIX: ${{ secrets.AWS_S3_DEFAULT_PREFIX }}
           UPLOAD_MAX_BYTES: ${{ secrets.UPLOAD_MAX_BYTES }}
-            
+        
         run: npm test --coverage 
 
       - name: Build project
@@ -100,4 +120,3 @@ jobs:
             pm2 save
             
             rm pm2_temp_config.json
-            
