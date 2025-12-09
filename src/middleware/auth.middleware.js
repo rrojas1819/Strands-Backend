@@ -21,7 +21,9 @@ const authenticateToken = (req, res, next) => {
         req.user = decoded;
         next();
     } catch (error) {
+        if (process.env.NODE_ENV !== 'test') {
         console.error('authenticateToken error:', error);
+        }
         return res.status(403).json({ error: 'Invalid or expired token' });
     }
 };

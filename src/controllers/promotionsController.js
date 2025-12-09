@@ -187,7 +187,9 @@ GROUP BY users.user_id, users.full_name`,
         }
     } catch (error) {
         const statusCode = error.statusCode || 500;
-        console.error('sendPromotionToCustomer error:', error);
+        if (!error.statusCode || statusCode >= 500) {
+            console.error('sendPromotionToCustomer error:', error);
+        }
         return res.status(statusCode).json({
             message: error.statusCode ? error.message : 'Internal server error'
         });
@@ -340,7 +342,9 @@ exports.issueLoyalCustomerPromotions = async (req, res) => {
         });
     } catch (error) {
         const statusCode = error.statusCode || 500;
-        console.error('issueLoyalCustomerPromotions error:', error);
+        if (!error.statusCode || statusCode >= 500) {
+            console.error('issueLoyalCustomerPromotions error:', error);
+        }
         return res.status(statusCode).json({
             message: error.statusCode ? error.message : 'Internal server error'
         });
@@ -454,12 +458,26 @@ exports.previewPromoCode = async (req, res) => {
         const promo = promoRows[0];
 
         if (promo.expires_at) {
-            const expiresAt = DateTime.fromSQL(promo.expires_at, { zone: 'utc' });
-            const now = DateTime.utc();
-            if (expiresAt < now) {
-                return res.status(400).json({
-                    message: 'This promo code has expired.'
-                });
+            let expiresAt;
+            if (promo.expires_at instanceof Date) {
+                expiresAt = DateTime.fromJSDate(promo.expires_at, { zone: 'utc' });
+            } else if (typeof promo.expires_at === 'string') {
+                const dateStr = promo.expires_at_formatted || promo.expires_at;
+                expiresAt = DateTime.fromSQL(dateStr, { zone: 'utc' });
+                if (!expiresAt.isValid) {
+                    expiresAt = DateTime.fromISO(dateStr);
+                }
+            } else {
+                expiresAt = DateTime.fromSQL(String(promo.expires_at), { zone: 'utc' });
+            }
+
+            if (expiresAt && expiresAt.isValid) {
+                const now = DateTime.utc();
+                if (expiresAt < now) {
+                    return res.status(400).json({
+                        message: 'This promo code has expired.'
+                    });
+                }
             }
         }
 
