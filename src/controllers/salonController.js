@@ -48,7 +48,10 @@ exports.checkOwnerHasSalon = async (req, res) => {
 
     const hasSalon = rows.length > 0;
     
-    return res.status(200).json({ hasSalon, status: rows[0].status });
+    return res.status(200).json({ 
+      hasSalon, 
+      status: hasSalon ? rows[0].status : null 
+    });
   } catch (err) {
     console.error('checkOwnerHasSalon error:', err);
     return res.status(500).json({ message: 'Internal server error' })
@@ -271,6 +274,8 @@ exports.browseSalons = async (req, res) => {
 
     //URL params
     let {status = 'all', sort = 'recent', category} = req.query;
+    // Normalize status to uppercase for comparison
+    status = status ? status.toUpperCase() : 'ALL';
     let limit = req.query.limit;
     let offset = req.query.offset;
 
@@ -300,7 +305,7 @@ exports.browseSalons = async (req, res) => {
 
     //admin can view all types of salons, PENDING, APPROVED, etc.
     if (isAdmin) {
-      if (status !== "ALL") {
+      if (status !== "ALL" && status !== "all") {
         where.push(`s.status = ?`);
         params.push(status);
       }
