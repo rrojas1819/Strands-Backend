@@ -86,7 +86,7 @@ jobs:
           source: "./"
           target: "/home/ubuntu/Strands-Backend"
           rm: true
-
+          
       - name: Restart PM2 on EC2
         uses: appleboy/ssh-action@v0.1.7
         with:
@@ -95,8 +95,11 @@ jobs:
           key: ${{ secrets.EC2_KEY }}
           script: |
             cd /home/ubuntu/Strands-Backend
+            
+            # 1. Install dependencies
             npm install --production
-                        
+            
+            # 2. Generate the Config File
             PM2_CONFIG=$(cat <<EOF
             {
               "apps": [
@@ -132,7 +135,11 @@ jobs:
 
             echo "$PM2_CONFIG" > pm2_temp_config.json
             
-            pm2 start pm2_temp_config.json --update-env --force
+            # 3. CRITICAL FIX: Kill the old process first to free up RAM/DB Connections
+            pm2 delete strands-backend || true
+            
+            # 4. Start fresh
+            pm2 start pm2_temp_config.json
             pm2 save
             
             rm pm2_temp_config.json
