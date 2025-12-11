@@ -140,14 +140,13 @@ describe('AFDV 1.1 - User Engagement Stats', () => {
             const customer3 = await insertUserWithCredentials({ role: 'CUSTOMER' });
             const owner = await insertUserWithCredentials({ role: 'OWNER' });
             
-            const now = DateTime.utc();
-            const salonId = await createSalon(owner.user_id);
+            const todayStart = DateTime.utc().startOf('day');
 
-            await createLogin(customer1.user_id, now);
-            await createLogin(customer2.user_id, now.plus({ hours: 1 }));
-            await createLogin(customer3.user_id, now.plus({ hours: 2 }));
-            await createLogin(customer1.user_id, now.plus({ hours: 3 }));
-            await createLogin(customer2.user_id, now.plus({ hours: 4 }));
+            await createLogin(customer1.user_id, todayStart.plus({ hours: 1 }));
+            await createLogin(customer2.user_id, todayStart.plus({ hours: 2 }));
+            await createLogin(customer3.user_id, todayStart.plus({ hours: 3 }));
+            await createLogin(customer1.user_id, todayStart.plus({ hours: 4 }));
+            await createLogin(customer2.user_id, todayStart.plus({ hours: 5 }));
 
             const response = await request(app)
                 .get('/api/admin/analytics/user-engagement')
@@ -186,12 +185,13 @@ describe('AFDV 1.1 - User Engagement Stats', () => {
         test('Calculation Verification: If there are 5 distinct users who logged in today, today_logins metric is at least 5', async () => {
             const { token } = await setupAdmin();
 
-            const now = DateTime.utc();
+            // Use start of today to ensure all logins are within the same calendar day
+            const todayStart = DateTime.utc().startOf('day');
             const users = [];
             for (let i = 0; i < 5; i++) {
                 const user = await insertUserWithCredentials({ role: 'CUSTOMER' });
                 users.push(user);
-                await createLogin(user.user_id, now.plus({ minutes: i }));
+                await createLogin(user.user_id, todayStart.plus({ hours: 1, minutes: i }));
             }
 
             const response = await request(app)
