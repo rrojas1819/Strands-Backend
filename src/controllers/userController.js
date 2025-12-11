@@ -41,7 +41,7 @@ exports.signUp = async (req, res) => {
         }
 
         // Validate role
-        const validRoles = ['ADMIN', 'OWNER', 'CUSTOMER', 'EMPLOYEE'];
+        const validRoles = ['OWNER', 'CUSTOMER', 'EMPLOYEE'];
         if (!validRoles.includes(role.toUpperCase())) {
             return res.status(400).json({
                 message: "Invalid role"
@@ -100,9 +100,6 @@ exports.signUp = async (req, res) => {
                     break;
                 case 'EMPLOYEE':
                     roleMessage = 'You can now log in and wait for a salon owner to add you to their team.';
-                    break;
-                case 'ADMIN':
-                    roleMessage = 'You can now log in and manage salon registrations and system settings.';
                     break;
                 default:
                     roleMessage = 'You can now log in to your account.';
