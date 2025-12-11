@@ -67,7 +67,7 @@ describe('UAR 1.1/ 1.2 login, signup, logout, authentication test', () => {
     });
 
     describe('POST /api/user/signup', () => {
-        test.each(ROLE_CASES)(
+        test.each(ROLE_CASES.filter(role => role !== 'ADMIN'))(
             'creates a %s when payload is valid',
             async (role) => {
                 const payload = baseSignupPayload({ role });
@@ -89,6 +89,19 @@ describe('UAR 1.1/ 1.2 login, signup, logout, authentication test', () => {
                 expect(users[0].role).toBe(role);
             }
         );
+
+        test('rejects ADMIN signup', async () => {
+            const payload = baseSignupPayload({ role: 'ADMIN' });
+
+            const response = await request(app)
+                .post('/api/user/signup')
+                .send(payload);
+
+            expect(response.status).toBe(400);
+            expect(response.body).toMatchObject({
+                message: expect.stringMatching(/admin|role|invalid/i)
+            });
+        });
 
         test('fails when required fields are missing', async () => {
             const requiredFields = ['full_name', 'email', 'role', 'password'];
@@ -244,6 +257,7 @@ describe('UAR 1.1/ 1.2 login, signup, logout, authentication test', () => {
                 { scenario: 'invalid email format', payload: { full_name: 'Test', email: 'invalid-email', role: 'CUSTOMER', password: 'Password123!' }, expectedStatus: 400 },
                 { scenario: 'password too short', payload: { full_name: 'Test', email: 'test4@test.com', role: 'CUSTOMER', password: 'Short' }, expectedStatus: 400 },
                 { scenario: 'invalid role', payload: { full_name: 'Test', email: 'test5@test.com', role: 'INVALID', password: 'Password123!' }, expectedStatus: 400 },
+                { scenario: 'ADMIN role signup', payload: { full_name: 'Test', email: 'test6@test.com', role: 'ADMIN', password: 'Password123!' }, expectedStatus: 400 },
                 { scenario: 'duplicate email', payload: { full_name: existing.full_name, email: existing.email, role: existing.role, password: 'Password123!' }, expectedStatus: 409 }
             ];
 
