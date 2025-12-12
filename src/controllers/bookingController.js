@@ -764,7 +764,7 @@ exports.cancelBookingAsStylist = async (req, res) => {
         await db.beginTransaction();
 
         const [empRows] = await db.execute(`SELECT e.employee_id, e.user_id FROM employees e 
-                                        WHERE e.user_id = ?`, [authUserId]
+                                        WHERE e.user_id = ? AND e.active = 1`, [authUserId]
         );
         if (!empRows.length) {
             await db.rollback();
