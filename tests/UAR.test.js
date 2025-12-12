@@ -1175,14 +1175,16 @@ describe('UAR 1.7 - Add/Remove/View Employees - Owner', () => {
                 message: `Employee ${employee.email} has been removed from salon.`
             });
 
+            // Check that employee is soft deleted (active = 0) but still exists in database
             const [employeeRows] = await db.execute(
-                `SELECT e.employee_id
+                `SELECT e.employee_id, e.active
                  FROM employees e
                  JOIN users u ON e.user_id = u.user_id
                  WHERE e.salon_id = ? AND u.email = ?`,
                 [salonId, employee.email]
             );
-            expect(employeeRows).toHaveLength(0);
+            expect(employeeRows).toHaveLength(1);
+            expect(employeeRows[0].active).toBe(0);
 
             const viewResponse = await request(app)
                 .post('/api/salons/viewEmployees')
