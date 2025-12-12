@@ -600,6 +600,55 @@ async function runTempCreditCardCleanup(connection) {
    }
 }
 
+// Cleanup job to delete pending bookings older than 5 minutes
+async function runPendingBookingCleanup(connection) {
+   try {
+       const db = connection.promise();
+       const fiveMinutesAgo = DateTime.utc().minus({ minutes: 5 });
+       const cutoffTime = toMySQLUtc(fiveMinutesAgo);
+
+       await db.beginTransaction();
+
+       try {
+           const [oldBookings] = await db.execute(
+               `SELECT booking_id 
+                FROM bookings 
+                WHERE status = 'PENDING' 
+                AND created_at < ?`,
+               [cutoffTime]
+           );
+
+           if (oldBookings.length === 0) {
+               await db.commit();
+               return;
+           }
+
+           const bookingIds = oldBookings.map(b => b.booking_id);
+           const placeholders = bookingIds.map(() => '?').join(',');
+
+           await db.execute(
+               `DELETE FROM booking_services 
+                WHERE booking_id IN (${placeholders})`,
+               bookingIds
+           );
+
+           await db.execute(
+               `DELETE FROM bookings 
+                WHERE booking_id IN (${placeholders}) 
+                AND status = 'PENDING'`,
+               bookingIds
+           );
+
+           await db.commit();
+       } catch (txErr) {
+           await db.rollback();
+           throw txErr;
+       }
+   } catch (error) {
+       console.error('Pending booking cleanup job failed:', error);
+   }
+}
+
 module.exports = {
    validateEmail,
    runTokenCleanup,
@@ -611,6 +660,7 @@ module.exports = {
    runUnusedOffersReminders,
    runExpirePromoCodes,
    runTempCreditCardCleanup,
+   runPendingBookingCleanup,
    logUtcDebug,
    localAvailabilityToUtc,
    utcToLocalDateString,
