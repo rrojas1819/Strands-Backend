@@ -17,7 +17,8 @@ const {
     runAppointmentReminders, 
     runUnusedOffersReminders, 
     runExpirePromoCodes, 
-    runTempCreditCardCleanup
+    runTempCreditCardCleanup,
+    runPendingBookingCleanup
 } = require('../src/utils/utilies'); 
 
 async function runScheduledJobs() {
@@ -28,6 +29,7 @@ async function runScheduledJobs() {
     
     jobPromises.push(runAppointmentReminders(db)); 
     jobPromises.push(runBookingsAutoComplete(db));
+    jobPromises.push(runPendingBookingCleanup(db));
     
     if (currentMinute % 2 === 0) {
         jobPromises.push(runLoyaltySeenUpdate(db));

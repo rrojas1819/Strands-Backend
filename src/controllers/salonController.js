@@ -2660,6 +2660,10 @@ exports.bookTimeSlot = async (req, res) => {
 
       await db.query('COMMIT');
 
+      const now = DateTime.utc();
+      const fiveMinutesFromNow = now.plus({ minutes: 5 });
+      const expiresAt = startDate < fiveMinutesFromNow ? startDate : fiveMinutesFromNow; 
+
       return res.status(201).json({
         message: 'Appointment booked successfully',
         data: {
@@ -2683,7 +2687,8 @@ exports.bookTimeSlot = async (req, res) => {
           })),
           total_price: totalPrice,
           notes,
-          created_at: DateTime.utc().toISO()
+          created_at: now.toISO(),
+          expires_at: expiresAt.toISO()
         }
       });
 
