@@ -221,7 +221,9 @@ exports.salonRevenueAnalytics = async (req, res) => {
         LEFT JOIN bookings b ON p.booking_id = b.booking_id
         LEFT JOIN salons s ON s.salon_id = COALESCE(o.salon_id, b.salon_id)
         WHERE s.salon_id IS NOT NULL
-        GROUP BY s.salon_id, s.name;`;
+        GROUP BY s.salon_id, s.name
+        ORDER BY salon_revenue DESC;`;
+        
         const [perSalonRevenueAnalytics] = await db.execute(perSalonRevenueAnalyticsQuery);
 
         const platformRevenueAnalyticsQuery = 
