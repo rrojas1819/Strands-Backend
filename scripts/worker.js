@@ -29,13 +29,16 @@ async function runScheduledJobs() {
     jobPromises.push(runAppointmentReminders(db)); 
     jobPromises.push(runBookingsAutoComplete(db));
     
+    if (currentMinute % 2 === 0) {
+        jobPromises.push(runLoyaltySeenUpdate(db));
+    }
+    
     if (currentMinute % 5 === 0) {
         jobPromises.push(runExpirePromoCodes(db)); 
     }
     
     if (currentMinute % 15 === 0) {
         jobPromises.push(runTokenCleanup(db)); 
-        jobPromises.push(runLoyaltySeenUpdate(db));
     }
     
     if (currentMinute === 0) { 
