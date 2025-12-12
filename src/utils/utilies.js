@@ -600,12 +600,14 @@ async function runTempCreditCardCleanup(connection) {
    }
 }
 
-// Cleanup job to delete pending bookings older than 5 minutes
+// Cleanup job to delete pending bookings where appointment time has passed or 5 minutes have elapsed
 async function runPendingBookingCleanup(connection) {
    try {
        const db = connection.promise();
-       const fiveMinutesAgo = DateTime.utc().minus({ minutes: 5 });
-       const cutoffTime = toMySQLUtc(fiveMinutesAgo);
+       const now = DateTime.utc();
+       const fiveMinutesAgo = now.minus({ minutes: 5 });
+       const nowCutoff = toMySQLUtc(now);
+       const fiveMinutesAgoCutoff = toMySQLUtc(fiveMinutesAgo);
 
        await db.beginTransaction();
 
@@ -614,8 +616,8 @@ async function runPendingBookingCleanup(connection) {
                `SELECT booking_id 
                 FROM bookings 
                 WHERE status = 'PENDING' 
-                AND created_at < ?`,
-               [cutoffTime]
+                AND (scheduled_start <= ? OR created_at < ?)`,
+               [nowCutoff, fiveMinutesAgoCutoff]
            );
 
            if (oldBookings.length === 0) {
