@@ -511,29 +511,63 @@ exports.addEmployee = async (req, res) => {
 
     const employeeUserId = existingEmployee[0].user_id;
 
-    // Check if employee is already assigned to this salon
-    const checkDuplicateQuery = `
-      SELECT e.employee_id 
-      FROM employees e
-      JOIN salons s ON e.salon_id = s.salon_id
-      WHERE e.user_id = ? AND s.owner_user_id = ? AND e.active = 1
-    `;
-    
-    const [duplicateCheck] = await db.execute(checkDuplicateQuery, [employeeUserId, owner_user_id]);
+    // Get the salon_id for the current owner
+    const [salonResult] = await db.execute(
+      'SELECT salon_id FROM salons WHERE owner_user_id = ?',
+      [owner_user_id]
+    );
 
-    if (duplicateCheck.length > 0) {
-      return res.status(409).json({ message: 'User is already an employee of this salon.' });
+    if (salonResult.length === 0) {
+      return res.status(404).json({ message: 'Salon not found' });
     }
 
+    const salon_id = salonResult[0].salon_id;
+
+    // Check if employee already exists in employees table (from any salon)
+    const checkExistingEmployeeQuery = `
+      SELECT e.employee_id, e.salon_id, e.active
+      FROM employees e
+      WHERE e.user_id = ?
+    `;
+    
+    const [existingEmployeeRecord] = await db.execute(checkExistingEmployeeQuery, [employeeUserId]);
+
     const nowUtc = toMySQLUtc(DateTime.utc());
-    const assignEmployeeQuery = 
-    `INSERT INTO employees (salon_id, user_id, title, active, created_at, updated_at)
-    VALUES((SELECT salon_id FROM salons WHERE owner_user_id = ?), ?, ?, 1, ?, ?);`;
+    let employee_id;
+    let isNewEmployee = false;
 
-    const [result] = await db.execute(assignEmployeeQuery, [owner_user_id, employeeUserId, title, nowUtc, nowUtc]);
-
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ message: 'Salon not found' });
+    if (existingEmployeeRecord.length > 0) {
+      const existing = existingEmployeeRecord[0];
+      
+      // If employee is already active at this salon
+      if (existing.salon_id === salon_id && existing.active === 1) {
+        return res.status(409).json({ message: 'User is already an active employee of this salon.' });
+      }
+      
+      // If employee is active at a different salon
+      if (existing.active === 1 && existing.salon_id !== salon_id) {
+        return res.status(409).json({ 
+          message: 'User is currently an active employee at another salon. They must be removed from that salon first.' 
+        });
+      }
+      
+      // Employee exists but is inactive (was fired from another salon) - UPDATE to new salon
+      employee_id = existing.employee_id;
+      const updateEmployeeQuery = `
+        UPDATE employees 
+        SET salon_id = ?, title = ?, active = 1, updated_at = ?
+        WHERE employee_id = ?
+      `;
+      await db.execute(updateEmployeeQuery, [salon_id, title, nowUtc, employee_id]);
+    } else {
+      // Employee doesn't exist in employees table - INSERT new record
+      isNewEmployee = true;
+      const insertEmployeeQuery = `
+        INSERT INTO employees (salon_id, user_id, title, active, created_at, updated_at)
+        VALUES (?, ?, ?, 1, ?, ?)
+      `;
+      const [result] = await db.execute(insertEmployeeQuery, [salon_id, employeeUserId, title, nowUtc, nowUtc]);
+      employee_id = result.insertId;
     }
 
     // Get salon and employee information for notification
@@ -557,7 +591,7 @@ exports.addEmployee = async (req, res) => {
         await createNotification(db, {
           user_id: employeeInfo[0].user_id,
           salon_id: salonInfo[0].salon_id,
-          employee_id: result.insertId,
+          employee_id: employee_id,
           email: employeeInfo[0].email,
           type_code: 'EMPLOYEE_ADDED',
           message: `Congratulations! You have been added as a ${title} to ${salonInfo[0].name}. You can now set your availability and start accepting bookings.`,
@@ -600,18 +634,19 @@ exports.removeEmployee = async (req, res) => {
       return res.status(400).json({ message: 'Invalid email format' });
     }
 
-    const removeEmployeeQuery = 
-    `DELETE FROM employees
-    WHERE user_id = (
-    SELECT user_id
-    FROM users
-    WHERE email = ?
-    ) AND salon_id = (SELECT salon_id FROM salons WHERE owner_user_id = ?)`;
+    // Soft delete: set active = 0 instead of deleting to preserve history
+    const removeEmployeeQuery = `
+      UPDATE employees e
+      JOIN users u ON e.user_id = u.user_id
+      JOIN salons s ON e.salon_id = s.salon_id
+      SET e.active = 0
+      WHERE u.email = ? AND s.owner_user_id = ? AND e.active = 1
+    `;
 
     const [result] = await db.execute(removeEmployeeQuery, [email, owner_user_id]);
 
     if (result.affectedRows === 0) {
-      return res.status(404).json({ message: 'Employee not found' });
+      return res.status(404).json({ message: 'Employee not found or already inactive' });
     }
     
     res.status(200).json({
@@ -641,7 +676,7 @@ exports.viewEmployees = async (req, res) => {
     `SELECT COUNT(*) as total 
     FROM employees e 
     JOIN salons s ON e.salon_id = s.salon_id
-    WHERE e.salon_id = (SELECT salon_id FROM salons WHERE owner_user_id = ?)`;
+    WHERE e.salon_id = (SELECT salon_id FROM salons WHERE owner_user_id = ?) AND e.active = 1`;
 
     const [countResult] = await db.execute(countQuery, [owner_user_id]);
     const total = countResult[0]?.total || 0;
@@ -655,7 +690,7 @@ exports.viewEmployees = async (req, res) => {
     FROM employees e
     JOIN users u ON e.user_id = u.user_id
     JOIN salons s ON e.salon_id = s.salon_id
-    WHERE e.salon_id = (SELECT salon_id FROM salons WHERE owner_user_id = ?)
+    WHERE e.salon_id = (SELECT salon_id FROM salons WHERE owner_user_id = ?) AND e.active = 1
     ORDER BY u.full_name ASC
     LIMIT ${limitInt} OFFSET ${offsetInt}
     `;
@@ -2075,18 +2110,16 @@ exports.removeServiceFromStylist = async (req, res) => {
         return res.status(404).json({ message: 'Service could not be removed' });
       }
       
-      try {
-        await db.execute(
-          'DELETE FROM services WHERE service_id = ?',
-          [service_id]
-        );
-      } catch (deleteServiceError) {
+      // Soft delete: set active = 0 instead of deleting to preserve booking history
+      const nowUtc = toMySQLUtc(DateTime.utc());
+      const [updateResult] = await db.execute(
+        'UPDATE services SET active = 0, updated_at = ? WHERE service_id = ?',
+        [nowUtc, service_id]
+      );
+      
+      if (updateResult.affectedRows === 0) {
         await db.query('ROLLBACK');
-        console.error('Error deleting service from services table:', deleteServiceError);
-        return res.status(500).json({ 
-          message: 'Failed to delete service from services table',
-          error: deleteServiceError.message
-        });
+        return res.status(404).json({ message: 'Service not found' });
       }
       
       await db.query('COMMIT');
