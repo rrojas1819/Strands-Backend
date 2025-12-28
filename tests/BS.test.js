@@ -1159,20 +1159,21 @@ describe('BS 1.2 - Reschedule Appointment', () => {
         test('Verify Same-Day Reschedule Policy: Attempting to reschedule same-day appointment returns 400 Bad Request', async () => {
             const env = await setupBookingTestEnvironment();
             
-            const tomorrow = DateTime.utc().plus({ days: 1 }).set({ hour: 10, minute: 0, second: 0, millisecond: 0 });
-            const tomorrowEnd = tomorrow.plus({ minutes: 60 });
+            const now = DateTime.utc();
+            const today = now.plus({ hours: 2 }).set({ minute: 0, second: 0, millisecond: 0 });
+            const todayEnd = today.plus({ minutes: 60 });
             
             const bookingId = await createBookingWithServices(
                 env.salonId,
                 env.customer.user_id,
                 env.employeeId,
                 env.serviceId,
-                tomorrow,
-                tomorrowEnd,
+                today,
+                todayEnd,
                 'SCHEDULED'
             );
             
-            const newTime = tomorrow.plus({ hours: 2 });
+            const newTime = today.plus({ hours: 2 });
             const response = await rescheduleBookingViaAPI(env.customerToken, bookingId, newTime.toISO());
             
             expect([400, 404]).toContain(response.status);
