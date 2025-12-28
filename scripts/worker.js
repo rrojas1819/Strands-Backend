@@ -22,42 +22,44 @@ const {
 } = require('../src/utils/utilies'); 
 
 async function runScheduledJobs() {
-    const now = DateTime.local();
-    const currentMinute = now.minute;
-    const currentHour = now.hour;
-    const jobPromises = [];
-    
-    jobPromises.push(runAppointmentReminders(db)); 
-    jobPromises.push(runBookingsAutoComplete(db));
-    jobPromises.push(runPendingBookingCleanup(db));
-    
-    if (currentMinute % 2 === 0) {
-        jobPromises.push(runLoyaltySeenUpdate(db));
-    }
-    
-    if (currentMinute % 5 === 0) {
-        jobPromises.push(runExpirePromoCodes(db)); 
-    }
-    
-    if (currentMinute % 15 === 0) {
-        jobPromises.push(runTokenCleanup(db)); 
-    }
-    
-    if (currentMinute === 0) { 
-        jobPromises.push(runTempCreditCardCleanup(db)); 
-    }
-    
-    if (currentMinute === 0 && (currentHour === 0 || currentHour === 12)) {
-         jobPromises.push(runUnusedOffersReminders(db)); 
-    }
-    
-    try {
-        await Promise.all(jobPromises);
-        process.exit(0); 
-    } catch (error) {
-        console.error('Worker job failed:', error);
+    // Check connection health before running jobs
+    if (db.state !== 'authenticated' && db.state !== 'connected') {
+        console.error('Database connection not ready, state:', db.state);
         process.exit(1);
     }
+    
+    const jobs = [
+        { name: 'AppointmentReminders', fn: runAppointmentReminders },
+        { name: 'BookingsAutoComplete', fn: runBookingsAutoComplete },
+        { name: 'PendingBookingCleanup', fn: runPendingBookingCleanup },
+        { name: 'LoyaltySeenUpdate', fn: runLoyaltySeenUpdate },
+        { name: 'ExpirePromoCodes', fn: runExpirePromoCodes },
+        { name: 'TokenCleanup', fn: runTokenCleanup },
+        { name: 'TempCreditCardCleanup', fn: runTempCreditCardCleanup },
+        { name: 'UnusedOffersReminders', fn: runUnusedOffersReminders }
+    ];
+    
+    // Run jobs with individual error handling so one failure doesn't crash all
+    const results = await Promise.allSettled(
+        jobs.map(job => 
+            job.fn(db).catch(error => {
+                console.error(`${job.name} job failed:`, error);
+                return { error: true, job: job.name };
+            })
+        )
+    );
+    
+    const failed = results.filter(r => r.status === 'rejected' || (r.value && r.value.error));
+    if (failed.length > 0) {
+        console.warn(`${failed.length} job(s) failed, but continuing...`);
+    }
+    
+    const successful = results.length - failed.length;
+    if (successful > 0) {
+        console.log(`Successfully completed ${successful} job(s)`);
+    }
+    
+    process.exit(0);
 }
 
 runScheduledJobs();
