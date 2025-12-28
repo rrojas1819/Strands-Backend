@@ -5,7 +5,7 @@ const { authenticateToken, roleAuthorization } = require('../middleware/auth.mid
 
 //SF 1.1 Owner Shop
 router.post('/', authenticateToken, roleAuthorization(['OWNER']), addProduct);
-router.get('/:salon_id', authenticateToken, roleAuthorization(['CUSTOMER','OWNER']), getProducts);
+router.get('/:salon_id', authenticateToken, roleAuthorization(['CUSTOMER','OWNER','GUEST']), getProducts);
 router.delete('/:product_id', authenticateToken, roleAuthorization(['OWNER']), deleteProduct);
 router.patch('/:product_id', authenticateToken, roleAuthorization(['OWNER']), updateProduct);
 
@@ -15,7 +15,7 @@ router.get('/customer/view-cart/:salon_id', authenticateToken, roleAuthorization
 router.delete('/customer/remove-from-cart', authenticateToken, roleAuthorization(['CUSTOMER']), removeFromCart);
 router.patch('/customer/update-cart', authenticateToken, roleAuthorization(['CUSTOMER']), updateCart);
 router.post('/customer/checkout', authenticateToken, roleAuthorization(['CUSTOMER']), checkout);
-router.post('/customer/view-orders', authenticateToken, roleAuthorization(['CUSTOMER']), viewUserOrders);
+router.post('/customer/view-orders', authenticateToken, roleAuthorization(['CUSTOMER', 'GUEST']), viewUserOrders);
 router.post('/owner/view-orders', authenticateToken, roleAuthorization(['OWNER']), viewSalonOrders);
 
 module.exports = router;

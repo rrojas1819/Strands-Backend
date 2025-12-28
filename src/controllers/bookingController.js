@@ -9,6 +9,34 @@ exports.getMyAppointments = async (req, res) => {
 
     try {
         const customer_user_id = req.user?.user_id;
+        const role = req.user?.role;
+
+        // For guests, return empty data - frontend will supply mock data
+        if (role === 'GUEST') {
+            let { page = 1, limit = 10, filter } = req.query;
+            page = Math.max(1, parseInt(page, 10) || 1);
+            limit = Math.max(1, Math.min(parseInt(limit, 10) || 10, 100));
+            const pageInt = parseInt(page, 10);
+            const limitInt = parseInt(limit, 10);
+            const offsetInt = (pageInt - 1) * limitInt;
+            
+            return res.status(200).json({
+                message: 'Appointments retrieved successfully',
+                data: [],
+                filter: filter || null,
+                pagination: {
+                    current_page: pageInt,
+                    total_pages: 0,
+                    total_items: 0,
+                    items_per_page: limitInt,
+                    items_returned: 0,
+                    limit: limitInt,
+                    offset: offsetInt,
+                    has_next_page: false,
+                    has_prev_page: false
+                }
+            });
+        }
 
         if (!customer_user_id) {
             return res.status(401).json({ message: 'Unauthorized' });

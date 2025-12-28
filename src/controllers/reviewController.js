@@ -245,7 +245,9 @@ exports.listSalonReviews = async (req, res) => {
     try {
         const authUserId = req.user?.user_id;
         const role = req.user?.role;
-        if (!authUserId) return res.status(401).json({ message: 'Unauthorized' });
+        
+        // GUEST users don't have user_id, so only check for non-GUEST roles
+        if (role !== 'GUEST' && !authUserId) return res.status(401).json({ message: 'Unauthorized' });
 
         //validate salon ID
         const salon_id = parseInt(req.params.salon_id, 10);
@@ -258,6 +260,7 @@ exports.listSalonReviews = async (req, res) => {
         if (!salon) return res.status(404).json({ message: 'Salon not found' });
 
         //ensuring employees and owners only see reviews from their respective salons
+        //GUEST and CUSTOMER can view any salon's reviews
         if (role === 'EMPLOYEE') {
             const [empRows] = await db.execute(`SELECT salon_id FROM employees WHERE user_id = ? AND active = 1`, [authUserId]);
             if (empRows.length === 0) return res.status(404).json({ message: 'Employee profile not found' });

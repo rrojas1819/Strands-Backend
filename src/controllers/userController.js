@@ -237,6 +237,35 @@ exports.login = async (req, res) => {
     }
 };
 
+// Guest View - Generate token for guest users to browse salons without booking
+exports.guestView = async (req, res) => {
+    try {
+        // Generate a token with GUEST role
+        // No user_id needed since guest doesn't have an account
+        const tokenPayload = {
+            user_id: null,
+            role: 'GUEST',
+            full_name: 'Guest User'
+        };
+
+        const token = generateToken(tokenPayload);
+
+        res.status(200).json({
+            message: "Guest view access granted",
+            data: {
+                role: 'GUEST',
+                token: token
+            }
+        });
+        
+    } catch (error) {
+        console.error('guestView error:', error);
+        res.status(500).json({
+            message: "Internal server error"
+        });
+    }
+};
+
 // User Logout
 /* Token will not be invalidated, but the user will be set as inactive. 
     Frontend will handle the token deletion and redirect to login page after calling this endpoint.

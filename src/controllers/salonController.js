@@ -2311,8 +2311,8 @@ exports.getStylistServices = async (req, res) => {
         return res.status(400).json({ message: 'Invalid salon_id or employee_id' });
       }
       
-      // Verify salon exists and is approved (only for customer browsing)
-      if (userRole === 'CUSTOMER') {
+      // Verify salon exists and is approved (only for customer/guest browsing)
+      if (userRole === 'CUSTOMER' || userRole === 'GUEST') {
         const getSalonQuery = 'SELECT status FROM salons WHERE salon_id = ?';
         const [salonResult] = await db.execute(getSalonQuery, [param_salon_id]);
         
