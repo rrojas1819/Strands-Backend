@@ -12,7 +12,7 @@ router.post('/create', authenticateToken, roleAuthorization(['OWNER']), salonCon
 router.patch('/approve', authenticateToken, roleAuthorization(['ADMIN']), salonController.approveSalon);
 
 // UAR 1.6 browse salons
-router.get('/browse', authenticateToken, roleAuthorization(['ADMIN', 'CUSTOMER']), salonController.browseSalons);
+router.get('/browse', authenticateToken, roleAuthorization(['ADMIN', 'CUSTOMER', 'GUEST']), salonController.browseSalons);
 
 // UAR 1.7 Add/Remove Employee
 router.post('/addEmployee', authenticateToken, roleAuthorization(['OWNER']), salonController.addEmployee);
@@ -44,22 +44,22 @@ router.delete('/stylist/removeService/:service_id', authenticateToken, roleAutho
 router.get('/stylist/myServices', authenticateToken, roleAuthorization(['EMPLOYEE']), salonController.getStylistServices);
 
 
-// BS 1.1 - Customer booking endpoints
-router.get('/:salon_id/stylists', authenticateToken, roleAuthorization(['CUSTOMER']), salonController.getAvailableStylists);
-router.get('/:salon_id/stylists/:employee_id/timeslots', authenticateToken, roleAuthorization(['CUSTOMER']), salonController.getAvailableTimeSlotsRange);
-router.get('/:salon_id/stylists/:employee_id/services', authenticateToken, roleAuthorization(['CUSTOMER']), salonController.getStylistServices);
+// BS 1.1 - Customer booking endpoints (GUEST can view, but only CUSTOMER can book)
+router.get('/:salon_id/stylists', authenticateToken, roleAuthorization(['CUSTOMER', 'GUEST']), salonController.getAvailableStylists);
+router.get('/:salon_id/stylists/:employee_id/timeslots', authenticateToken, roleAuthorization(['CUSTOMER', 'GUEST']), salonController.getAvailableTimeSlotsRange);
+router.get('/:salon_id/stylists/:employee_id/services', authenticateToken, roleAuthorization(['CUSTOMER', 'GUEST']), salonController.getStylistServices);
 router.post('/:salon_id/stylists/:employee_id/book', authenticateToken, roleAuthorization(['CUSTOMER']), salonController.bookTimeSlot);
-router.get('/:salon_id/services', authenticateToken, roleAuthorization(['CUSTOMER']), salonController.browseSalonServices);
+router.get('/:salon_id/services', authenticateToken, roleAuthorization(['CUSTOMER', 'GUEST']), salonController.browseSalonServices);
 
 router.get('/information', authenticateToken, roleAuthorization(['OWNER']), salonController.getSalonInformation);
 
 // AFVD 1.1 User Engagement Tracking
-router.post('/track-salon-event', authenticateToken, roleAuthorization(['CUSTOMER']), salonController.trackSalonEvent);
+router.post('/track-salon-event', authenticateToken, roleAuthorization(['CUSTOMER', 'GUEST']), salonController.trackSalonEvent);
 
 // PLR 1.2 View Salon Metrics
 router.get('/top-metrics', authenticateToken, roleAuthorization(['OWNER']), salonController.getTopSalonMetrics);
 
 // OPT Check Salon Status
-router.get('/check-salon-status', authenticateToken, roleAuthorization(['CUSTOMER']), salonController.checkSalonStatus);
+router.get('/check-salon-status', authenticateToken, roleAuthorization(['CUSTOMER', 'GUEST']), salonController.checkSalonStatus);
 
 module.exports = router;

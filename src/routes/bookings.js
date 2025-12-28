@@ -4,7 +4,7 @@ const bookingController = require('../controllers/bookingController');
 const {authenticateToken, roleAuthorization} = require('../middleware/auth.middleware');
 
 //BS 1.4 customer views their appointments
-router.get('/myAppointments', authenticateToken, roleAuthorization(['CUSTOMER']), bookingController.getMyAppointments);
+router.get('/myAppointments', authenticateToken, roleAuthorization(['CUSTOMER', 'GUEST']), bookingController.getMyAppointments);
 
 //BS 1.2 customer reschedules booking/appointment
 router.post('/reschedule', authenticateToken, roleAuthorization(['CUSTOMER']), bookingController.rescheduleBooking);

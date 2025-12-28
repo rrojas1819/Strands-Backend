@@ -34,12 +34,12 @@ router.get('/get-photo', authenticateToken, roleAuthorization(['CUSTOMER','EMPLO
 router.get('/check-if-photo-attached', authenticateToken, roleAuthorization(['CUSTOMER','EMPLOYEE','OWNER']), checkIfPhotoAttached);
 
 // UPH 1.6 Get Salon Gallery
-router.get('/get-salon-gallery', authenticateToken, roleAuthorization(['CUSTOMER','EMPLOYEE','OWNER']), getSalonGallery);
+router.get('/get-salon-gallery', authenticateToken, roleAuthorization(['CUSTOMER','EMPLOYEE','OWNER','GUEST']), getSalonGallery);
 
 
 // UAR 1.3 Upload Salon Photo
 router.post('/upload-salon-photo', authenticateToken, roleAuthorization(['OWNER']), upload.single("file"), uploadSalonPhoto);
-router.get('/get-salon-photo', authenticateToken, roleAuthorization(['CUSTOMER','EMPLOYEE','OWNER','ADMIN']), getSalonPhoto);
+router.get('/get-salon-photo', authenticateToken, roleAuthorization(['CUSTOMER','EMPLOYEE','OWNER','ADMIN','GUEST']), getSalonPhoto);
 router.delete('/delete-salon-photo', authenticateToken, roleAuthorization(['OWNER']), deleteSalonPhoto);
 
 module.exports = router;

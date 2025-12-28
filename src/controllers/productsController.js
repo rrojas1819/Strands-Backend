@@ -653,6 +653,30 @@ exports.viewUserOrders = async (req, res) => {
   try {
     const { salon_id, limit, offset } = req.body;
     const owner_user_id = req.user?.user_id;
+    const role = req.user?.role;
+
+    // For guests, return empty data - frontend will supply mock data
+    if (role === 'GUEST') {
+      const limitNum = Number(limit) || 10;
+      const offsetNum = Number(offset) || 0;
+      const limitInt = Math.max(1, Math.floor(limitNum)); 
+      const offsetInt = Math.max(0, Math.floor(offsetNum));
+      const totalPages = 0;
+      const currentPage = limitInt > 0 ? Math.floor(offsetInt / limitInt) + 1 : 1;
+      
+      return res.status(200).json({
+        orders: [],
+        pagination: {
+          current_page: currentPage,
+          total_pages: totalPages,
+          total_orders: 0,
+          limit: limitInt,
+          offset: offsetInt,
+          has_next_page: false,
+          has_prev_page: false
+        }
+      });
+    }
 
     // Validate required fields
     if (limit === undefined || limit === null || offset === undefined || offset === null) {
