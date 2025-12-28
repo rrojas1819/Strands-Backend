@@ -9,7 +9,7 @@ router.patch('/update/:review_id', authenticateToken, roleAuthorization(['CUSTOM
 router.delete('/delete/:review_id', authenticateToken, roleAuthorization(['CUSTOMER']), reviewController.deleteReview);
 
 //listing all reviews for a salon
-router.get('/salon/:salon_id/all', authenticateToken, roleAuthorization(['CUSTOMER','OWNER','EMPLOYEE']), reviewController.listSalonReviews);
+router.get('/salon/:salon_id/all', authenticateToken, roleAuthorization(['CUSTOMER','OWNER','EMPLOYEE','GUEST']), reviewController.listSalonReviews);
 
 //getting an individual customer's salon review for updating purposes
 router.get('/salon/:salon_id/myReview', authenticateToken, roleAuthorization(['CUSTOMER']), reviewController.getMyReviewForSalon);
