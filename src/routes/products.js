@@ -15,7 +15,7 @@ router.get('/customer/view-cart/:salon_id', authenticateToken, roleAuthorization
 router.delete('/customer/remove-from-cart', authenticateToken, roleAuthorization(['CUSTOMER']), removeFromCart);
 router.patch('/customer/update-cart', authenticateToken, roleAuthorization(['CUSTOMER']), updateCart);
 router.post('/customer/checkout', authenticateToken, roleAuthorization(['CUSTOMER']), checkout);
-router.post('/customer/view-orders', authenticateToken, roleAuthorization(['CUSTOMER']), viewUserOrders);
+router.post('/customer/view-orders', authenticateToken, roleAuthorization(['CUSTOMER', 'GUEST']), viewUserOrders);
 router.post('/owner/view-orders', authenticateToken, roleAuthorization(['OWNER']), viewSalonOrders);
 
 module.exports = router;
