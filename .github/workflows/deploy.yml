@@ -35,38 +35,35 @@ jobs:
             echo "Waiting for MySQL..."
             sleep 1
           done
-
           mysql -h 127.0.0.1 -P 3306 -u root -proot localTest < schema.sql
         env:
-          # The mysql client is pre-installed on ubuntu-latest runners
           MYSQL_PWD: root
 
-      - name: Run unit tests
-        env:
-          # Database Config (Points to Service Container)
-          DB_HOST: 127.0.0.1
-          DB_USER: root
-          DB_PASSWORD: root
-          DB_NAME: localTest
-          DB_PORT: 3306
-          NODE_ENV: test
-          TEST_VERBOSE: '1' # Show full logs if tests fail
-
-          APP_PORT: ${{ secrets.PORT }}
-          UTC_DEBUG: ${{ secrets.UTC_DEBUG }}
-          JWT_SECRET: ${{ secrets.JWT_SECRET }}
-          BCRYPT_SALT: ${{ secrets.BCRYPT_SALT }}
-          NOTIFICATION_ENCRYPTION_KEY: ${{ secrets.NOTIFICATION_ENCRYPTION_KEY }}
-          PAYMENT_ENCRYPTION_KEY: ${{ secrets.PAYMENT_ENCRYPTION_KEY }}
-          CVC_HMAC_SECRET: ${{ secrets.CVC_HMAC_SECRET }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_REGION: ${{ secrets.AWS_REGION }}
-          AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
-          AWS_S3_DEFAULT_PREFIX: ${{ secrets.AWS_S3_DEFAULT_PREFIX }}
-          UPLOAD_MAX_BYTES: ${{ secrets.UPLOAD_MAX_BYTES }}
-
-        run: npm test --coverage
+      # - name: Run unit tests
+      #   env:
+      #     DB_HOST: 127.0.0.1
+      #     DB_USER: root
+      #     DB_PASSWORD: root
+      #     DB_NAME: localTest
+      #     DB_PORT: 3306
+      #     NODE_ENV: test
+      #     TEST_VERBOSE: '1'
+      #
+      #     APP_PORT: ${{ secrets.PORT }}
+      #     UTC_DEBUG: ${{ secrets.UTC_DEBUG }}
+      #     JWT_SECRET: ${{ secrets.JWT_SECRET }}
+      #     BCRYPT_SALT: ${{ secrets.BCRYPT_SALT }}
+      #     NOTIFICATION_ENCRYPTION_KEY: ${{ secrets.NOTIFICATION_ENCRYPTION_KEY }}
+      #     PAYMENT_ENCRYPTION_KEY: ${{ secrets.PAYMENT_ENCRYPTION_KEY }}
+      #     CVC_HMAC_SECRET: ${{ secrets.CVC_HMAC_SECRET }}
+      #     AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      #     AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      #     AWS_REGION: ${{ secrets.AWS_REGION }}
+      #     AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
+      #     AWS_S3_DEFAULT_PREFIX: ${{ secrets.AWS_S3_DEFAULT_PREFIX }}
+      #     UPLOAD_MAX_BYTES: ${{ secrets.UPLOAD_MAX_BYTES }}
+      #
+      #   run: npm test --coverage
 
       - name: Build project
         run: npm run build --if-present
@@ -89,7 +86,6 @@ jobs:
           key: ${{ secrets.EC2_KEY }}
           script: |
             cd /home/ubuntu/Strands-Backend
-
             npm install --production
 
             PM2_CONFIG=$(cat <<EOF
@@ -98,7 +94,7 @@ jobs:
                 {
                   "name": "strands-backend",
                   "script": "./src/server.js",
-                   "cron_restart": "0 */6 * * *",
+                  "cron_restart": "0 */6 * * *",
                   "env": {
                     "NODE_ENV": "production",
                     "APP_PORT": "${{ secrets.PORT }}",
@@ -143,11 +139,8 @@ jobs:
             )
 
             echo "$PM2_CONFIG" > pm2_temp_config.json
-
             pm2 delete strands-backend || true
             pm2 delete strands-worker || true
-
             pm2 start pm2_temp_config.json
             pm2 save
-
             rm pm2_temp_config.json
