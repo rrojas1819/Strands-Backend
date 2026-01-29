@@ -123,7 +123,7 @@ jobs:
                   "exec_mode": "fork",
                   "instances": 1,
                   "cron_restart": "* * * * *",
-                  "autorestart": false,
+                  "autorestart": true,
                   "env": {
                     "NODE_ENV": "production",
                     "DB_HOST": "${{ secrets.DB_HOST }}",
