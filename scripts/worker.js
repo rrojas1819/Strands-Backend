@@ -8,7 +8,26 @@ const envPath = process.env.NODE_ENV === 'test'
 dotenv.config({ path: envPath, override: false });
 
 const db = require('../src/config/databaseConnection');
-const { DateTime } = require('luxon'); 
+const { DateTime } = require('luxon');
+
+function waitForConnection(timeoutMs = 10000) {
+    return new Promise((resolve, reject) => {
+        if (db.state === 'authenticated' || db.state === 'connected') {
+            return resolve();
+        }
+        const deadline = Date.now() + timeoutMs;
+        const check = () => {
+            if (db.state === 'authenticated' || db.state === 'connected') {
+                return resolve();
+            }
+            if (Date.now() >= deadline) {
+                return reject(new Error('Database connection timeout'));
+            }
+            setTimeout(check, 50);
+        };
+        check();
+    });
+}
 
 const {
     runTokenCleanup, 
@@ -22,6 +41,7 @@ const {
 } = require('../src/utils/utilies'); 
 
 async function runScheduledJobs() {
+    await waitForConnection();
     // Check connection health before running jobs
     if (db.state !== 'authenticated' && db.state !== 'connected') {
         console.error('Database connection not ready, state:', db.state);
@@ -62,4 +82,7 @@ async function runScheduledJobs() {
     process.exit(0);
 }
 
-runScheduledJobs();
+runScheduledJobs().catch((err) => {
+    console.error('Worker failed:', err);
+    process.exit(1);
+});
